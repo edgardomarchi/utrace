@@ -1,0 +1,219 @@
+[project]
+
+name = "utrace"
+version = "0.0.1"
+description = "Uncertainty Tracking for Complex Estimators"
+
+license = "MIT"
+authors = [
+    {name="Edgardo Marchi", email="edgardo.marchi@gmail.com"}
+]
+
+readme = "README.md"
+
+keywords = ["Uncertainty Quantification", "AI", "Metrology"]
+
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+
+requires-python = ">=3.11,<3.15"
+
+dependencies = [
+    "monai",
+    "scikit-learn",
+    "scikit-image",
+    "matplotlib",
+    "nibabel",
+    "pillow",
+    "pandas",
+    "tqdm",
+    "flax",
+]
+
+default-optional-dependency-keys = [
+    "cpu",
+]
+
+[project.optional-dependencies]
+cuda = [
+    "jax[cuda12]", 
+    "torchvision",
+    "torch",
+]
+cuda124 = [
+    "jax[cuda12]", 
+    "torchvision",
+    "torch",
+]
+rocm = [
+    "jax[rocm]",
+    "torchvision",
+    "torch",
+]
+rocm5 = [
+    "jax",  # jax does not support rocm5 on legacy AMD APUs.
+    "torchvision",
+    "torch",
+]
+cpu = [
+    "jax",
+    "torchvision",
+    "torch",
+]
+
+[project.urls]
+homepage = "https://github.com/edgardomarchi/utrace"
+documentation = "https://github.com/edgardomarchi/utrace/-/tree/main/docs"
+repository = "https://github.com/edgardomarchi/utrace"
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cuda" },
+        { extra = "cuda124" },
+        { extra = "rocm" },
+        { extra = "rocm5" }
+    ]
+]
+
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+index-strategy = "unsafe-best-match"
+
+default-groups = ["dev"]
+
+[tool.uv.sources]
+torch = [
+    { index = "torch-cuda", extra = "cuda" },
+    { index = "torch-cuda124", extra = "cuda124" },
+    { index = "torch-rocm", extra = "rocm" },
+    { index = "torch-rocm5", extra = "rocm5" },
+    { index = "torch-cpu",  extra = "cpu"}
+]
+
+torchvision = [
+    { index = "torch-cuda", extra = "cuda" },
+    { index = "torch-cuda124", extra = "cuda124" },
+    { index = "torch-rocm", extra = "rocm" },
+    { index = "torch-rocm5", extra = "rocm5" },
+    { index = "torch-cpu", extra = "cpu"}
+]
+
+[[tool.uv.index]]
+name = "torch-cuda"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "torch-cuda124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "torch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.4"
+eexplicit = true
+
+[[tool.uv.index]]
+name = "torch-rocm5"
+url = "https://download.pytorch.org/whl/rocm5.7"
+explicit = true
+
+[[tool.uv.index]]
+name = "torch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "ipykernel",
+    "jupytext",
+
+    # Formatters
+    "black",
+    "tomli",
+    "isort",
+
+    # Linters
+    "mypy",
+    "pydocstyle",
+    "pylint",
+    "pylint-pytest",
+    "wrapt",
+
+    # Testing
+    "pytest",
+    "pytest-describe",
+    "pytest-expecter",
+    "pytest-random",
+    "pytest-cov",
+    "freezegun",
+
+    # Reports
+    "coveragespace",
+
+    # Documentation
+    "mkdocs",
+    "pygments",
+
+    # Tooling
+    "pre-commit",
+    "bump2version",
+    "pyinstaller",
+    "sniffer",
+    "MacFSEvents; sys_platform == 'darwin'",
+    "pync; sys_platform == 'darwin'",
+    "ipython",
+]
+
+
+[project.scripts]
+
+utrace = "utrace.cli:main"
+
+[tool.black]
+
+quiet = true
+
+[tool.isort]
+
+profile = "black"
+
+[tool.mypy]
+
+ignore_missing_imports = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+cache_dir = ".cache/mypy/"
+
+[tool.pytest.ini_options]
+
+addopts = """
+--strict-markers
+
+-r sxX
+--show-capture=log
+
+--cov-report=html
+--cov-report=term-missing:skip-covered
+--no-cov-on-fail
+"""
+
+python = "^3.13"
+cache_dir = ".cache/pytest/"
+
+markers = []
+
+[build-system]
+requires = ["uv_build>=0.9.0,<0.10.0"]
+build-backend = "uv_build"
