@@ -1,16 +1,16 @@
 # U-TraCE
 
-Uncertainty Tracking for Complex Estimators
+![Project Status: WIP - Work in Progress](https://img.shields.io/badge/status-work%20in%20progress-yellow.svg)
+
+**U**ncertainty **Tra**cking for **C**omplex **E**stimators.
+
+U-TraCE is a Python package for computing upper bounds on the marginal or conditional uncertainty of any classification model that outputs class probabilities.
+
+The library is heavily based on Conformal Prediction, which allows its uncertainty estimates to be distribution-free. A key feature of this approach is that the resulting uncertainty measure relies on the model's actual accuracy (how often it is correct) rather than its confidence (e.g., raw softmax outputs).
+
+U-TraCE provides an evaluation method that reports a guaranteed upper bound for the model's uncertainty, defined as the probability of error: $1−P(\hat{y}​=y_t​)$, where $\hat{y}​$​ is the model's prediction and $y_t$​ is the true label.
 
 
-[![Linux Build](https://img.shields.io/github/actions/workflow/status/edgardomarchi/utrace/main.yml?branch=main&label=linux)](https://github.com/edgardomarchi/utrace/actions)
-[![Windows Build](https://img.shields.io/appveyor/ci/edgardomarchi/utrace/main.svg?label=windows)](https://ci.appveyor.com/project/edgardomarchi/utrace)
-[![Code Coverage](https://img.shields.io/codecov/c/github/edgardomarchi/utrace)
-](https://codecov.io/gh/edgardomarchi/utrace)
-[![Code Quality](https://img.shields.io/scrutinizer/g/edgardomarchi/utrace.svg?label=quality)](https://scrutinizer-ci.com/g/edgardomarchi/utrace/?branch=main)
-[![PyPI License](https://img.shields.io/pypi/l/utrace.svg)](https://pypi.org/project/utrace)
-[![PyPI Version](https://img.shields.io/pypi/v/utrace.svg?label=version)](https://pypi.org/project/utrace)
-[![PyPI Downloads](https://img.shields.io/pypi/dm/utrace.svg?color=orange)](https://pypistats.org/packages/utrace)
 
 ## Setup
 
@@ -20,10 +20,10 @@ Uncertainty Tracking for Complex Estimators
 
 ### Installation
 
-Install it directly into an activated virtual environment:
+Install it directly into an activated virtual environment (e.g. with `rocm` backend):
 
 ```bash
-$ pip install git+https://github.com/edgardomarchi/utrace.git@main
+pip install utrace\[rocm\]@git+ssh://git@github.com/edgardomarchi/utrace.git@main
 ```
 
 or add it to your `pyproject.toml`:
@@ -43,3 +43,45 @@ $ python
 >>> import utrace
 >>> utrace.__version__
 ```
+
+Example scripts can be found in the `scripts` folder.
+
+## Authors
+
+*   **Edgardo Marchi**
+*   **Maik Liebl**
+
+## Acknowledgements
+
+This project was developed in collaboration between the following institutions:
+
+*   **Physikalisch-Technische Bundesanstalt (PTB)** - Germany's national metrology institute.
+*   **Instituto Nacional de Tecnología Industrial (INTI)** - The National Institute of Industrial Technology of Argentina.
+
+The project was funded by PTB.
+
+<div style="display: flex; justify-content: center; align-items: center; gap: 20px;">
+  
+   <a href="https://www.ptb.de/cms/en.html" target="_blank" rel="noopener noreferrer">
+    <img src="https://upload.wikimedia.org/wikipedia/commons/b/b4/Physikalisch-Technische_Bundesanstalt_2013_logo.png" alt="Logo PTB" width="200" style="margin-right: 20px;">
+  </a>
+  <a href="https://www.inti.gob.ar" target="_blank" rel="noopener noreferrer">
+    <img src="https://upload.wikimedia.org/wikipedia/commons/3/32/Avatar_2023_new_%281%29.png" alt="Logo INTI" width="150">
+  </a>
+
+</div>
+
+
+## License
+
+This project is licensed under the MIT License.
+
+## Cite
+```bibtex
+@software{utrace,
+url = "https://github.com/edgardomarchi/utrace",
+title = "U-TraCE",
+author = "Edgardo Marchi and Maik Liebl",
+year = "2025",
+publisher = "GitHub",
+}
