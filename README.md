@@ -79,9 +79,9 @@ This project is licensed under the MIT License.
 ## Cite
 ```bibtex
 @software{utrace,
-url = "https://github.com/edgardomarchi/utrace",
-title = "U-TraCE",
-author = "Edgardo Marchi and Maik Liebl",
-year = "2025",
-publisher = "GitHub",
+title = {U-TraCE},
+author = {Edgardo Marchi and Maik Liebl},
+year = {2025},
+howpublished = {\url{https://github.com/edgardomarchi/utrace}}
 }
+```
