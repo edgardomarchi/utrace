@@ -54,7 +54,6 @@ common_style = {
 }
 
 ################# Define Custom Colormaps ###################
-# TraCIM Colors
 color1 = np.array([129 / 256, 154 / 256, 193 / 256, 1.0])
 color2 = np.array([193 / 256, 168 / 256, 129 / 256, 1.0])
 color3 = np.array([193 / 256, 129 / 256, 154 / 256, 1.0])
