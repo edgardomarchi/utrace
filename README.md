@@ -11,7 +11,6 @@ The library is heavily based on Conformal Prediction, which allows its uncertain
 U-TraCE provides an evaluation method that reports a guaranteed upper bound for the model's uncertainty, defined as the probability of error: $1−P(\hat{y}​=y_t​)$, where $\hat{y}$​ is the model's prediction and $y_t$​ is the true label.
 
 
-
 ## Setup
 
 ### Requirements
@@ -77,6 +76,16 @@ The project was funded by PTB.
 This project is licensed under the MIT License.
 
 ## Cite
+```bibtex
+@article{10.1088/2632-2153/ae35ce,
+	author={Marchi, Edgardo José and Liebl, Maik},
+	title={U-TraCE: A conformal prediction approach to uncertainty quantification in black-box models},
+	journal={Machine Learning: Science and Technology},
+	url={http://iopscience.iop.org/article/10.1088/2632-2153/ae35ce},
+	year={2026}
+}
+```
+
 ```bibtex
 @software{utrace,
 title = {U-TraCE},
