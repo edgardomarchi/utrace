@@ -99,7 +99,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
         classifier = Pytorch_wrapper(classifier, classes=classes, device=device)
         
-        uq = UncertaintyQuantifier(classifier, classes=classes)
+        uq = UncertaintyQuantifier(classifier, N=20000, classes=classes)
 
         ################################
         #### Uncertainty evaluation ####
@@ -430,5 +430,5 @@ if __name__ == '__main__':
     jax_logger.setLevel(logging.WARNING)  # Set jax logger to WARNING level
     mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
 
-    main(train_model=True, img_path=img_path, tab_path=tab_path, data_path=data_path, transform=transform)
+    main(train_model=False, img_path=img_path, tab_path=tab_path, data_path=data_path, transform=transform)
     plt.show()

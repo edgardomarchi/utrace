@@ -107,7 +107,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
         uqs = []
         for C in classifier.classes_:
-            uqs.append(UncertaintyQuantifier(model=classifier, classes=[C]))
+            uqs.append(UncertaintyQuantifier(model=classifier, N=20000, classes=[C]))
 
         CAL_BATCH_SIZE = BATCH_SIZE
         TUNE_BATCH_SIZE = BATCH_SIZE
@@ -123,13 +123,13 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
         match model_name:
             case 'ImageClassifierCNN':
-                # noises = np.arange(0, 2.5, 0.5)
-                noises = np.arange(0, 2.5, 0.25)    # AWGN
+                noises = np.arange(0, 2.5, 0.25)
+                # noises = np.arange(0, 2.5, 0.25)  # AWGN
                 # noises = np.arange(0, 1.0, 0.1)   # RandomPerspective
                 # noises = np.arange(0, 500.0, 50)  # ElasticTransform
             case 'ImageClassifierLinear':
-                # noises = np.arange(0, 5, 1.0)
-                noises = np.arange(0, 5, 0.5)       # AWGN
+                noises = np.arange(0, 5, 0.5)
+                # noises = np.arange(0, 5, 1)       # AWGN
                 # noises = np.arange(0, 1.0, 0.1)   # RandomPerspective
                 # noises = np.arange(0, 500.0, 50)  # ElasticTransform
             case _:
@@ -141,7 +141,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         level1_cols = ['U', r'$\sigma_U$', 'U_E', r'$\sigma_{U_E}$']
 
         column_index = pd.MultiIndex.from_product([level0_cols, level1_cols],
-                                                    names=['Classes', 'Uncertainty'])
+                                                   names=['Classes', 'Uncertainty'])
 
         data_df = pd.DataFrame(index=noises, columns=column_index)
         data_df.index.name = 'Noises'
@@ -180,7 +180,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                                                                             #RandomPerspective(noise, 1),
                                                                             #ElasticTransform(noise),
                                                                             ]))
-                whole_data_loader = DataLoader(wholeDataset, batch_size=BATCH_SIZE, shuffle=True)
+                whole_data_loader = DataLoader(wholeDataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
 
                 correct_pix = np.zeros_like(classifier.classes_)
                 total_pix = np.zeros_like(classifier.classes_)
@@ -202,9 +202,9 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 logger.info("Estimating uncertainties with noise: %f.", noise)
                 cal_dataset, tune_dataset, test_dataset = random_split(wholeDataset, splits)
 
-                calDataLoader = DataLoader(cal_dataset, batch_size=CAL_BATCH_SIZE, shuffle=True)
-                tuneDataLoader = DataLoader(tune_dataset, batch_size=TUNE_BATCH_SIZE, shuffle=True)
-                testDataLoader = DataLoader(test_dataset, batch_size=TEST_BATCH_SIZE, shuffle=True)
+                calDataLoader = DataLoader(cal_dataset, batch_size=CAL_BATCH_SIZE, shuffle=True, num_workers=4)
+                tuneDataLoader = DataLoader(tune_dataset, batch_size=TUNE_BATCH_SIZE, shuffle=True, num_workers=4)
+                testDataLoader = DataLoader(test_dataset, batch_size=TEST_BATCH_SIZE, shuffle=True, num_workers=4)
 
                 logger.debug("Length of Calibration set: %d", len(calDataLoader.dataset))  #type: ignore
                 logger.debug("Length of Tuning set: %d", len(tuneDataLoader.dataset))  #type: ignore
@@ -218,7 +218,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                     alphas_: list[float] = []
                     U_: list[float] = []
                     for X_tune, y_tune in tuneDataLoader:
-                        U, alpha = uqs[C].get_uncertainty(X_tune, y_tune) #, max_iters=IT)
+                        U, alpha = uqs[C].get_uncertainty_jit(X_tune, y_tune) #, max_iters=IT)
                         alphas_.append(alpha)
                         U_.append(U)
                     alphas = np.array(alphas_)
@@ -231,7 +231,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                     # Test
                     logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
                     batch_coverages, batch_setsizes = [], []
-                    uqs[C].alpha = U
+                    uqs[C].alpha = alpha
                     for X_n, y_n in testDataLoader:
                         y_p, y_s = uqs[C].predict(X_n, force_non_empty_sets=False)
                         
@@ -242,7 +242,10 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                         y_p = y_p[valid_indexes]
                         y_s = y_s[valid_indexes]
 
-                        batch_coverages.append(get_coverage(y_n.numpy(), y_s))
+                        i_cov = get_coverage(y_n.numpy(), y_s)
+                        if i_cov >= 0.99:
+                            print(f'!!! Coverage of: {i_cov}!!!, Noise: {noise}, Class: {C}, Iter: {iteration}')
+                        batch_coverages.append(i_cov)
                         batch_setsizes.append(y_s.sum(axis=1).max())
 
                     coverage = np.array(batch_coverages).mean()

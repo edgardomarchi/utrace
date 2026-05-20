@@ -34,6 +34,7 @@ dependencies = [
     "pandas",
     "tqdm",
     "flax",
+    "python-dotenv",
 ]
 
 default-optional-dependency-keys = [
@@ -209,7 +210,6 @@ addopts = """
 --no-cov-on-fail
 """
 
-python = "^3.13"
 cache_dir = ".cache/pytest/"
 
 markers = []

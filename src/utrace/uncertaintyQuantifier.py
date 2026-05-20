@@ -2,29 +2,158 @@
 """
 
 import logging
-from typing import Literal, Union
+from typing import Literal, Union, Callable
 
 import numpy as np
+from jax import numpy as jnp
+from jax import jit, lax
+
+from functools import partial
 
 from .scores import aps, aps_cal, lac, lac_cal
 from .utils import flatten_batch
+from .utils.tensors import to_jax
+
+from .config import USE_JAX
+
 
 logger = logging.getLogger(__name__)
 
+@partial(jit, static_argnames=["score_fn"])
+def _predict_sets(y_pred_proba:jnp.ndarray, q_hat: np.float64, 
+                  score_fn: Callable) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Predicts the class labels and sets of labels for the input data X.
+
+    Parameters
+    ----------
+    y_pred_proba : np.ndarray
+        Predicted probabilities for each class.
+    q_hat : jnp.float64
+        Calibrated quantile level.
+    score_fn : Callable
+        The scoring function to use.
+
+    Returns
+    -------
+    y_pred : jnp.ndarray
+        The predicted class labels.
+    y_sets : jnp.ndarray
+        The sets of labels as a boolean array.
+    """
+    y_pred = jnp.argmax(y_pred_proba, axis=1)  # -1 for tensorflow
+    scores = score_fn(y_pred_proba)
+    y_sets = scores <= q_hat
+    
+    return y_pred, y_sets
+
+@partial(jit, static_argnames=["score_fn"])
+def get_U(y: jnp.ndarray, y_pred_proba: jnp.ndarray, 
+          q_hat: np.float64, alpha: np.float64,
+          score_fn: Callable):
+    
+    _, prediction_sets = _predict_sets(y_pred_proba, q_hat, score_fn=score_fn)
+
+    is_covered = prediction_sets[jnp.arange(len(y)), y]
+    set_sizes  = prediction_sets.sum(axis=1)
+    
+    # --- p1_hat = E[1/k | success] ---
+    mask_succ  = is_covered & (set_sizes > 0)
+    safe_sizes = jnp.where(mask_succ, set_sizes, 1)
+    inv_succ   = jnp.where(mask_succ, 1.0 / safe_sizes, 0.0)
+    n_succ     = mask_succ.sum()
+    p1_hat     = inv_succ.sum() / n_succ
+
+    return p1_hat * (1 - alpha)
+
+
+@jit
+def _q_hat_from_alpha(conformity_scores: jnp.ndarray,
+                      alpha: jnp.ndarray) -> jnp.ndarray:
+    """conformity_scores already comes trimmed to N valid entries."""
+    N = conformity_scores.shape[0]  # shuld be static
+    q_level = jnp.ceil((N + 1) * (1.0 - alpha)) / N
+    q_level = jnp.minimum(q_level, 1.0)
+    return jnp.quantile(conformity_scores, q_level, method='higher')
+
+@partial(jit, static_argnames=["score_fn", "max_iters"])
+def _search_uncertainty(
+    y: jnp.ndarray,                  # (n,) labels filtradas
+    y_pred_proba: jnp.ndarray,       # (n, K) probabilidades
+    conformity_scores: jnp.ndarray,  # (m,) scores de calibración
+    max_iters: int,
+    score_fn: Callable,
+):
+    # ------------------------------------------------------------
+    # Estado del loop: una tupla que se "lleva" entre iteraciones
+    #   alpha   : el alfa actual
+    #   delta   : el paso actual del binary search
+    #   setsize : tamaño medio de los conjuntos en la última iter útil
+    #   EC_yt   : E[1/k | success] en la última iter útil
+    #   frozen  : True una vez que alpha se salió de [0, 1]
+    # ------------------------------------------------------------
+    init_state = (
+        jnp.asarray(1.0),    # alpha
+        jnp.asarray(1.0),    # delta
+        jnp.asarray(0.0),    # setsize
+        jnp.asarray(0.0),    # EC_yt
+        jnp.asarray(False),  # frozen
+    )
+
+    def body(i, state):
+        alpha, delta, setsize, EC_yt, frozen = state
+
+        # --- 1. proponer la actualización -------------------------
+        delta_new      = delta / 2.0
+        sign           = jnp.where(setsize > 1.0, 1.0, -1.0)
+        alpha_proposed = alpha + sign * delta_new
+
+        # --- 2. ¿se sale de rango? ¿congelamos? -------------------
+        out_of_bounds = (alpha_proposed < 0.0) | (alpha_proposed > 1.0)
+        will_freeze   = frozen | out_of_bounds
+
+        # Si frozen o se sale, no aplicamos la propuesta
+        alpha_next = jnp.where(will_freeze, alpha, alpha_proposed)
+        delta_next = jnp.where(will_freeze, delta, delta_new)
+
+        # --- 3. predict + métricas a alpha_next -------------------
+        q_hat = _q_hat_from_alpha(conformity_scores, alpha_next)
+        _, prediction_sets = _predict_sets(y_pred_proba, q_hat, score_fn=score_fn)
+
+        set_sizes    = prediction_sets.sum(axis=1)
+        setsize_curr = jnp.nanmean(set_sizes.astype(jnp.float64))
+
+        is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
+        mask_succ  = is_covered & (set_sizes > 0)
+        safe_sizes = jnp.where(mask_succ, set_sizes, 1)
+        inv_succ   = jnp.where(mask_succ, 1.0 / safe_sizes, 0.0)
+        n_succ     = mask_succ.sum()
+        EC_yt_curr = inv_succ.sum() / jnp.maximum(n_succ, 1)
+
+        # --- 4. si congelamos, conservamos los valores anteriores -
+        setsize_next = jnp.where(will_freeze, setsize, setsize_curr)
+        EC_yt_next   = jnp.where(will_freeze, EC_yt,   EC_yt_curr)
+
+        return (alpha_next, delta_next, setsize_next, EC_yt_next, will_freeze)
+
+    alpha_f, _, _, EC_yt_f, _ = lax.fori_loop(0, max_iters, body, init_state)
+
+    U = 1.0 - EC_yt_f * (1.0 - alpha_f)
+    return alpha_f, U
 
 class UncertaintyQuantifier:
-    """Model wrapper for uncertainty quantification using U-TraCE.
+    """Wrapper for uncertainty quantification using U-TraCE.
 
     Parameters
     ----------
     model : Any
-        A trained model with a `predict_proba` method.
+        (deprecated) A trained model with a `predict_proba` method.
     classes : Union[list[int], np.ndarray, None], optional
         List or array of class labels
     score : Literal['lac','aps'], optional
         The scoring function to use, by default 'lac'
     """
     def __init__(self, model,
+                 N: int = 1000,
                  classes:Union[list[int], np.ndarray, None]=None,
                  score:Literal['lac','aps']='lac'):
         self.model = model
@@ -39,18 +168,23 @@ class UncertaintyQuantifier:
             case _:
                 self.cal_score_ = lac_cal
                 self.score_ = lac
+        self._N = 0 #TODO: Count the number of trully used samples
+        self._max_N = N
         self.reset()
+
 
 
     def reset(self):
         """Resets the scoores and alpha."""
-        self.conformity_scores_ = np.empty(0)
+        self.conformity_scores_ = np.empty(self._max_N)
         self.__alpha:np.float64 = np.float64('nan')
         self.__q_hat:np.float64 = np.float64('nan')
 
-        self._class_alphas:np.ndarray = np.zeros_like(self.classes, dtype=np.float64) if self.classes is not None else np.empty(0)
-        self._class_q_hats:np.ndarray = np.zeros_like(self.classes, dtype=np.float64) if self.classes is not None else np.empty(0)
-        self._class_scores:list[np.ndarray] = [np.empty(0) for _ in self.classes] if self.classes is not None else []
+        self._class_alphas:np.ndarray = np.zeros_like(self.classes, dtype=np.float64) if self.classes is not None else np.empty(self._max_N)
+        self._class_q_hats:np.ndarray = np.zeros_like(self.classes, dtype=np.float64) if self.classes is not None else np.empty(self._max_N)
+        self._class_scores:list[np.ndarray] = [np.empty(self._max_N) for _ in self.classes] if self.classes is not None else []
+
+        self._N = 0
 
         logger.debug("UQ reset.")
 
@@ -63,16 +197,18 @@ class UncertaintyQuantifier:
     @alpha.setter
     def alpha(self, alpha: np.float64):
         """Sets the alpha value and calculates the q_hat level based on the current conformity scores."""
-        n = self.conformity_scores_.shape[0]
-        if n == 0:
+        # n = self.conformity_scores_.shape[0]
+        if self._N == 0:
             raise ValueError("The model must be calibrated before setting alpha.")
         
-        q_level = np.divide(np.ceil((n + 1) * (1 - alpha)), n, dtype=np.float64)
+        q_level = np.divide(np.ceil((self._N + 1) * (1 - alpha)), self._N, dtype=np.float64)
         if q_level > 1.0:
-            logger.warning("'q_level' > 1.0, setting to 1.0 - Scores size: %d (< 1/alpha???) - alpha %f", n, alpha)
+            logger.warning("'q_level' > 1.0, setting to 1.0 - Scores size: %d (< 1/alpha???) - alpha %f", self._N, alpha)
             q_level = np.float64(1.0)
         self.__alpha = np.float64(alpha)
-        self.__q_hat = np.nanquantile(self.conformity_scores_, q_level, method='higher')
+        logger.debug("'q_level' set to %f for alpha %f and N %d", q_level, self.__alpha, self._N)
+        logger.debug("Conformity scores: %s", self.conformity_scores_[:self._N])
+        self.__q_hat = np.nanquantile(np.array(self.conformity_scores_)[:self._N], q_level, method='higher')
         logger.debug("'q_hat' set to %f for alpha %f", self.__q_hat, self.__alpha)     
     
 
@@ -89,34 +225,53 @@ class UncertaintyQuantifier:
             For batched calibration; concatenates new scores with prvious ones. By default False
         """
         logger.debug('Calibrating with input shape: %s', X.shape)
+
         y = flatten_batch(y).ravel().numpy().astype(int)  # added .numpy() #TODO: generalize API
-        
-        logger.debug('Fitting with %d samples', len(y))
+        num_samples = len(y)
+        logger.debug('Fitting with %d samples', num_samples)
         y_pred_proba = self.model.predict_proba(X)
 
-        if batched:
-            # If batched calibration, we need to concatenate the conformity scores for each batch
-            self.conformity_scores_ = np.concatenate([self.conformity_scores_,
-                                                      self.cal_score_(y, y_pred_proba)])
-        else:
-            self.conformity_scores_ = self.cal_score_(y, y_pred_proba)
-        
-        logger.debug("Conformity scores shape: %s", self.conformity_scores_.shape)
-        
+        if USE_JAX:
+            y = to_jax(y)
+            y_pred_proba = to_jax(y_pred_proba)
+
         # Classes
         if self.classes is not None:
+            total_scores = 0
             for c_idx, C in enumerate(self.classes):
                 logger.debug("Calibrating for class %d", C)
+                
+                scores = self.cal_score_(y[y==C], y_pred_proba[y==C])
+                num_scores = len(scores)
                 if batched:
                     self._class_scores[c_idx] = np.sort(
-                                                np.concatenate([self._class_scores[c_idx],
-                                                                self.cal_score_(y[y==C], y_pred_proba[y==C])]))
+                                                np.concatenate([self._class_scores[c_idx][:self._N],
+                                                                np.array(scores)]
+                                                ))
                 else:
-                    self._class_scores[c_idx] = np.sort(self.cal_score_(y[y==C], y_pred_proba[y==C]))
+                    self._class_scores[c_idx] = np.sort(np.array(scores))
                 if self._class_scores[c_idx].size == 0:
                     logger.warning("No scores for class %d after calibration.", C)
-            self.conformity_scores_ = np.sort(np.concatenate(self._class_scores))
+                total_scores += num_scores
+                
+            logger.debug("Total conformity scores shape before class calibration: %s", self.conformity_scores_.shape)
+            self.conformity_scores_[:self._N+total_scores] = np.sort(np.concatenate(self._class_scores))
             logger.debug("Total conformity scores shape after class calibration: %s", self.conformity_scores_.shape)
+
+        else:   
+            scores = self.cal_score_(y, y_pred_proba)
+            num_scores = len(scores)
+            if batched:
+                # If batched calibration, we need to concatenate the conformity scores for each batch
+                self.conformity_scores_[self._N:self._N+num_scores] = scores[:]
+            else:
+                self.conformity_scores_ = scores
+            
+            logger.debug("Conformity scores shape: %s, used: %d", self.conformity_scores_.shape, self._N)
+
+        #Update number of scores
+        self._N += num_scores if batched else 0
+
 
 
     def predict(self, X:np.ndarray, force_non_empty_sets:bool=False) -> tuple[np.ndarray, np.ndarray]:
@@ -136,34 +291,12 @@ class UncertaintyQuantifier:
         y_sets : np.ndarray
             The sets of labels as a boolean array.
         """
-        y_pred_proba = self.model.predict_proba(X).cpu().numpy()  # added .cpu().numpy() #TODO: generalize API
-        return self._predict_sets(y_pred_proba, force_non_empty_sets=force_non_empty_sets)
+        y_pred_proba = self.model.predict_proba(X) # added .cpu().numpy
+        y_pred_proba = to_jax(y_pred_proba)
+        y_pred, y_sets = _predict_sets(y_pred_proba, self.__q_hat, score_fn=self.score_)
+
+        return np.array(y_pred), np.array(y_sets)
     
-
-    def _predict_sets(self, y_pred_proba:np.ndarray,
-                      force_non_empty_sets:bool=False) -> tuple[np.ndarray, np.ndarray]:
-        """Predicts the class labels and sets of labels for the input data X.
-
-        Parameters
-        ----------
-        y_pred_proba : np.ndarray
-            Predicted probabilities for each class.
-        force_non_empty_sets : bool, optional
-            If True, ensures that the predicted class is included in the set, by default False.
-
-        Returns
-        -------
-        y_pred : np.ndarray
-            The predicted class labels.
-        y_sets : np.ndarray
-            The sets of labels as a boolean array.
-        """
-        y_pred = np.argmax(y_pred_proba, axis=1)  # -1 for tensorflow TODO: geralize API
-        scores = self.score_(y_pred_proba)
-        y_sets = scores <= self.__q_hat
-        if force_non_empty_sets:
-            y_sets[np.arange(len(y_pred)), y_pred] = True  # Ensure that the predicted class is in the set
-        return y_pred, y_sets
 
 
     def get_uncertainty_opt(self, X, y) -> tuple[np.float64, np.float64]:
@@ -186,60 +319,37 @@ class UncertaintyQuantifier:
         
         y_pred_proba = self.model.predict_proba(X)
         y = y.numpy().flatten().astype(int)
-        logger.debug(" Computing model uncertainty with: 'X' shape: %s, 'y' shape: %s\n, class(es): %s",
-                     X.shape, y.shape, self.classes)
+        logger.debug(" Computing model uncertainty with: 'X' shape: %s, 'y' shape: %s\n, class(es): %s, N: %d",
+                     X.shape, y.shape, self.classes, self._N)
 
-        if self.classes is not None:
-            K = len(self.model.classes_)
+        # if self.classes is not None:
+        #     K = len(self.model.classes_)
             
-        N = len(self.conformity_scores_)
-        Ns = len(y)
 
         if self.classes is not None:
             valid_indexes = np.isin(y, np.array(self.classes))  #type: ignore
         else:
             valid_indexes = np.ones(len(y), dtype=bool)
 
+        if USE_JAX:
+            y = to_jax(y[valid_indexes])
+            y_pred_proba = to_jax(y_pred_proba[valid_indexes])
+
         best_alpha = np.float64('nan')
         
         max_lower_bound = np.float64(0.0) # This represents P(y=y_t), or 1 - U
 
-        for j,score in enumerate(self.conformity_scores_):
+        for j,score in enumerate(self.conformity_scores_[:self._N]):
             
             q_hat = score
-            alpha = 1 - (j + 1) / (N + 1)
+            alpha = 1 - (j + 1) / (self._N + 1)
 
-            prediction_sets = (y_pred_proba.cpu().numpy() >= (1 - q_hat))
-
-            is_covered = prediction_sets[np.arange(Ns), y]
-        
-            success_indices = np.where(is_covered)[0]
-            failure_indices = np.where(~is_covered)[0]
-        
-            n_succ = len(success_indices)
-            n_fail = len(failure_indices)
-
-            # --- p1_hat: E[1/k | success] ---
-            p1_hat = np.float64(0.0)
-            if n_succ > 0:
-                set_sizes_succ = prediction_sets[success_indices].sum(axis=1)
-                p1_hat = np.mean(1.0 / set_sizes_succ)
-
-            # --- p2_hat: E[(1/K)δ_k,0 | fail] ---
-            # This is not used since the assumption of random fail does not hold in practice (*)
-            p2_hat = np.float64(0.0)
-            if n_fail > 0:
-                set_sizes_fail = prediction_sets[failure_indices].sum(axis=1)
-                n_fail_empty = np.sum(set_sizes_fail == 0)
-                p2_hat = (1.0 / K) * (n_fail_empty / n_fail)
-
-            lower_bound = p1_hat * (1 - alpha)  # + p2_hat * (alpha - 1/(N + 1)) (*)
+            lower_bound = get_U(y, y_pred_proba, q_hat, alpha, self.score_)
 
             # Update bound and alpha if better
             if lower_bound > max_lower_bound:
                 max_lower_bound = lower_bound
                 best_alpha = np.float64(alpha)
-
 
         self.alpha = best_alpha
 
@@ -519,3 +629,21 @@ class UncertaintyQuantifier:
         U = 1 - p_tc
         logger.debug("Model U: %f - EC_yt: %f.", U, EC_yt)
         return U, self.alpha
+
+
+    def get_uncertainty_jit(self, X, y, max_iters=30):
+        # ---- host: preprocesamiento ----
+        y_pred_proba = self.model.predict_proba(X).cpu().numpy()
+        y = y.numpy().flatten().astype(int)
+        valid = (np.isin(y, self.classes) if self.classes is not None
+                else np.ones_like(y, dtype=bool))
+        if not valid.any():
+            return np.float64('nan'), np.float64('nan')
+
+        y_f = jnp.asarray(y[valid])
+        p_f = jnp.asarray(y_pred_proba[valid])
+        cs  = jnp.asarray(self.conformity_scores_[:self._N])
+
+        # ---- device: búsqueda trazada ----
+        alpha, U = _search_uncertainty(y_f, p_f, cs, max_iters, self.score_)
+        return float(U), float(alpha)

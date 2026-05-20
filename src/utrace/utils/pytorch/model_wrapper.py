@@ -8,7 +8,7 @@ from ..utils import flatten_batch
 
 
 class Pytorch_wrapper(nn.Module, BaseEstimator):
-    def __init__(self, model, classes: np.ndarray=np.arange(4), device: str = "cpu"):
+    def __init__(self, model, classes: np.ndarray=np.arange(4), device: str|torch.device = "cpu"):
         super().__init__()
         self.model = model
         self.__is_fitted = True

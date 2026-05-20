@@ -8,3 +8,8 @@ except PackageNotFoundError:
 
 del PackageNotFoundError
 del version
+
+from .config import USE_JAX
+if USE_JAX:
+    import jax
+    jax.config.update("jax_enable_x64", True)
