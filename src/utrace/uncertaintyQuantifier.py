@@ -213,7 +213,7 @@ class UncertaintyQuantifier:
     
 
     def calibrate(self, X, y, batched:bool=False):
-        """Calibrates the conformal predictor with the given data.
+        """Legacy entry point: Calibrates the conformal predictor with the given data.
 
         Parameters
         ----------
@@ -234,7 +234,24 @@ class UncertaintyQuantifier:
         if USE_JAX:
             y = to_jax(y)
             y_pred_proba = to_jax(y_pred_proba)
+        
+        self._calibrate_impl(y_pred_proba, y, batched)
 
+
+    def _calibrate_impl(self, y_pred_proba, y, batched: bool = False):
+        """Calibrates the conformal predictor with the given data.
+
+        Parameters
+        ----------
+        y_pred_proba : np.ndarray
+            Predicted probabilities for calibration.
+        y : np.ndarray
+            Target labels for calibration.
+        batched : bool, optional
+            For batched calibration; concatenates new scores with prvious ones. By default False
+        """
+        num_scores = 0
+        
         # Classes
         if self.classes is not None:
             total_scores = 0
@@ -271,6 +288,7 @@ class UncertaintyQuantifier:
 
         #Update number of scores
         self._N += num_scores if batched else 0
+
 
 
 
@@ -356,172 +374,6 @@ class UncertaintyQuantifier:
         logger.debug("Best alpha: %f - Min upper uncertainty bound: %f\n", best_alpha, 1-max_lower_bound)
         return 1-max_lower_bound, best_alpha
     
-
-    def get_uncertainty_trn(self, X, y, max_iters=20) -> tuple[np.float64, np.float64]:
-        """Calculates the uncertainty of the model predictions for the wrapper classes.
-        
-        This method uses a ternary search-like approach to find the optimal alpha value
-        that yields the average target set size of the predicted sets.
-        
-        Parameters
-        ----------
-        X : np.ndarray
-            Input data for prediction.
-        y : np.ndarray
-            Target labels for prediction.
-        max_iters : int, optional
-            Maximum number of iterations for the search, by default 20
-        Returns
-        -------
-        U, alpha : float
-            The uncertainty of the model predictions and the alpha of the CP found.
-        """
-        
-        y_pred_proba = self.model.predict_proba(X).cpu().numpy() #TODO: generalize API
-        y = y.numpy().flatten().astype(int)
-        logger.debug("Computing model uncertainty with: 'X' shape: %s, 'y' shape: %s\n, for class(es): %s",
-                     X.shape, y.shape, self.classes)
-
-        if self.classes is not None:
-            valid_indexes = np.isin(y, np.array(self.classes))  #type: ignore
-        else:
-            valid_indexes = np.ones(len(y), dtype=bool)
-
-        y_f = y[valid_indexes]
-
-        if not valid_indexes.any():
-            logger.warning("No valid indexes found for class(es) %s", self.classes)
-            return np.float64('nan'), np.float64('nan')
-        logger.debug("Valid indexes shape: %s", valid_indexes.shape)
-
-        N=len(self.conformity_scores_)
-        num_classes = len(self.model.classes_)
-        Ns = len(y_f)
-
-        alpha_l = np.float64(0.0)
-        alpha_h = np.float64(1.0)
-        p_tc_l = np.float64(0.0)
-        p_tc_h = np.float64(0.0)
-        EC_nyt_h = np.float64(0.0)
-        EC_nyt_l = np.float64(0.0)
-        EC_yt_l = np.float64(0.0)
-        EC_yt_h = np.float64(0.0)
-
-        EC_yt = np.float64(0.0)
-        alpha = np.float64(1.0)
-
-        setsizes_l, setsizes_h = np.empty(Ns), np.empty(Ns)
-        errors_l, errors_h = 0, 0
-        empty_l, empty_h = 0, 0
-
-
-        for it in range(max_iters):
-            
-            new_interval_len = (alpha_h - alpha_l) / 3
-
-            al = alpha_l + new_interval_len
-            ah = alpha_h - new_interval_len
-
-            # Predict to evaluate the average set size
-            
-            # Low alpha
-            ###########
-            self.alpha = al
-            y_p_l, y_s_l = self._predict_sets(y_pred_proba, force_non_empty_sets=False)
-
-            # Filter out the ouputs that are not in the classes
-            y_p_l = y_p_l[valid_indexes]
-            y_s_l = y_s_l[valid_indexes]
-
-            # Data masks:
-            mask_l = y_s_l[np.arange(len(y_s_l)), y_f]  # y_t in C(x_t)
-            mask_n_l = np.logical_not(mask_l)           # y_t not in C(x_t)
-
-            setsizes_l = y_s_l[mask_l].sum(axis=1)
-            try:
-                logger.debug("setsizes_l shape: %s, min: %f, max: %f", setsizes_l.shape, setsizes_l.min(), setsizes_l.max())
-            except ValueError:
-                logger.warning("setsizes_l shape: %s", setsizes_l.shape)
-            miss_setsizes_l = y_s_l[mask_n_l].sum(axis=1)
-            
-            errors_l = len(miss_setsizes_l)
-            empty_l = len(miss_setsizes_l[miss_setsizes_l == 0])
-
-
-            # High alpha
-            ############
-            self.alpha = ah
-            y_p_h, y_s_h = self._predict_sets(y_pred_proba, force_non_empty_sets=False)
-
-            # Filter out the ouputs that are not in the classes
-            y_p_h = y_p_h[valid_indexes]
-            y_s_h = y_s_h[valid_indexes]
-
-
-            mask_h = y_s_h[np.arange(len(y_s_h)), y_f]  # y_t in C(x_t)
-            mask_n_h = np.logical_not(mask_h)           # y_t not in C(x_t)
-
-            setsizes_h = y_s_h[mask_h].sum(axis=1)
-            try:
-                logger.debug("setsizes_h shape: %s, min: %f, max: %f", setsizes_h.shape, setsizes_h.min(), setsizes_h.max())
-            except ValueError:
-                logger.warning("setsizes_h shape: %s", setsizes_h.shape)
-            miss_setsizes_h = y_s_h[mask_n_h].sum(axis=1)
-
-            errors_h = len(miss_setsizes_h)
-            empty_h = len(miss_setsizes_h[miss_setsizes_h == 0])
-            
-            try:
-                EC_yt_l = np.nanmean(1/setsizes_l, dtype=np.float64)
-                EC_nyt_l = np.float64(empty_l / errors_l) / num_classes if errors_l > 0 else np.float64(0.0)
-                logger.debug("EC_yt_l: %f - EC_nyt_l: %f - Errors: %d - Empty: %d", EC_yt_l, EC_nyt_l, errors_l, empty_l)
-
-                EC_yt_h = np.nanmean(1/setsizes_h, dtype=np.float64)
-                EC_nyt_h = np.float64(empty_h / errors_h) / num_classes if errors_h > 0 else np.float64(0.0)
-                logger.debug("EC_yt_h: %f - EC_nyt_h: %f - Errors: %d - Empty: %d\n", EC_yt_h, EC_nyt_h, errors_h, empty_h)
-
-            except ValueError:
-                logger.error("Error calculating E[1/|C| | y_t in C(x_t)]:\n"
-                             "Input shape: %s - Output sets shape: %s - "
-                             "Valid indexes shape: %s.\n",
-                             y.shape, y_s_l.shape, valid_indexes.shape)
-                break
-
-            p_tc_l = EC_yt_l*(1-al)  #+ EC_nyt_l*(al - 1/(N+1)) #(*)
-            p_tc_h = EC_yt_h*(1-ah)  #+ EC_nyt_h*(ah - 1/(N+1)) #(*)
-
-            logger.debug("p_tc_l: %f - p_tc_h: %f - al: %f - ah: %f", p_tc_l, p_tc_h, al, ah)
-
-            if p_tc_l >= p_tc_h:
-                alpha_h = ah
-            else:
-                alpha_l = al
-
-            logger.debug("Iteration %d - alpha_h: %f - alpha_l: %f\n", it, alpha_h, alpha_l)
-
-        alpha = (alpha_l + alpha_h) / 2
-        self.alpha = alpha
-
-        y_p, y_s = self._predict_sets(y_pred_proba, force_non_empty_sets=False)
-        # Filter out the ouputs that are not in the classes
-        y_p = y_p[valid_indexes]
-        y_s = y_s[valid_indexes]
-        # Data masks:
-        mask = y_s[np.arange(len(y_s)), y_f]  # y_t in C(x_t)
-        mask_n = np.logical_not(mask)         # y_t not in C(x_t)
-        setsizes = y_s[mask].sum(axis=1)
-        miss_setsizes = y_s[mask_n].sum(axis=1)
-
-        errors = len(miss_setsizes)
-        empty = len(miss_setsizes[miss_setsizes == 0])
-
-        p1 = np.mean(1/setsizes, dtype=np.float64)
-        p2 = np.float64(empty / errors) / num_classes if errors > 0 else np.float64(0.0)
-        logger.debug("p1: %f - p2: %f - Errors: %d - Empty: %d", p1, p2, errors, empty)
-
-        U = 1 - p1*(1-alpha) # - p2*(alpha - 1/(N+1))) (*)
-        
-        return U, alpha
 
     def get_uncertainty(self, X, y, max_iters = 30) -> tuple[np.float64, np.float64]:
         """Calculates the uncertainty of the model predictions.
@@ -632,18 +484,22 @@ class UncertaintyQuantifier:
 
 
     def get_uncertainty_jit(self, X, y, max_iters=30):
-        # ---- host: preprocesamiento ----
         y_pred_proba = self.model.predict_proba(X).cpu().numpy()
         y = y.numpy().flatten().astype(int)
+        return self._get_uncertainty_jit_impl(y_pred_proba, y, max_iters)
+    
+    
+    def _get_uncertainty_jit_impl(self, y_pred_proba, y, max_iters=30):
+        """Core uncertainty estimation logic.
+        """
         valid = (np.isin(y, self.classes) if self.classes is not None
                 else np.ones_like(y, dtype=bool))
         if not valid.any():
             return np.float64('nan'), np.float64('nan')
-
+    
         y_f = jnp.asarray(y[valid])
         p_f = jnp.asarray(y_pred_proba[valid])
         cs  = jnp.asarray(self.conformity_scores_[:self._N])
-
-        # ---- device: búsqueda trazada ----
+    
         alpha, U = _search_uncertainty(y_f, p_f, cs, max_iters, self.score_)
         return float(U), float(alpha)
