@@ -176,7 +176,7 @@ class UncertaintyQuantifier:
 
     def reset(self):
         """Resets the scoores and alpha."""
-        self.conformity_scores_ = np.empty(self._max_N)
+        self.conformity_scores_ = jnp.full(self._max_N, jnp.inf, dtype=jnp.float64)
         self.__alpha:np.float64 = np.float64('nan')
         self.__q_hat:np.float64 = np.float64('nan')
 
