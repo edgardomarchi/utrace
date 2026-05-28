@@ -2,6 +2,7 @@
 """
 
 import logging
+import warnings
 from typing import Literal, Union, Callable
 
 import numpy as np
@@ -148,11 +149,35 @@ class UncertaintyQuantifier:
     score : Literal['lac','aps'], optional
         The scoring function to use, by default 'lac'
     """
-    def __init__(self, model,
-                 N: int = 1000,
-                 classes:Union[list[int], np.ndarray, None]=None,
-                 score:Literal['lac','aps']='lac',
-                 max_batch_size=None):
+    def __init__(self, N: int = 1000,
+                 classes: Union[list[int], np.ndarray, None] = None,
+                 score: Literal['lac', 'aps'] = 'lac',
+                 max_batch_size: int = None,
+                 model=None):
+        """Wrapper for uncertainty quantification using U-TraCE.
+        
+        Parameters
+        ----------
+        N : int, default=1000
+            Maximum number of calibration scores to retain.
+        classes : list[int] or array, optional
+            Class labels of interest.
+        score : {'lac', 'aps'}, default='lac'
+            Scoring function for nonconformity.
+        max_batch_size : int, optional
+            Fixed padding size for input batches. See _get_uncertainty_jit_impl.
+        model : object, optional
+            [DEPRECATED] A model with `predict_proba` method. Pass only if using
+            the legacy API (calibrate(X), predict(X), get_uncertainty_jit(X)).
+            Prefer the *_from_proba methods which accept precomputed probabilities.
+        """
+        if model is not None:
+            warnings.warn(
+                "Passing `model` to UncertaintyQuantifier is deprecated. "
+                "The class will not accept a model in a future version. "
+                "Compute probabilities externally and use the *_from_proba methods.",
+                DeprecationWarning, stacklevel=2,
+            )
         self.model = model
         self.classes = classes
         self._max_batch_size = max_batch_size
@@ -211,32 +236,53 @@ class UncertaintyQuantifier:
         np.asarray(self.conformity_scores_[:self._N]), q_level, method='higher')
         logger.debug("'q_hat' set to %f for alpha %f", self.__q_hat, self.__alpha)     
     
-
-    def calibrate(self, X, y, batched:bool=False):
-        """Legacy entry point: Calibrates the conformal predictor with the given data.
-
+    def calibrate_from_proba(self, y_pred_proba, y, batched: bool = False):
+        """Calibrate the conformal predictor with precomputed probabilities.
+        
         Parameters
         ----------
-        X : np.ndarray
-            Input features for calibration.
-        y : np.ndarray
-            Target labels for calibration.
-        batched : bool, optional
-            For batched calibration; concatenates new scores with prvious ones. By default False
-        """
-        logger.debug('Calibrating with input shape: %s', X.shape)
-
-        y = flatten_batch(y).ravel().numpy().astype(int)  # added .numpy() #TODO: generalize API
-        num_samples = len(y)
-        logger.debug('Fitting with %d samples', num_samples)
-        y_pred_proba = self.model.predict_proba(X)
-
-        if USE_JAX:
-            y = to_jax(y)
-            y_pred_proba = to_jax(y_pred_proba)
+        y_pred_proba : array-like, shape (n_samples, n_classes)
+            Predicted class probabilities. Accepts any array type that implements
+            DLPack (jax, numpy, torch, tensorflow, ...). Zero-copy when possible.
+        y : array-like, shape (n_samples,)
+            Integer class labels.
+        batched : bool, default=False
+            If True, append to existing calibration scores instead of replacing.
         
-        self._calibrate_impl(y_pred_proba, y, batched)
+        Notes
+        -----
+        This is the preferred API. The legacy `calibrate(X, y, ...)` method that
+        takes raw input X and runs a model internally is deprecated and will be
+        removed in a future version.
+        """
+        y_pred_proba = to_jax(y_pred_proba)
+        y_arr = np.asarray(y).astype(int)
+        if USE_JAX:
+            y_arr = to_jax(y_arr)
+        self._calibrate_impl(y_pred_proba, y_arr, batched=batched)
 
+    def calibrate(self, X, y, batched: bool = False):
+        """[DEPRECATED] Calibrate with raw input X (requires self.model to be set).
+        
+        Use calibrate_from_proba(y_pred_proba, y, batched) instead.
+        """
+        warnings.warn(
+            "calibrate(X, y) is deprecated; use calibrate_from_proba(y_pred_proba, y) "
+            "with precomputed probabilities. This method will be removed in a future "
+            "version. See migration guide for details.",
+            DeprecationWarning, stacklevel=2,
+        )
+        if self.model is None:
+            raise ValueError(
+                "Cannot use legacy calibrate(X, ...) without a model. "
+                "Either pass model at construction, or use calibrate_from_proba()."
+            )
+        y_arr = flatten_batch(y).ravel().numpy().astype(int)
+        y_pred_proba = self.model.predict_proba(X)
+        if USE_JAX:
+            y_arr = to_jax(y_arr)
+            y_pred_proba = to_jax(y_pred_proba)
+        self._calibrate_impl(y_pred_proba, y_arr, batched=batched)
 
     def _calibrate_impl(self, y_pred_proba, y, batched: bool = False):
         """Calibrates the conformal predictor with the given data.
@@ -294,35 +340,71 @@ class UncertaintyQuantifier:
             logger.debug("Conformity scores shape: %s, used: %d", self.conformity_scores_.shape, self._N)
 
         #Update number of scores
-        self._N += num_scores if batched else 0
-
-
-
-
-    def predict(self, X:np.ndarray, force_non_empty_sets:bool=False) -> tuple[np.ndarray, np.ndarray]:
-        """Predicts the class labels and sets of labels for the input data X.
-
+        self._N = self._N + num_scores if batched else num_scores
+        
+    def predict_from_proba(self, y_pred_proba, force_non_empty_sets: bool = False) -> tuple[np.ndarray, np.ndarray]:
+        """Predict class labels and prediction sets from precomputed probabilities.
+        
         Parameters
         ----------
-        X : np.ndarray
-            Input data for prediction.
-        force_non_empty_sets : bool, optional
-            If True, ensures that the predicted class is included in the set, by default False.
-
+        y_pred_proba : array-like, shape (n_samples, n_classes)
+            Predicted class probabilities. Accepts any DLPack-compatible array.
+        force_non_empty_sets : bool, default=False
+            If True, ensure the predicted class is always included in the set.
+        
         Returns
         -------
-        y_pred : np.ndarray
-            The predicted class labels.
-        y_sets : np.ndarray
-            The sets of labels as a boolean array.
+        y_pred : np.ndarray, shape (n_samples,)
+            Predicted class labels.
+        y_sets : np.ndarray, shape (n_samples, n_classes)
+            Boolean prediction sets.
         """
-        y_pred_proba = self.model.predict_proba(X) # added .cpu().numpy
         y_pred_proba = to_jax(y_pred_proba)
         y_pred, y_sets = _predict_sets(y_pred_proba, self.__q_hat, score_fn=self.score_)
+        return np.array(y_pred), np.array(y_sets)
 
+
+    def predict(self, X, force_non_empty_sets: bool = False):
+        """[DEPRECATED] Predict from raw input X (requires self.model to be set).
+        
+        Use predict_from_proba(y_pred_proba, force_non_empty_sets) instead.
+        """
+        warnings.warn(
+            "predict(X) is deprecated; use predict_from_proba(y_pred_proba) "
+            "with precomputed probabilities. This method will be removed in a "
+            "future version.",
+            DeprecationWarning, stacklevel=2,
+        )
+        if self.model is None:
+            raise ValueError("Cannot use legacy predict(X) without a model.")
+        y_pred_proba = self.model.predict_proba(X)
+        y_pred_proba = to_jax(y_pred_proba)
+        y_pred, y_sets = _predict_sets(y_pred_proba, self.__q_hat, score_fn=self.score_)
         return np.array(y_pred), np.array(y_sets)
     
-
+    def get_uncertainty_from_proba(self, y_pred_proba, y, max_iters: int = 30) -> tuple[np.float64, np.float64]:
+        """Estimate model uncertainty from precomputed probabilities.
+        
+        Parameters
+        ----------
+        y_pred_proba : array-like, shape (n_samples, n_classes)
+            Predicted class probabilities. Accepts any DLPack-compatible array.
+        y : array-like, shape (n_samples,)
+            Integer class labels.
+        max_iters : int, default=30
+            Maximum iterations for the binary search over alpha.
+        
+        Returns
+        -------
+        U : np.float64
+            Estimated uncertainty.
+        alpha : np.float64
+            Calibrated alpha value.
+        """
+        # TODO: _get_uncertainty_jit_impl espera numpy (lo convierte a jnp adentro)
+        y_pred_proba = np.asarray(to_jax(y_pred_proba))
+        y_arr = np.asarray(y).flatten().astype(int)
+        return self._get_uncertainty_jit_impl(y_pred_proba, y_arr, max_iters=max_iters)
 
     def get_uncertainty_opt(self, X, y) -> tuple[np.float64, np.float64]:
         """Calculates the overall uncertainty of the model predictions.
@@ -490,10 +572,22 @@ class UncertaintyQuantifier:
         return U, self.alpha
 
 
-    def get_uncertainty_jit(self, X, y, max_iters=30):
+    def get_uncertainty_jit(self, X, y, max_iters: int = 30):
+        """[DEPRECATED] Estimate uncertainty from raw input X (requires self.model).
+        
+        Use get_uncertainty_from_proba(y_pred_proba, y, max_iters) instead.
+        """
+        warnings.warn(
+            "get_uncertainty_jit(X, y) is deprecated; use "
+            "get_uncertainty_from_proba(y_pred_proba, y). This method will be "
+            "removed in a future version.",
+            DeprecationWarning, stacklevel=2,
+        )
+        if self.model is None:
+            raise ValueError("Cannot use legacy get_uncertainty_jit(X, ...) without a model.")
         y_pred_proba = self.model.predict_proba(X).cpu().numpy()
-        y = y.numpy().flatten().astype(int)
-        return self._get_uncertainty_jit_impl(y_pred_proba, y, max_iters)
+        y_arr = y.numpy().flatten().astype(int)
+        return self._get_uncertainty_jit_impl(y_pred_proba, y_arr, max_iters=max_iters)
     
     
     def _get_uncertainty_jit_impl(self, y_pred_proba, y, max_iters=30):
@@ -544,4 +638,4 @@ class UncertaintyQuantifier:
         n_cs = jnp.int32(self._N)
 
         alpha, U = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs, max_iters, self.score_)
-        return float(U), float(alpha)
+        return np.float64(U), np.float64(alpha)
