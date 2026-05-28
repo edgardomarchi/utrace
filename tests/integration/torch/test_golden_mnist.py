@@ -150,6 +150,8 @@ def _compute_golden_run(seed=42):
 
 @pytest.fixture(scope="module")
 def golden_run():
+    from utrace.uncertaintyQuantifier import _search_uncertainty
+    _search_uncertainty.clear_cache()
     return _compute_golden_run()
 
 

@@ -1,7 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 import pytest
-from utrace.utils.utils import _masked_quantile_higher
+from utrace.utils import _masked_quantile_higher
 
 
 @pytest.mark.parametrize("n_valid", [1, 2, 5, 17, 100])

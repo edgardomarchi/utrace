@@ -11,11 +11,10 @@ from jax import jit, lax
 from functools import partial
 
 from .scores import aps, aps_cal, lac, lac_cal
-from .utils import flatten_batch
+from .utils import flatten_batch, _masked_quantile_higher
 from .utils.tensors import to_jax
 
 from .config import USE_JAX
-
 
 logger = logging.getLogger(__name__)
 
@@ -67,56 +66,50 @@ def get_U(y: jnp.ndarray, y_pred_proba: jnp.ndarray,
 
 
 @jit
-def _q_hat_from_alpha(conformity_scores: jnp.ndarray,
+def _q_hat_from_alpha(cs_padded: jnp.ndarray,
+                      n_cs: jnp.ndarray,
                       alpha: jnp.ndarray) -> jnp.ndarray:
-    """conformity_scores already comes trimmed to N valid entries."""
-    N = conformity_scores.shape[0]  # shuld be static
-    q_level = jnp.ceil((N + 1) * (1.0 - alpha)) / N
+    """cs_padded already comes with N valid entries an padded with inf."""
+    q_level = jnp.ceil((n_cs + 1) * (1.0 - alpha)) / n_cs
     q_level = jnp.minimum(q_level, 1.0)
-    return jnp.quantile(conformity_scores, q_level, method='higher')
+    return _masked_quantile_higher(cs_padded, n_cs, q_level)
 
 @partial(jit, static_argnames=["score_fn", "max_iters"])
 def _search_uncertainty(
-    y: jnp.ndarray,                  # (n,) labels filtradas
-    y_pred_proba: jnp.ndarray,       # (n, K) probabilidades
-    conformity_scores: jnp.ndarray,  # (m,) scores de calibración
+    y: jnp.ndarray,                  # (n,) filtered labels
+    y_pred_proba: jnp.ndarray,       # (n, K) probabilities
+    cs_padded: jnp.ndarray,          # (m,) calibration scores
+    n_cs: jnp.ndarray,               # (1,) number of calibration scores
     max_iters: int,
     score_fn: Callable,
 ):
-    # ------------------------------------------------------------
-    # Estado del loop: una tupla que se "lleva" entre iteraciones
-    #   alpha   : el alfa actual
-    #   delta   : el paso actual del binary search
-    #   setsize : tamaño medio de los conjuntos en la última iter útil
-    #   EC_yt   : E[1/k | success] en la última iter útil
-    #   frozen  : True una vez que alpha se salió de [0, 1]
-    # ------------------------------------------------------------
+
     init_state = (
         jnp.asarray(1.0),    # alpha
         jnp.asarray(1.0),    # delta
         jnp.asarray(0.0),    # setsize
         jnp.asarray(0.0),    # EC_yt
-        jnp.asarray(False),  # frozen
+        jnp.asarray(False),  # frozen: alpha is out from [0,1]
     )
 
     def body(i, state):
         alpha, delta, setsize, EC_yt, frozen = state
 
-        # --- 1. proponer la actualización -------------------------
+        # Update:
         delta_new      = delta / 2.0
         sign           = jnp.where(setsize > 1.0, 1.0, -1.0)
         alpha_proposed = alpha + sign * delta_new
 
-        # --- 2. ¿se sale de rango? ¿congelamos? -------------------
+        # Freeze if out of bounds
         out_of_bounds = (alpha_proposed < 0.0) | (alpha_proposed > 1.0)
         will_freeze   = frozen | out_of_bounds
 
-        # Si frozen o se sale, no aplicamos la propuesta
+        # If frozen, we do not update
         alpha_next = jnp.where(will_freeze, alpha, alpha_proposed)
         delta_next = jnp.where(will_freeze, delta, delta_new)
 
-        # --- 3. predict + métricas a alpha_next -------------------
-        q_hat = _q_hat_from_alpha(conformity_scores, alpha_next)
+        # Predict
+        q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha_next)
         _, prediction_sets = _predict_sets(y_pred_proba, q_hat, score_fn=score_fn)
 
         set_sizes    = prediction_sets.sum(axis=1)
@@ -208,7 +201,8 @@ class UncertaintyQuantifier:
         self.__alpha = np.float64(alpha)
         logger.debug("'q_level' set to %f for alpha %f and N %d", q_level, self.__alpha, self._N)
         logger.debug("Conformity scores: %s", self.conformity_scores_[:self._N])
-        self.__q_hat = np.nanquantile(np.array(self.conformity_scores_)[:self._N], q_level, method='higher')
+        self.__q_hat = np.nanquantile(
+        np.asarray(self.conformity_scores_[:self._N]), q_level, method='higher')
         logger.debug("'q_hat' set to %f for alpha %f", self.__q_hat, self.__alpha)     
     
 
@@ -272,7 +266,9 @@ class UncertaintyQuantifier:
                 total_scores += num_scores
                 
             logger.debug("Total conformity scores shape before class calibration: %s", self.conformity_scores_.shape)
-            self.conformity_scores_[:self._N+total_scores] = np.sort(np.concatenate(self._class_scores))
+            sorted_all = np.sort(np.concatenate(self._class_scores))  # numpy, como antes
+            self.conformity_scores_ = self.conformity_scores_.at[:self._N + total_scores].set(
+                jnp.asarray(sorted_all, dtype=jnp.float64))
             logger.debug("Total conformity scores shape after class calibration: %s", self.conformity_scores_.shape)
 
         else:   
@@ -280,9 +276,14 @@ class UncertaintyQuantifier:
             num_scores = len(scores)
             if batched:
                 # If batched calibration, we need to concatenate the conformity scores for each batch
-                self.conformity_scores_[self._N:self._N+num_scores] = scores[:]
+                self.conformity_scores_ = self.conformity_scores_.at[self._N:self._N + num_scores].set(
+                jnp.asarray(np.asarray(scores), dtype=jnp.float64))
             else:
-                self.conformity_scores_ = scores
+                #self.conformity_scores_ = scores
+                srt = np.sort(np.asarray(scores))
+                self.conformity_scores_ = jnp.full((self._max_N,), jnp.inf,
+                                                    dtype=jnp.float64
+                ).at[:num_scores].set(jnp.asarray(srt, dtype=jnp.float64))
             
             logger.debug("Conformity scores shape: %s, used: %d", self.conformity_scores_.shape, self._N)
 
@@ -499,7 +500,10 @@ class UncertaintyQuantifier:
     
         y_f = jnp.asarray(y[valid])
         p_f = jnp.asarray(y_pred_proba[valid])
-        cs  = jnp.asarray(self.conformity_scores_[:self._N])
+        #cs  = jnp.asarray(self.conformity_scores_[:self._N])
+
+        cs_padded = self.conformity_scores_
+        n_cs = jnp.asarray(self._N)
     
-        alpha, U = _search_uncertainty(y_f, p_f, cs, max_iters, self.score_)
+        alpha, U = _search_uncertainty(y_f, p_f, cs_padded, n_cs,max_iters, self.score_)
         return float(U), float(alpha)
