@@ -4,7 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from utrace.config import USE_JAX
+
 logger = logging.getLogger(__name__)
+
 
 def flatten_batch(tensor_batch):
     """
