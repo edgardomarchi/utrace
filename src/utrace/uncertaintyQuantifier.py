@@ -11,7 +11,7 @@ from jax import jit, lax
 from functools import partial
 
 from .scores import aps, aps_cal, lac, lac_cal
-from .utils import flatten_batch, _masked_quantile_higher
+from .utils import flatten_batch, _masked_quantile_higher, _bucket_size
 from .utils.tensors import to_jax
 
 from .config import USE_JAX
@@ -78,6 +78,7 @@ def _q_hat_from_alpha(cs_padded: jnp.ndarray,
 def _search_uncertainty(
     y: jnp.ndarray,                  # (n,) filtered labels
     y_pred_proba: jnp.ndarray,       # (n, K) probabilities
+    valid_mask: jnp.ndarray,         # (n,) bool - True: sample from selected class(es)
     cs_padded: jnp.ndarray,          # (m,) calibration scores
     n_cs: jnp.ndarray,               # (1,) number of calibration scores
     max_iters: int,
@@ -91,6 +92,8 @@ def _search_uncertainty(
         jnp.asarray(0.0),    # EC_yt
         jnp.asarray(False),  # frozen: alpha is out from [0,1]
     )
+
+    n_valid = valid_mask.sum()
 
     def body(i, state):
         alpha, delta, setsize, EC_yt, frozen = state
@@ -113,16 +116,16 @@ def _search_uncertainty(
         _, prediction_sets = _predict_sets(y_pred_proba, q_hat, score_fn=score_fn)
 
         set_sizes    = prediction_sets.sum(axis=1)
-        setsize_curr = jnp.nanmean(set_sizes.astype(jnp.float64))
+        setsize_curr = jnp.where(valid_mask, set_sizes, 0.0).sum() / jnp.maximum(n_valid, 1)
 
         is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
-        mask_succ  = is_covered & (set_sizes > 0)
+        mask_succ  = is_covered & (set_sizes > 0) & valid_mask
         safe_sizes = jnp.where(mask_succ, set_sizes, 1)
         inv_succ   = jnp.where(mask_succ, 1.0 / safe_sizes, 0.0)
         n_succ     = mask_succ.sum()
         EC_yt_curr = inv_succ.sum() / jnp.maximum(n_succ, 1)
 
-        # --- 4. si congelamos, conservamos los valores anteriores -
+        # If frozen:
         setsize_next = jnp.where(will_freeze, setsize, setsize_curr)
         EC_yt_next   = jnp.where(will_freeze, EC_yt,   EC_yt_curr)
 
@@ -148,9 +151,12 @@ class UncertaintyQuantifier:
     def __init__(self, model,
                  N: int = 1000,
                  classes:Union[list[int], np.ndarray, None]=None,
-                 score:Literal['lac','aps']='lac'):
+                 score:Literal['lac','aps']='lac',
+                 max_batch_size=None):
         self.model = model
         self.classes = classes
+        self._max_batch_size = max_batch_size
+
         match score:
             case 'lac':
                 self.cal_score_ = lac_cal
@@ -491,19 +497,51 @@ class UncertaintyQuantifier:
     
     
     def _get_uncertainty_jit_impl(self, y_pred_proba, y, max_iters=30):
-        """Core uncertainty estimation logic.
-        """
-        valid = (np.isin(y, self.classes) if self.classes is not None
-                else np.ones_like(y, dtype=bool))
+        """y_pred_proba: (B, K) array (jnp/np), B variable.
+           y:            (B,)   int labels.
+        Internally pads to a fixed shape so the jitted search compiles once."""
+        B = y.shape[0]
+        K = y_pred_proba.shape[1]
+
+        # 1. máscara de validez: muestra real (siempre True aquí, B es el real)
+        #    AND pertenece a la clase de interés
+        if self.classes is not None:
+            valid = np.isin(np.asarray(y), np.asarray(self.classes))
+        else:
+            valid = np.ones(B, dtype=bool)
+
         if not valid.any():
             return np.float64('nan'), np.float64('nan')
-    
-        y_f = jnp.asarray(y[valid])
-        p_f = jnp.asarray(y_pred_proba[valid])
-        #cs  = jnp.asarray(self.conformity_scores_[:self._N])
+
+        if self._max_batch_size is not None:
+            target_size = self._max_batch_size
+            if B > target_size:
+                raise ValueError(
+                    f"Batch size {B} exceeds max_batch_size={target_size}. "
+                    f"Increase max_batch_size at construction, or pass smaller batches."
+                )
+        else:
+            target_size = _bucket_size(B)
+        # arrays paddeados con valores arbitrarios (se enmascaran)
+        y_arr = np.asarray(y).astype(np.int32)
+        y_padded   = np.zeros(target_size, dtype=np.int32)
+        p_padded   = np.zeros((target_size, K), dtype=np.float64)
+        mask_padded = np.zeros(target_size, dtype=bool)
+
+        y_padded[:B]    = y_arr
+        p_padded[:B]    = np.asarray(y_pred_proba)
+        mask_padded[:B] = valid                       # solo válidos reales en True
+
+        # 3. y_safe: índices en rango incluso en padding (clase 0)
+        y_safe = np.where(mask_padded, y_padded, 0)
+
+        # 4. a jnp y al JIT
+        y_j    = jnp.asarray(y_safe)
+        p_j    = jnp.asarray(p_padded, dtype=jnp.float64)
+        mask_j = jnp.asarray(mask_padded)
 
         cs_padded = self.conformity_scores_
-        n_cs = jnp.asarray(self._N)
-    
-        alpha, U = _search_uncertainty(y_f, p_f, cs_padded, n_cs,max_iters, self.score_)
+        n_cs = jnp.int32(self._N)
+
+        alpha, U = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs, max_iters, self.score_)
         return float(U), float(alpha)

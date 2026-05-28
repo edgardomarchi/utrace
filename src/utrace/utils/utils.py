@@ -8,6 +8,9 @@ from utrace.config import USE_JAX
 
 logger = logging.getLogger(__name__)
 
+def _bucket_size(B, base=256):
+    """Siguiente múltiplo de `base` >= B (bucketing para shape-stability)."""
+    return int(np.ceil(B / base) * base)
 
 def flatten_batch(tensor_batch):
     """

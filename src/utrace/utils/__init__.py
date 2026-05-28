@@ -1,4 +1,5 @@
 from .utils import *
+from .utils import _bucket_size
 
 from ..config import USE_JAX
 
