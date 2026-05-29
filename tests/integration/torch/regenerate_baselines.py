@@ -1,14 +1,43 @@
-"""Run this when baselines need updating (e.g., after intentional algorithm change).
-NEVER run silently as part of CI."""
+"""Regenerate golden-test baselines.
 
-from test_golden_mnist import _compute_golden_run as golden_run
-import numpy as np
+Paths are resolved relative to THIS file (tests/integration/torch/), not the
+current working directory, so the script works regardless of where it is run.
+
+Usage:
+    uv run --extra=cpu python tests/integration/torch/regenerate_baselines.py --api legacy
+    uv run --extra=cpu python tests/integration/torch/regenerate_baselines.py --api new
+
+Run only for an intentional change to the algorithm or test setup. Commit the
+regenerated .npy files alongside the change that motivated them, and explain
+the reason in the commit message.
+"""
+import argparse
 from pathlib import Path
 
-if __name__ == '__main__':
-    results = golden_run()
-    out_dir = Path(__file__).parent / 'baselines'
-    out_dir.mkdir(exist_ok=True)
+import numpy as np
+
+from _baselines import LEGACY_BASELINE_DIR, NEW_API_BASELINE_DIR
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--api', choices=['legacy', 'new'], default='legacy',
+                        help="Which golden's baselines to regenerate.")
+    args = parser.parse_args()
+
+    if args.api == 'legacy':
+        from test_golden_mnist import _compute_golden_run
+        results = _compute_golden_run()
+        out_dir = LEGACY_BASELINE_DIR
+    else:
+        from test_golden_mnist_new_api import _compute_golden_run_new_api
+        results = _compute_golden_run_new_api()
+        out_dir = NEW_API_BASELINE_DIR
+
+    out_dir.mkdir(parents=True, exist_ok=True)
     for name, arr in results.items():
         np.save(out_dir / f'mean_{name}.npy', np.asarray(arr))
-    print(f"Baselines saved to {out_dir}")
+    print(f"Baselines for '{args.api}' API saved to {out_dir}")
+
+
+if __name__ == '__main__':
+    main()
