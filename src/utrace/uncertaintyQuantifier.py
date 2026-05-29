@@ -383,24 +383,47 @@ class UncertaintyQuantifier:
         return np.array(y_pred), np.array(y_sets)
     
     def get_uncertainty_from_proba(self, y_pred_proba, y, max_iters: int = 30) -> tuple[np.float64, np.float64]:
-        """Estimate model uncertainty from precomputed probabilities.
-        
+        """Estimate model uncertainty over a tuning set via conformal prediction.
+
+        Searches for the alpha that yields the target average prediction-set size,
+        using ALL provided samples as a single tuning set. The estimate converges
+        to the true error probability with the tuning set size (conformal
+        guarantee); it does NOT require batching.
+
+        This method is PURE: it does not modify the object's state. In particular,
+        it does not set self.alpha or self.q_hat. To use the returned alpha for
+        subsequent predictions, set it explicitly:
+
+            U, alpha = uq.get_uncertainty_from_proba(tune_probs, tune_y)
+            uq.alpha = alpha                  # explicit, caller's decision
+            y_pred, y_sets = uq.predict_from_proba(test_probs)
+
         Parameters
         ----------
-        y_pred_proba : array-like, shape (n_samples, n_classes)
-            Predicted class probabilities. Accepts any DLPack-compatible array.
-        y : array-like, shape (n_samples,)
-            Integer class labels.
+        y_pred_proba : array-like, shape (n_tuning, n_classes)
+            Predicted probabilities for the tuning set. Any DLPack-compatible array.
+            All samples are used; the caller controls the tuning set size by
+            choosing how many samples to pass.
+        y : array-like, shape (n_tuning,)
+            Integer class labels for the tuning set.
         max_iters : int, default=30
             Maximum iterations for the binary search over alpha.
-        
+
         Returns
         -------
-        U : np.float64
+        U : float
             Estimated uncertainty.
-        alpha : np.float64
-            Calibrated alpha value.
+        alpha : float
+            The alpha found by the search. NOT applied to the object.
+
+        Notes
+        -----
+        Passing a tuning set in batches and averaging per-batch alphas is
+        statistically incorrect (alpha is a nonlinear function of the data).
+        To assess whether your tuning set size is adequate, use tuning_stability(),
+        which runs the search on disjoint subsets and reports the spread.
         """
+    
         # TODO: _get_uncertainty_jit_impl espera numpy (lo convierte a jnp adentro)
         y_pred_proba = np.asarray(to_jax(y_pred_proba))
         y_arr = np.asarray(y).flatten().astype(int)
