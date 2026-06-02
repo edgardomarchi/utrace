@@ -212,7 +212,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
                 # Calibration: batch-outer / class-inner (one model forward per batch)
                 for X_cal, y_cal in calDataLoader:
-                    p_cal = classifier.predict_proba(X_cal).cpu().numpy()
+                    p_cal = classifier.predict_proba(X_cal)
                     y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
                     for C in classifier.classes_:
                         uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
@@ -220,17 +220,17 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 # Precompute tune set (one model forward per batch, shared across classes)
                 tune_probs_list, tune_y_list = [], []
                 for X_tune, y_tune in tuneDataLoader:
-                    tune_probs_list.append(classifier.predict_proba(X_tune).cpu().numpy())
+                    tune_probs_list.append(classifier.predict_proba(X_tune))
                     tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
-                tune_probs_all = np.concatenate(tune_probs_list, axis=0)
+                tune_probs_all = torch.cat(tune_probs_list, dim=0)
                 tune_y_all = np.concatenate(tune_y_list, axis=0)
 
                 # Precompute test set (one model forward per batch, shared across classes)
                 test_probs_list, test_y_list = [], []
                 for X_test, y_test in testDataLoader:
-                    test_probs_list.append(classifier.predict_proba(X_test).cpu().numpy())
+                    test_probs_list.append(classifier.predict_proba(X_test))
                     test_y_list.append(flatten_batch(y_test).ravel().numpy().astype(int))
-                test_probs_all = np.concatenate(test_probs_list, axis=0)
+                test_probs_all = torch.cat(test_probs_list, dim=0)
                 test_y_all = np.concatenate(test_y_list, axis=0)
 
                 for C in classifier.classes_:

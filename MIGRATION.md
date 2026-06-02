@@ -39,6 +39,21 @@ computes probabilities externally and passes them to the `*_from_proba` API.
 - Packaging: remove torch from the main dependencies.
 - Performance benchmark per phase.
 
+### TODO: make device handling in to_jax() explicit (deferred)
+
+`to_jax()` (utils/tensors.py) currently handles a device mismatch silently.
+For a CUDA tensor with a CPU JAX backend, the DLPack path raises, the exception is caught and logged at `debug` level, and execution falls through to a `.cpu().numpy()` copy to host. The result is correct, but the host transfer is invisible: a user who believes they are running zero-copy on GPU is silently paying a copy on every call, with no visible signal.
+
+This contradicts the intended design goal (use the user's backend device by default, with an option to specify the device explicitly).
+
+When addressing device handling (separate task, own branch / design discussion):
+- Make a device mismatch explicit rather than silent — a visible warning, an error, or a `device=` parameter controlling the behavior.
+- Narrow the `except` around the DLPack call: it currently catches all
+  exceptions and routes them to `logger.debug`, which also hides non-device failures (unsupported dtype, version mismatch, malformed array). Catch only
+  the expected device/DLPack exceptions and let the rest propagate.
+
+Out of scope for the current script-migration work. Recorded here so the context is not lost.
+
 ## Canonical migration recipe (new API)
 
 Apply to each script. The canonical alpha-search method is the **binary** one
@@ -85,6 +100,13 @@ Apply to each script. The canonical alpha-search method is the **binary** one
 6. **Precompute logits** once per (noise/split) wherever possible, to eliminate redundant
    model forward passes. This is where the bulk of the speedup in the analysis scripts
    comes from.
+
+### Passing tensors to the core
+
+Pass backend tensors directly to the `*_from_proba` methods. `to_jax()`
+(in `utils/tensors.py`) handles conversion via DLPack: a CPU PyTorch tensor is consumed zero-copy. Do NOT call `.cpu().numpy()` manually on values that feed `calibrate_from_proba` / `predict_from_proba` / `get_uncertainty_from_proba` — that conversion is the library's job, and writing it by hand defeats the zero-copy path and clutters the example.
+
+Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the core (e.g. computing accuracy, building arrays for matplotlib). Only remove the conversions on the path to `*_from_proba`.
 
 ## Test conventions
 
