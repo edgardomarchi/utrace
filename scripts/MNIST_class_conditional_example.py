@@ -107,7 +107,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
         uqs = []
         for C in classifier.classes_:
-            uqs.append(UncertaintyQuantifier(model=classifier, N=20000, classes=[C]))
+            uqs.append(UncertaintyQuantifier(N=20000, classes=[C], max_batch_size=BATCH_SIZE))
 
         CAL_BATCH_SIZE = BATCH_SIZE
         TUNE_BATCH_SIZE = BATCH_SIZE
@@ -210,47 +210,48 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 logger.debug("Length of Tuning set: %d", len(tuneDataLoader.dataset))  #type: ignore
                 logger.debug("Length of Test set: %d", len(testDataLoader.dataset))  #type: ignore
 
+                # Calibration: batch-outer / class-inner (one model forward per batch)
+                for X_cal, y_cal in calDataLoader:
+                    p_cal = classifier.predict_proba(X_cal).cpu().numpy()
+                    y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                    for C in classifier.classes_:
+                        uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+
+                # Precompute tune set (one model forward per batch, shared across classes)
+                tune_probs_list, tune_y_list = [], []
+                for X_tune, y_tune in tuneDataLoader:
+                    tune_probs_list.append(classifier.predict_proba(X_tune).cpu().numpy())
+                    tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
+                tune_probs_all = np.concatenate(tune_probs_list, axis=0)
+                tune_y_all = np.concatenate(tune_y_list, axis=0)
+
+                # Precompute test set (one model forward per batch, shared across classes)
+                test_probs_list, test_y_list = [], []
+                for X_test, y_test in testDataLoader:
+                    test_probs_list.append(classifier.predict_proba(X_test).cpu().numpy())
+                    test_y_list.append(flatten_batch(y_test).ravel().numpy().astype(int))
+                test_probs_all = np.concatenate(test_probs_list, axis=0)
+                test_y_all = np.concatenate(test_y_list, axis=0)
+
                 for C in classifier.classes_:
-                    for X_cal, y_cal in calDataLoader:
-                        uqs[C].calibrate(X_cal, y_cal, batched=True)
-
-                    # Get uncertainty
-                    alphas_: list[float] = []
-                    U_: list[float] = []
-                    for X_tune, y_tune in tuneDataLoader:
-                        U, alpha = uqs[C].get_uncertainty_jit(X_tune, y_tune) #, max_iters=IT)
-                        alphas_.append(alpha)
-                        U_.append(U)
-                    alphas = np.array(alphas_)
-                    Us = np.array(U_)
-                    alpha = np.nanmean(alphas)
-                    alpha_std = np.nanstd(alphas)
-                    U = np.nanmean(Us)
-                    U_std = np.nanstd(Us)
-
-                    # Test
-                    logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
-                    batch_coverages, batch_setsizes = [], []
+                    # Tuning: one call over the full tune set (not batched/averaged)
+                    U, alpha = uqs[C].get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=IT)
+                    alpha_std = 0.0
+                    U_std = 0.0
                     uqs[C].alpha = alpha
-                    for X_n, y_n in testDataLoader:
-                        y_p, y_s = uqs[C].predict(X_n, force_non_empty_sets=False)
-                        
-                        # Filter out the ouputs that are not in the classes
-                        y_n = flatten_batch(y_n).ravel()#.astype(int)
-                        valid_indexes = np.isin(y_n, np.array([C]))  #type: ignore
-                        y_n = y_n[valid_indexes]
-                        y_p = y_p[valid_indexes]
-                        y_s = y_s[valid_indexes]
 
-                        i_cov = get_coverage(y_n.numpy(), y_s)
-                        if i_cov >= 0.99:
-                            print(f'!!! Coverage of: {i_cov}!!!, Noise: {noise}, Class: {C}, Iter: {iteration}')
-                        batch_coverages.append(i_cov)
-                        batch_setsizes.append(y_s.sum(axis=1).max())
+                    # Test: coverage as a global proportion
+                    logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
+                    mask_C = (test_y_all == C)
+                    y_n_C = test_y_all[mask_C]
+                    y_p, y_s = uqs[C].predict_from_proba(test_probs_all)
+                    y_s_C = y_s[mask_C]
 
-                    coverage = np.array(batch_coverages).mean()
+                    coverage = get_coverage(y_n_C, y_s_C)
+                    if coverage >= 0.99:
+                        print(f'!!! Coverage of: {coverage}!!!, Noise: {noise}, Class: {C}, Iter: {iteration}')
                     # Worst case scenario:
-                    setsize = np.array(batch_setsizes).max()
+                    setsize = y_s_C.sum(axis=1).max() if len(y_s_C) > 0 else 0
 
                     coverages[C].append(coverage)
                     set_sizes[C].append(setsize)
