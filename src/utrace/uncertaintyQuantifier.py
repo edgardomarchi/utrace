@@ -12,7 +12,8 @@ from jax import jit, lax
 from functools import partial
 
 from .scores import aps, aps_cal, lac, lac_cal
-from .utils import flatten_batch, _masked_quantile_higher, _bucket_size
+from .utils.pytorch.helpers import flatten_batch
+from .utils import _masked_quantile_higher, _bucket_size
 from .utils.tensors import to_jax
 
 from .config import USE_JAX

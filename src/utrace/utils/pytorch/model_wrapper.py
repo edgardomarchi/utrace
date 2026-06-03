@@ -4,7 +4,7 @@ from torch import nn
 from sklearn.base import BaseEstimator  # TODO: not needed anymore
 import torch.nn.functional as F
 
-from ..utils import flatten_batch
+from .helpers import flatten_batch
 
 
 class Pytorch_wrapper(nn.Module, BaseEstimator):

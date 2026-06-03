@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
 from utrace import UncertaintyQuantifier
-from utrace.utils import flatten_batch
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import (
     ImageClassifierCNN,
     ImageClassifierLinear,
