@@ -1,3 +1,62 @@
+"""Evaluate U-TraCE uncertainty estimation on a real black-box segmentation model.
+
+This script reproduces the cardiac MRI segmentation use case of the U-TraCE paper
+(Marchi & Liebl 2026, Mach. Learn.: Sci. Technol. 7 015017) — figures 13-16 and the
+class-wise uncertainty tables B1/B2. It applies the per-class U-TraCE procedure to a
+pre-trained cardiac segmentation model treated as a true black box: the model is never
+retrained or modified, and uncertainty is estimated solely from its softmax outputs over
+unseen reference data.
+
+MODEL UNDER TEST (the "black box")
+    KM — a residual U-Net for left-ventricle segmentation (Kerfoot et al. 2019),
+    pre-trained on UK Biobank cardiac MRI and used here without any retraining. It is
+    loaded as a MONAI bundle. The model is third-party and is NOT redistributed with this
+    repository; it must be obtained separately.
+        Source: obtained via the misas toolbox (Ankenbrand et al. 2021).
+        Download: https://huggingface.co/MONAI/ventricular_short_axis_3label/tree/0.3.4
+    Expected location (see paths below): a MONAI bundle directory containing
+    `train.json` and `models/model.pt`.
+
+REFERENCE DATASET (ground truth)
+    ACDC — the Automatic Cardiac Diagnosis Challenge dataset (Bernard et al. 2018). It is
+    unseen by the model and is used only as reference/ground truth for calibration,
+    tuning, and verification. The dataset is third-party and is NOT redistributed with
+    this repository; it must be obtained separately under its own terms.
+        Download: https://humanheart-project.creatis.insa-lyon.fr/database/#collection/637218c173e9f0047faa00fb
+
+EXPECTED PATHS (adjust to your environment)
+    The script assumes both artifacts sit at fixed locations relative to its working
+    directory:
+        dataset_path  = ../../data/ACDC/
+        ai_model_path = ../../models/ventricular_short_axis/   (MONAI bundle root)
+    Edit these at the top of `main()` if your layout differs.
+
+EXTRA DEPENDENCIES (beyond the utrace core)
+    This script needs packages that are NOT required by the utrace core:
+        monai     — to load the model bundle
+        nibabel   — to read the NIfTI volumes (via the ACDC dataset wrapper)
+        pandas    — to assemble the LaTeX result tables
+        torchvision, matplotlib
+
+USAGE NOTES
+    - Set USE_JAX appropriately in the environment (see config / .env); the core import
+      depends on it (see MIGRATION.md).
+    - Per-class CP buffer sizes (N) are computed from the data: a one-time pass counts
+      per-class pixels, then N is sized to the calibration fraction with a safety margin.
+      This is required for segmentation, where pixel counts reach tens of millions.
+    - The degradation transform defaults to AWGN to match the paper's validation. Random
+      Perspective and Elastic Transform variants are available (see __main__).
+
+REFERENCES
+    Kerfoot, E., Clough, J., Oksuz, I., Lee, J., King, A. P., & Schnabel, J. A. (2019).
+        Left-Ventricle Quantification Using Residual U-Net. In Statistical Atlases and
+        Computational Models of the Heart (pp. 371-380). Springer. ISBN 978-3-030-12029-0.
+    Bernard, O., et al. (2018). Deep Learning Techniques for Automatic MRI Cardiac
+        Multi-Structures Segmentation and Diagnosis: Is the Problem Solved?
+        IEEE Transactions on Medical Imaging, 37(11), 2514-2525.
+        doi:10.1109/TMI.2018.2837502
+"""
+
 import logging
 from pathlib import Path
 
@@ -6,6 +65,8 @@ from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
 from mpl_toolkits.axes_grid1.inset_locator import mark_inset
 from matplotlib.ticker import MaxNLocator
 from matplotlib.colors import ListedColormap
+
+import math
 
 import numpy as np
 import pandas as pd
@@ -70,6 +131,11 @@ newcolors[mapping < 1] = color4
 # Make the colormap from the listed colors
 my_ai_colormap = ListedColormap(newcolors)
 
+class MinMaxNormalize:
+    def __call__(self, x):
+        return (x - x.min()) / (x.max() - x.min())
+
+
 class AddGaussianNoise(object):
     def __init__(self, mean=0., std=1.):
         self.std = std
@@ -86,6 +152,8 @@ def main(img_path: Path=Path("img/ACDC_example/"),
          tab_path: Path=Path("tab/ACDC_example/"), data_path: Path=Path("data/ACDC_example/"),
          transform=AddGaussianNoise):
     
+    # Paths to the externally-obtained model and dataset (NOT shipped with the repo).
+    # See the module docstring for sources and expected layout. Adjust to your environment.
     dataset_path = Path('../../data/ACDC/')
     ai_model_path = Path('../../models/ventricular_short_axis')
     model_name = 'KM'
@@ -105,14 +173,30 @@ def main(img_path: Path=Path("img/ACDC_example/"),
     classes = np.arange(4)
     model = Pytorch_wrapper(net.to(device), device=device, classes=classes)
 
-    cp = UncertaintyQuantifier(model=model, score='lac')
     logger.info("Model loaded and wrapped.")
 
    #### Uncertainty evaluation
 
+    # Count per-class pixel totals once; GT labels are invariant under image transforms.
+    # Sizes each UQ buffer: N_C = ceil(total_pix[C] * cal_fraction * margin).
+    CAL_FRACTION = 0.2
+    MARGIN = 1.5
+    count_loader = get_ACDC_dataloader(
+        root_dir=dataset_path, batch_size=BATCH_SIZE, target_size=(256, 256),
+        shuffle=False, num_workers=0, transform=None,
+    )
+    total_pix_all = np.zeros(len(model.classes_), dtype=np.int64)
+    for _, count_gt in count_loader:
+        gt_pix = flatten_batch(count_gt).ravel().numpy().astype(int)
+        for C in model.classes_:
+            total_pix_all[C] += (gt_pix == C).sum()
+    logger.info("Per-class pixel totals: %s", total_pix_all)
+
     uqs = []
     for C in model.classes_:
-        uqs.append(UncertaintyQuantifier(model=model,classes=[C]))
+        N_C = math.ceil(int(total_pix_all[C]) * CAL_FRACTION * MARGIN)
+        uqs.append(UncertaintyQuantifier(N=N_C, classes=[C]))
+        logger.info("UQ class %d: N=%d", C, N_C)
 
     iter_coverages_ = []
     iter_set_sizes_ = []
@@ -122,9 +206,9 @@ def main(img_path: Path=Path("img/ACDC_example/"),
     iter_uncertainties_ = []
     iter_uncertainties_std_ = []
 
-    # noises = np.arange(0, 0.8, 0.15)    # AWGN
+    noises = np.arange(0, 0.8, 0.15)      # AWGN
     # noises = np.arange(0, 1.0, 0.15)    # RandomPerspective
-    noises = np.arange(0, 500.0, 50)    # ElasticTransform
+    # noises = np.arange(0, 500.0, 250)   # ElasticTransform
 
 
     # Dataframe with the results:
@@ -138,7 +222,7 @@ def main(img_path: Path=Path("img/ACDC_example/"),
     data_df = pd.DataFrame(index=noises, columns=column_index)
     data_df.index.name = 'Noises'
 
-    iterations = 10
+    iterations = 3
     
     logger.info("Starting tests...")
 
@@ -168,11 +252,11 @@ def main(img_path: Path=Path("img/ACDC_example/"),
                 uqs[C].reset()
 
             transform = transforms.Compose([
-                lambda x: (x - x.min()) / (x.max() - x.min()),
-                # AddGaussianNoise(0., noise),    # AWGN
-                # RandomPerspective(noise, 1),   # Random Perspective
-                ElasticTransform(noise),       # Elastic Transform
-                ])
+                MinMaxNormalize(),
+                AddGaussianNoise(0., noise),         # AWGN
+                # RandomPerspective(noise, 1),       # Random Perspective
+                # ElasticTransform(noise),           # Elastic Transform
+            ])
 
             # Accuracy
             logger.info("Checking model empirical uncertainty...")
@@ -209,57 +293,69 @@ def main(img_path: Path=Path("img/ACDC_example/"),
                 tune_transform=transform,
                 test_transform=transform,
                 splits=[0.2, 0.2, 0.6],
-                shuffle=True, num_workers=8)
+                shuffle=True, num_workers=0)
 
             logger.debug("Length of Calibration set: %d images.", len(calDataLoader.dataset))  #type: ignore
             logger.debug("Length of Tuning set: %d images.", len(tuneDataLoader.dataset))  #type: ignore
             logger.debug("Length of Test set: %d images.", len(testDataLoader.dataset))  #type: ignore
 
+            # Calibration: batch-outer / class-inner (one model forward per batch)
+            for X_cal, y_cal in calDataLoader:
+                p_cal = model.predict_proba(X_cal)
+                y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                for C in model.classes_:
+                    uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+
+            # Tuning: precompute full tune set, one call per class (not per-batch averaged)
+            tune_probs_list, tune_y_list = [], []
+            for X_tune, y_tune in tuneDataLoader:
+                tune_probs_list.append(model.predict_proba(X_tune))
+                tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
+            tune_probs_all = torch.cat(tune_probs_list, dim=0)
+            tune_y_all = np.concatenate(tune_y_list, axis=0)
+
+            U_per_class: dict[int, float] = {}
+            alpha_per_class: dict[int, float] = {}
             for C in model.classes_:
-                for X_cal, y_cal in calDataLoader:
-                    uqs[C].calibrate(X_cal, y_cal, batched=True)
+                U, alpha = uqs[C].get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=30)
+                U_per_class[C] = float(U)
+                alpha_per_class[C] = float(alpha)
+                logger.info("Class %d tuning: U=%f, alpha=%f", C, U, alpha)
+                uqs[C].alpha = U  # INTENTIONAL: alignment test between U and 1-Cov
 
-                # Tune alpha
-                alphas_: list[float] = []
-                U_: list[float] = []
-                for X_tune, y_tune in tuneDataLoader:
-                    U, alpha = uqs[C].get_uncertainty(X_tune, y_tune)
-                    alphas_.append(alpha)
-                    U_.append(U)
-                alphas = np.array(alphas_)
-                Us = np.array(U_)
-                alpha = np.nanmean(alphas)
-                alpha_std = np.nanstd(alphas)
-                U = np.nanmean(Us)
-                U_std = np.nanstd(Us)
+            # Test: stream per batch, accumulate global coverage per class
+            total_test_pix = np.zeros(len(model.classes_), dtype=np.int64)
+            covered_test_pix = np.zeros(len(model.classes_), dtype=np.int64)
+            max_setsizes_C = np.zeros(len(model.classes_), dtype=np.int64)
 
-                # Test
-                logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
-                batch_coverages, batch_setsizes = [], []
-                uqs[C].alpha = U
-                for X_n, y_n in testDataLoader:
-                    y_p, y_s = uqs[C].predict(X_n, force_non_empty_sets=False)
+            for X_test, y_test in testDataLoader:
+                p_test = model.predict_proba(X_test)
+                y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
+                for C in model.classes_:
+                    y_p, y_s = uqs[C].predict_from_proba(p_test)
+                    mask_C = (y_test_arr == C)
+                    n_C = int(mask_C.sum())
+                    total_test_pix[C] += n_C
+                    if n_C > 0:
+                        covered_test_pix[C] += int(y_s[mask_C, C].sum())
+                        max_setsizes_C[C] = max(
+                            int(max_setsizes_C[C]),
+                            int(y_s[mask_C].sum(axis=1).max()),
+                        )
 
-                    # Filter out the ouputs that are not in the classes
-                    y_n = flatten_batch(y_n).ravel()#.astype(int)
-                    valid_indexes = np.isin(y_n, np.array([C]))  #type: ignore
-                    y_n = y_n[valid_indexes]
-                    y_p = y_p[valid_indexes]
-                    y_s = y_s[valid_indexes]
+            for C in model.classes_:
+                U = U_per_class[C]
+                alpha = alpha_per_class[C]
+                coverage = covered_test_pix[C] / total_test_pix[C] if total_test_pix[C] > 0 else 0.0
+                setsize = int(max_setsizes_C[C])
 
-                    batch_coverages.append(get_coverage(y_n.numpy(), y_s))
-                    batch_setsizes.append(y_s.sum(axis=1).max())
-
-                coverage = np.array(batch_coverages).mean()
-                # Worst case scenario:
-                setsize = np.array(batch_setsizes).max()
-
+                logger.info("Class %d: alpha=%f, U=%f, coverage=%f", C, alpha, U, coverage)
                 coverages[C].append(coverage)
                 set_sizes[C].append(setsize)
                 alphas_tuned[C].append(alpha)
-                alphas_tuned_std[C].append(alpha_std)
+                alphas_tuned_std[C].append(0.0)
                 Us_tuned[C].append(U)
-                Us_tuned_std[C].append(U_std)
+                Us_tuned_std[C].append(0.0)
 
         iter_coverages_.append(coverages)
         iter_set_sizes_.append(set_sizes)
@@ -384,7 +480,7 @@ def main(img_path: Path=Path("img/ACDC_example/"),
 
 if __name__ == '__main__':
 
-    transform_str = "ElasticTransform"
+    transform_str = "AWGN"
 
     match transform_str:
         case "AWGN":
@@ -397,15 +493,15 @@ if __name__ == '__main__':
             transform = AddGaussianNoise
 
 
-    log_path = Path(f"log/{transform_str}/ACDC_example.log")
+    log_path = Path(f"log/ACDC_example/{transform_str}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    img_path = Path(f"img/{transform_str}/ACDC_example/")
+    img_path = Path(f"img/ACDC_example/{transform_str}/")
     img_path.mkdir(parents=True, exist_ok=True)
     # Tables
-    tab_path = Path(f"tab/{transform_str}/ACDC_example/")
+    tab_path = Path(f"tab/ACDC_example/{transform_str}/")
     tab_path.mkdir(parents=True, exist_ok=True)
     # Data
-    data_path = Path(f"data/{transform_str}/ACDC_example/")
+    data_path = Path(f"data/ACDC_example/{transform_str}/")
     data_path.mkdir(parents=True, exist_ok=True)
 
     # Logging configuration
