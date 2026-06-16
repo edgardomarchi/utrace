@@ -36,6 +36,11 @@ computes probabilities externally and passes them to the `*_from_proba` API.
 - Packaging: remove torch from the main dependencies.
 - Performance benchmark per phase.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
+- Two distinct quantile implementations for q_hat. The alpha setter uses np.nanquantile(scores[:_N], q_level, method='higher') (numpy); the jit path (_q_hat_from_alpha, used by get_uncertainty_from_proba) uses jnp.quantile (jax). Both resolve the padding by slicing [:_N] rather than masking. For smooth score distributions they agree; for bimodal (U-shaped) distributions they may differ at the edge. A script that tunes alpha via one path and applies it via the other has an internal inconsistency. Consider unifying.
+
+- _masked_quantile_higher (utils_jax.py) is orphaned. It was defined in Phase 2 to mask the +inf padding when computing the quantile, but neither the setter nor the jit path use it — both resolve padding by slicing [:_N] instead. The function is imported by the core (this caused the USE_JAX import asymmetry, see Phase 6) but never called. Either wire it in or remove it.
+
+- force_non_empty_sets is silently ignored in the new prediction path. The jit _predict_sets does not implement it, and predict_from_proba accepts the parameter but does not pass it through. The legacy _predict_sets (initial commit) honored it (y_sets[arange, y_pred] = True). This is behavior lost in the jit migration. Harmless for callers passing False, but a latent bug for any script relying on force_non_empty_sets=True.
 
 ### TODO: make device handling in to_jax() explicit (deferred)
 
@@ -137,6 +142,17 @@ Mapping to paper figures (Marchi & Liebl 2026, Mach. Learn.: Sci. Technol. 7 015
 Notes:
 - `fit` was the former name of `calibrate`. `*_opt` were "optimized" variants; part of their logic was folded into the main methods. These scripts are written against a previous API and do NOT run as-is against the current package: migrating them means rewriting them against the new API. Note: `fit`, `fit_opt`, and `predict_opt` are fully absent from the current `UncertaintyQuantifier` (not merely deprecated).
 - `ACDC_example.py`: cardiac model loaded via MONAI bundle (do not touch the loading); CP "samples" are pixels (high volume → calibration streaming matters); generates LaTeX tables (preserve).
+
+## Validation notes (analysis scripts)
+
+Alpha-sweep / set-size scripts (setsize_analysis, and likely the others) validate a METHOD CLAIM, not a pixel-exact reproduction of the paper figures.
+What the figure asserts is that the prediction-set size distribution follows the theoretical Beta — the histogram should track the Beta overlay. It is NOT expected to be bit-identical to the paper.
+
+- The variability between runs comes from the MODEL (the trained network), not from the calibration split. Verified empirically on setsize_analysis: with a fixed model, changing the random_split seed leaves the result unchanged; with a fixed split, different model trainings change it. With ~12k calibration samples the split barely moves the quantile; the model's score distribution is what matters.
+- For a simpler model (e.g. the FC) the figure reproduces the paper closely. For a complex one (CNN), it does not match bit-for-bit and should not be expected to — U-TraCE estimates the uncertainty of the given model, which is not the paper's exact model.
+- The degree of training affects set-size concentration: an over-trained CNN saturates (scores pushed to the 0/1 extremes, U-shaped), producing more concentrated sets. setsize_analysis uses 10 epochs (not 20) for a closer match to the paper's Beta fit.
+- For reproducible figures, fix BOTH seeds: the model (torch.manual_seed beforeinstantiation + train-loader generator) and the random_split. Same model seed
+  -> identical weights hash.
 
 ## Architecture: agnostic core, backend-specific integrations
 
