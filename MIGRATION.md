@@ -23,7 +23,7 @@ computes probabilities externally and passes them to the `*_from_proba` API.
       get_uncertainty_from_proba); legacy `*(X)` methods deprecated and delegating to
       shared impls. Three goldens: legacy, new-API, and synthetic equivalence.
 - [ ] Phase 4 — Migrate example scripts to the new API (IN PROGRESS).
-      Done: MNIST_class_conditional_example.py(merged), ACDC_example.py (migrated, pending numerical validation against the paper). setsize_analysis.py (migrated). Pending: convergence_analysis,      data_size_analysis, MNIST_test_coverage, MNIST_test_convergence.
+      Done: MNIST_class_conditional_example.py (merged), ACDC_example.py (migrated, pending numerical validation against the paper), setsize_analysis.py (migrated). In progress: convergence_analysis (core bugs diagnosed and fixed; script migration pending). Pending: data_size_analysis, MNIST_test_coverage, MNIST_test_convergence.
 - [ ] Phase 5 — Migrate remaining state (`_class_scores`, etc.) to `jnp` storage.
 - [ ] Phase 6 — Remove legacy API, `model` parameter, `*_opt`/`get_uncertainty`/`_trn`
       methods, legacy golden, and `baselines/legacy/`, remove the `USE_JAX` flag entirely. The JAX-based `_masked_quantile_higher` is part of the core and should always be available; the core should not import a symbol that the utils `__init__` exports only conditionally, and package importability must not depend on an environment flag or on where Python is launched from. Removing the flag also likely removes the need for the in-package `.env`, which is itself unusual
@@ -36,15 +36,14 @@ computes probabilities externally and passes them to the `*_from_proba` API.
 - Packaging: remove torch from the main dependencies.
 - Performance benchmark per phase.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
-- Two distinct quantile implementations for q_hat. The alpha setter uses np.nanquantile(scores[:_N], q_level, method='higher') (numpy); the jit path (_q_hat_from_alpha, used by get_uncertainty_from_proba) uses jnp.quantile (jax). Both resolve the padding by slicing [:_N] rather than masking. For smooth score distributions they agree; for bimodal (U-shaped) distributions they may differ at the edge. A script that tunes alpha via one path and applies it via the other has an internal inconsistency. Consider unifying.
-
-- _masked_quantile_higher (utils_jax.py) is orphaned. It was defined in Phase 2 to mask the +inf padding when computing the quantile, but neither the setter nor the jit path use it — both resolve padding by slicing [:_N] instead. The function is imported by the core (this caused the USE_JAX import asymmetry, see Phase 6) but never called. Either wire it in or remove it.
 
 - force_non_empty_sets is silently ignored in the new prediction path. The jit _predict_sets does not implement it, and predict_from_proba accepts the parameter but does not pass it through. The legacy _predict_sets (initial commit) honored it (y_sets[arange, y_pred] = True). This is behavior lost in the jit migration. Harmless for callers passing False, but a latent bug for any script relying on force_non_empty_sets=True.
 
 - [RESOLVED] The global batched branch of _calibrate_impl concatenated conformity scores into the buffer without re-sorting (.at[_N:_N+num].set with no np.sort), while the non-batched and per-class batched branches do sort. _masked_quantile_higher assumes an ascending-sorted buffer, so the tuning quantile (q_hat) became non-monotonic in alpha when calibrating global+batched, breaking the binary search for U (it failed to converge; U  collapsed to 0 or oscillated). Fix: sort the concatenation, matching the per-class branch.
   - The _masked_quantile_higher unit test did not catch this because it is fed an already-sorted array: the bug was in the integration (calibration violating the sort precondition), not in the function itself.
   - Coverage gap: no test exercises the global+batched path. TODO: add a test that calibrates global+batched and asserts the buffer stays sorted.
+
+- [RESOLVED] Per-class calibration double-counted _N: the trailing _N update ran unconditionally and overwrote the correct `_N = total` set inside the per-class branch, adding the last class's num_scores on top (e.g. N=66 for a 60-sample calibration). Fix: move the _N update into the global branch only. Also switched per-class accounting to a per-class count (_class_N) and fixed _class_scores initialization (was np.empty(_max_N), garbage). classes=[full list] now matches classes=None (commit 1a2c8a).
 
 ### TODO: make device handling in to_jax() explicit (deferred)
 
@@ -59,10 +58,8 @@ When addressing device handling (separate task, own branch / design discussion):
 
 Out of scope for the current script-migration work. Recorded here so the context is not lost.
 
-- Two quantile implementations: np.nanquantile(scores[:_N], method='higher') in the alpha setter vs _masked_quantile_higher (jax, assumes sorted input) in the tuning path. Unify toward _masked_quantile_higher for consistency, BUT first: (a) verify numerical equivalence against np.nanquantile across several q_level values, edges, and ties; (b) the setter would inherit the  sort precondition, so ensure its buffer is sorted.
+- Two quantile implementations: np.nanquantile(scores[:_N], method='higher') in the alpha setter vs _masked_quantile_higher (jax, assumes sorted input, used by the tuning path via _q_hat_from_alpha) in the tuning path. Unify toward _masked_quantile_higher for consistency, BUT first: (a) verify numerical equivalence against np.nanquantile across several q_level values, edges, and ties; (b) the setter would inherit the  sort precondition, so ensure its buffer is sorted.
 _masked_quantile_higher is called only from the tuning fori_loop, which is why it does not sort internally: re-sorting unchanging data on each of the ~30 iterations would be wasteful. The sort precondition is the price of that optimization; prefer a sortedness assertion in _calibrate_impl (cheap, once per alibration) over sorting inside the loop.
-
-- Per-class branch with >1 class: unfinished feature, NOT a bug. The intent was to treat classes=[a,b,c] as a single "meta-class", or to compute per-class scores and decide set membership using each class's own score (a complex decision surface, needs further study). Currently it fills per-class buffers while _predict uses a single global q_hat, not per-class. The _N count in this branch is also wrong (observed N=2). Leave as future research;  convergence_analysis uses classes=None.
 
 - Performance: _calibrate_impl sorts the full buffer on every batch (O(N log N) per batch). For large datasets (ACDC) it would be better to sort once when calibration is finalized, not per batch.
 
@@ -166,6 +163,7 @@ What the figure asserts is that the prediction-set size distribution follows the
 - The degree of training affects set-size concentration: an over-trained CNN saturates (scores pushed to the 0/1 extremes, U-shaped), producing more concentrated sets. setsize_analysis uses 10 epochs (not 20) for a closer match to the paper's Beta fit.
 - For reproducible figures, fix BOTH seeds: the model (torch.manual_seed beforeinstantiation + train-loader generator) and the random_split. Same model seed
   -> identical weights hash.
+- convergence_analysis (paper fig 7b): validates that U converges to the empirical error (1 - accuracy) as calibration size grows. Noisy at small calibration (expected), settles onto the flat 1-Cov / Ue lines at large calibration. Reference: post-fix run converges to U ~ 0.05 / 0.50 / 0.75 / 0.81 for sigma_n = 0 / 0.75 / 1.25 / 2.0. Requires both core fixes (sort + _N).
 
 ## Architecture: agnostic core, backend-specific integrations
 
