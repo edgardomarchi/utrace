@@ -49,7 +49,7 @@ def main(train_model=False, img_path=Path('img/')):
 
     classifier = Pytorch_wrapper(classifier, classes=classes)
 
-    cp = UncertaintyQuantifier(model=classifier, N=48000, classes=None)
+    cp = UncertaintyQuantifier(model=classifier, N=48000)
 
     noises = np.array([0, 0.75, 1.25, 2])
     fig, axs = plt.subplots(1, 4, figsize=(16, 4))
