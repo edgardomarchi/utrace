@@ -23,7 +23,7 @@ computes probabilities externally and passes them to the `*_from_proba` API.
       get_uncertainty_from_proba); legacy `*(X)` methods deprecated and delegating to
       shared impls. Three goldens: legacy, new-API, and synthetic equivalence.
 - [ ] Phase 4 — Migrate example scripts to the new API (IN PROGRESS).
-      Done: MNIST_class_conditional_example.py (merged), ACDC_example.py (migrated, pending numerical validation against the paper). Pending: convergence_analysis,      data_size_analysis, setsize_analysis, MNIST_test_coverage, MNIST_test_convergence.
+      Done: MNIST_class_conditional_example.py(merged), ACDC_example.py (migrated, pending numerical validation against the paper). setsize_analysis.py (migrated). Pending: convergence_analysis,      data_size_analysis, MNIST_test_coverage, MNIST_test_convergence.
 - [ ] Phase 5 — Migrate remaining state (`_class_scores`, etc.) to `jnp` storage.
 - [ ] Phase 6 — Remove legacy API, `model` parameter, `*_opt`/`get_uncertainty`/`_trn`
       methods, legacy golden, and `baselines/legacy/`, remove the `USE_JAX` flag entirely. The JAX-based `_masked_quantile_higher` is part of the core and should always be available; the core should not import a symbol that the utils `__init__` exports only conditionally, and package importability must not depend on an environment flag or on where Python is launched from. Removing the flag also likely removes the need for the in-package `.env`, which is itself unusual
@@ -42,6 +42,10 @@ computes probabilities externally and passes them to the `*_from_proba` API.
 
 - force_non_empty_sets is silently ignored in the new prediction path. The jit _predict_sets does not implement it, and predict_from_proba accepts the parameter but does not pass it through. The legacy _predict_sets (initial commit) honored it (y_sets[arange, y_pred] = True). This is behavior lost in the jit migration. Harmless for callers passing False, but a latent bug for any script relying on force_non_empty_sets=True.
 
+- [RESOLVED] The global batched branch of _calibrate_impl concatenated conformity scores into the buffer without re-sorting (.at[_N:_N+num].set with no np.sort), while the non-batched and per-class batched branches do sort. _masked_quantile_higher assumes an ascending-sorted buffer, so the tuning quantile (q_hat) became non-monotonic in alpha when calibrating global+batched, breaking the binary search for U (it failed to converge; U  collapsed to 0 or oscillated). Fix: sort the concatenation, matching the per-class branch.
+  - The _masked_quantile_higher unit test did not catch this because it is fed an already-sorted array: the bug was in the integration (calibration violating the sort precondition), not in the function itself.
+  - Coverage gap: no test exercises the global+batched path. TODO: add a test that calibrates global+batched and asserts the buffer stays sorted.
+
 ### TODO: make device handling in to_jax() explicit (deferred)
 
 `to_jax()` (utils/tensors.py) currently handles a device mismatch silently.
@@ -54,6 +58,13 @@ When addressing device handling (separate task, own branch / design discussion):
 - Narrow the `except` around the DLPack call: it currently catches all exceptions and routes them to `logger.debug`, which also hides non-device failures (unsupported dtype, version mismatch, malformed array). Catch only the expected device/DLPack exceptions and let the rest propagate.
 
 Out of scope for the current script-migration work. Recorded here so the context is not lost.
+
+- Two quantile implementations: np.nanquantile(scores[:_N], method='higher') in the alpha setter vs _masked_quantile_higher (jax, assumes sorted input) in the tuning path. Unify toward _masked_quantile_higher for consistency, BUT first: (a) verify numerical equivalence against np.nanquantile across several q_level values, edges, and ties; (b) the setter would inherit the  sort precondition, so ensure its buffer is sorted.
+_masked_quantile_higher is called only from the tuning fori_loop, which is why it does not sort internally: re-sorting unchanging data on each of the ~30 iterations would be wasteful. The sort precondition is the price of that optimization; prefer a sortedness assertion in _calibrate_impl (cheap, once per alibration) over sorting inside the loop.
+
+- Per-class branch with >1 class: unfinished feature, NOT a bug. The intent was to treat classes=[a,b,c] as a single "meta-class", or to compute per-class scores and decide set membership using each class's own score (a complex decision surface, needs further study). Currently it fills per-class buffers while _predict uses a single global q_hat, not per-class. The _N count in this branch is also wrong (observed N=2). Leave as future research;  convergence_analysis uses classes=None.
+
+- Performance: _calibrate_impl sorts the full buffer on every batch (O(N log N) per batch). For large datasets (ACDC) it would be better to sort once when calibration is finalized, not per batch.
 
 ## Canonical migration recipe (new API)
 

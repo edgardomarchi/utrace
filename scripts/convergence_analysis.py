@@ -35,26 +35,27 @@ def main(train_model=False, img_path=Path('img/')):
                                        transform=transforms.Compose([transforms.ToTensor(),
                                                                      transforms.Normalize((0.5,), (0.5,))]))
         train_base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-        train_and_save(classifier=classifier, train_dataloader=train_base_loader,model_pth=model_pth)
+        train_and_save(classifier=classifier, train_dataloader=train_base_loader,model_pth=model_pth, epochs=20)
 
 
     # Load the saved model
     with open(model_pth, 'rb') as f:
         classifier.load_state_dict(torch.load(f))
     logger.info("Model already trained.")
+    classifier.eval()  # Set the model to evaluation mode
 
     C = 10
     classes = np.arange(C)
 
     classifier = Pytorch_wrapper(classifier, classes=classes)
 
-    cp = UncertaintyQuantifier(classifier)
+    cp = UncertaintyQuantifier(model=classifier, N=48000, classes=None)
 
     noises = np.array([0, 0.75, 1.25, 2])
     fig, axs = plt.subplots(1, 4, figsize=(16, 4))
 
-    iters = 10
-    num_sizes = 100
+    iters = 1
+    num_sizes = 10
 
     calsizes = np.linspace(0.001, 0.4, num_sizes)
     tunesize = 0.2
@@ -86,7 +87,7 @@ def main(train_model=False, img_path=Path('img/')):
 
             for images, labels in whole_data_loader:
                 predicted = classifier(images)
-                labels = flatten_batch(labels).astype(int)
+                labels = flatten_batch(labels).numpy().astype(int)
                 predicted = flatten_batch(predicted.cpu())
                 correct_pix += (predicted==labels).sum()
 
@@ -108,13 +109,15 @@ def main(train_model=False, img_path=Path('img/')):
                 cp.reset()  # Reset the conformal predictor
                 logger.info("Calibrating the CP...")
                 for images, labels in calibrate_loader:
-                    cp.fit(images, labels, batched=True)
+                    cp.calibrate(images, labels, batched=True)
 
                 # Find uncertainty
                 logger.info("Tuning the CP...")
                 Us_ = []
                 for X_tune, y_tune in tune_loader:
-                    U, _ = cp.get_uncertainty(X_tune, y_tune, classes)
+                    U, alpha = cp.get_uncertainty_jit(X_tune, y_tune, max_iters=30)
+                    logger.info("calsize=%d  U=%.4f  alpha=%.4f  q_hat=%.4f  N=%d",
+                int(calsize*total_samples), U, alpha, cp.alpha if not np.isnan(cp.alpha) else -1, cp._N)
                     Us_.append(U)
 
                 Us[n, cs] = np.array(Us_).mean()
@@ -124,7 +127,7 @@ def main(train_model=False, img_path=Path('img/')):
                 total_test_samples = len(test_dataset)
                 for X_test, y_test in test_loader:
                     predicted = classifier(X_test)
-                    labels = flatten_batch(y_test).astype(int)
+                    labels = flatten_batch(y_test).numpy().astype(int)
                     predicted = flatten_batch(predicted.cpu())
                     correct_test_pix += (predicted==labels).sum()
                 Cov[n, cs] = 1 - (correct_test_pix/total_test_samples)
@@ -197,6 +200,9 @@ if __name__ == '__main__':
 
     mpl_logger = logging.getLogger('matplotlib')
     mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
+
+    jax_logger = logging.getLogger('jax')
+    jax_logger.setLevel(logging.WARNING)  # Set jax logger to WARNING level
 
     main(train_model=False, img_path=img_path)
     plt.show()

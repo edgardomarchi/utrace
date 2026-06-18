@@ -129,7 +129,7 @@ def _search_uncertainty(
 
         # If frozen:
         setsize_next = jnp.where(will_freeze, setsize, setsize_curr)
-        EC_yt_next   = jnp.where(will_freeze, EC_yt,   EC_yt_curr)
+        EC_yt_next   = jnp.where(will_freeze, EC_yt, EC_yt_curr)
 
         return (alpha_next, delta_next, setsize_next, EC_yt_next, will_freeze)
 
@@ -329,8 +329,11 @@ class UncertaintyQuantifier:
             num_scores = len(scores)
             if batched:
                 # If batched calibration, we need to concatenate the conformity scores for each batch
-                self.conformity_scores_ = self.conformity_scores_.at[self._N:self._N + num_scores].set(
-                jnp.asarray(np.asarray(scores), dtype=jnp.float64))
+                all_scores = np.sort(np.concatenate([
+                    np.asarray(self.conformity_scores_[:self._N]),
+                    np.asarray(scores)]))
+                self.conformity_scores_ = jnp.full((self._max_N,), jnp.inf, dtype=jnp.float64
+                    ).at[:self._N + num_scores].set(jnp.asarray(all_scores, dtype=jnp.float64))
             else:
                 #self.conformity_scores_ = scores
                 srt = np.sort(np.asarray(scores))
