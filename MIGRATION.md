@@ -23,7 +23,7 @@ computes probabilities externally and passes them to the `*_from_proba` API.
       get_uncertainty_from_proba); legacy `*(X)` methods deprecated and delegating to
       shared impls. Three goldens: legacy, new-API, and synthetic equivalence.
 - [ ] Phase 4 — Migrate example scripts to the new API (IN PROGRESS).
-      Done: MNIST_class_conditional_example.py (merged), ACDC_example.py (migrated, pending numerical validation against the paper), setsize_analysis.py (migrated). In progress: convergence_analysis (core bugs diagnosed and fixed; script migration pending). Pending: data_size_analysis, MNIST_test_coverage, MNIST_test_convergence.
+      Done: MNIST_class_conditional_example.py (merged), ACDC_example.py (migrated, pending numerical validation against the paper), setsize_analysis.py (migrated), convergence_analysis.py (migrated to *_from_proba; core fixes already in). Pending: data_size_analysis, MNIST_test_coverage, MNIST_test_convergence.
 - [ ] Phase 5 — Migrate remaining state (`_class_scores`, etc.) to `jnp` storage.
 - [ ] Phase 6 — Remove legacy API, `model` parameter, `*_opt`/`get_uncertainty`/`_trn`
       methods, legacy golden, and `baselines/legacy/`, remove the `USE_JAX` flag entirely. The JAX-based `_masked_quantile_higher` is part of the core and should always be available; the core should not import a symbol that the utils `__init__` exports only conditionally, and package importability must not depend on an environment flag or on where Python is launched from. Removing the flag also likely removes the need for the in-package `.env`, which is itself unusual

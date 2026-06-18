@@ -16,11 +16,28 @@ from utrace.utils.pytorch.transforms import AddGaussianNoise
 logger = logging.getLogger(__name__)
 
 
+def precompute_proba(loader, classifier):
+    """Run model forward on a DataLoader; return concatenated (proba, labels) as torch tensors.
+
+    Tensors are left unconverted so to_jax() can take the zero-copy DLPack path
+    when they are passed into the *_from_proba API.
+    """
+    all_proba = []
+    all_labels = []
+    for images, labels in loader:
+        all_proba.append(classifier.predict_proba(images))
+        all_labels.append(labels)
+    return torch.cat(all_proba, dim=0), torch.cat(all_labels, dim=0)
+
+
 def main(train_model=False, img_path=Path('img/')):
 
     BATCH_SIZE = 1024*6
     lambda_ = 0
+    MODEL_SEED = 42
+    SPLIT_SEED = 24
 
+    torch.manual_seed(MODEL_SEED)
     # Create an instance of the image classifier model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     classifier = ImageClassifierCNN().to(device)
@@ -34,8 +51,11 @@ def main(train_model=False, img_path=Path('img/')):
         train_dataset = datasets.MNIST(root='./data', train=False, download=True,
                                        transform=transforms.Compose([transforms.ToTensor(),
                                                                      transforms.Normalize((0.5,), (0.5,))]))
-        train_base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-        train_and_save(classifier=classifier, train_dataloader=train_base_loader,model_pth=model_pth, epochs=20)
+        train_generator = torch.Generator().manual_seed(MODEL_SEED)
+        train_base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
+                                       shuffle=True, generator=train_generator)
+        train_and_save(classifier=classifier, train_dataloader=train_base_loader,
+                       model_pth=model_pth, epochs=20, seed=MODEL_SEED)
 
 
     # Load the saved model
@@ -49,7 +69,7 @@ def main(train_model=False, img_path=Path('img/')):
 
     classifier = Pytorch_wrapper(classifier, classes=classes)
 
-    cp = UncertaintyQuantifier(model=classifier, N=48000)
+    cp = UncertaintyQuantifier(N=48000)
 
     noises = np.array([0, 0.75, 1.25, 2])
     fig, axs = plt.subplots(1, 4, figsize=(16, 4))
@@ -100,7 +120,9 @@ def main(train_model=False, img_path=Path('img/')):
                 logger.info("Calibrate size: %d - Tune size: %d - Test size: %d",
                             int(calsize*total_samples), int(tunesize*total_samples), int(testsize*total_samples))
                 # Re-calibrate and re-test with noise:
-                calibrate_dataset, tune_dataset, test_dataset = random_split(wholeDataset, [calsize, tunesize, testsize])
+                split_generator = torch.Generator().manual_seed(SPLIT_SEED)
+                calibrate_dataset, tune_dataset, test_dataset = random_split(
+                    wholeDataset, [calsize, tunesize, testsize], generator=split_generator)
 
                 calibrate_loader = DataLoader(calibrate_dataset, batch_size=BATCH_SIZE, shuffle=True)
                 tune_loader = DataLoader(tune_dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -109,18 +131,15 @@ def main(train_model=False, img_path=Path('img/')):
                 cp.reset()  # Reset the conformal predictor
                 logger.info("Calibrating the CP...")
                 for images, labels in calibrate_loader:
-                    cp.calibrate(images, labels, batched=True)
+                    p_cal = classifier.predict_proba(images)
+                    cp.calibrate_from_proba(p_cal, labels, batched=True)
 
-                # Find uncertainty
+                # Find uncertainty: materialize the full tune set, ONE call — no per-batch averaging
                 logger.info("Tuning the CP...")
-                Us_ = []
-                for X_tune, y_tune in tune_loader:
-                    U, alpha = cp.get_uncertainty_jit(X_tune, y_tune, max_iters=30)
-                    logger.info("calsize=%d  U=%.4f  alpha=%.4f  q_hat=%.4f  N=%d",
-                int(calsize*total_samples), U, alpha, cp.alpha if not np.isnan(cp.alpha) else -1, cp._N)
-                    Us_.append(U)
+                tune_proba, tune_y = precompute_proba(tune_loader, classifier)
+                U, _ = cp.get_uncertainty_from_proba(tune_proba, tune_y, max_iters=20)
 
-                Us[n, cs] = np.array(Us_).mean()
+                Us[n, cs] = U
 
                 logger.info("Testing U...")
                 correct_test_pix = 0
