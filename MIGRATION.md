@@ -126,6 +126,8 @@ Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the co
 
 - In the coverage test scripts, `uq.alpha = U` (setting alpha to the U value, not the tuned alpha) is INTENTIONAL: it is part of the alignment tests between U and (1-Cov). It may be changed to `alpha` in the future, but it is not a bug.
 
+- Per-class branch with classes=[multiple] is an UNFINISHED feature, not a supported mode: _predict uses a single global q_hat, so passing the full class list must behave identically to classes=None (verified by equivalence test). Do not rely on per-class quantiles until the meta-class semantics are designed. See 1a2c8a for the _N accounting fix that restored the global-equivalence.
+
 ## Legacy method state (discovered during ACDC migration)
 
 Only the legacy subset exercised by the legacy golden — `calibrate`, `get_uncertainty_jit`, `predict` — is maintained and tested. The rest of the legacy surface is broken against the
