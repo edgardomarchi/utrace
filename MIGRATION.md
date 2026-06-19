@@ -23,7 +23,7 @@ computes probabilities externally and passes them to the `*_from_proba` API.
       get_uncertainty_from_proba); legacy `*(X)` methods deprecated and delegating to
       shared impls. Three goldens: legacy, new-API, and synthetic equivalence.
 - [ ] Phase 4 — Migrate example scripts to the new API (IN PROGRESS).
-      Done: MNIST_class_conditional_example.py (merged), ACDC_example.py (migrated, pending numerical validation against the paper), setsize_analysis.py (migrated), convergence_analysis.py (migrated to *_from_proba; core fixes already in). Pending: data_size_analysis, MNIST_test_coverage, MNIST_test_convergence.
+      Done: MNIST_class_conditional_example.py (merged), ACDC_example.py (migrated, pending numerical validation against the paper), setsize_analysis.py (migrated), convergence_analysis.py (migrated to *_from_proba; core fixes already in), MNIST_example.py (migrated; quick AWGN sweep, 2 iter, reproduces figs 9(a)/10(a): U_bar tracks U_E and (1-Cov), slightly conservative on the Linear model; full multi-degradation / higher-iteration reproduction pending). Pending: data_size_analysis, MNIST_test_coverage, MNIST_test_convergence.
 - [ ] Phase 5 — Migrate remaining state (`_class_scores`, etc.) to `jnp` storage.
 - [ ] Phase 6 — Remove legacy API, `model` parameter, `*_opt`/`get_uncertainty`/`_trn`
       methods, legacy golden, and `baselines/legacy/`, remove the `USE_JAX` flag entirely. The JAX-based `_masked_quantile_higher` is part of the core and should always be available; the core should not import a symbol that the utils `__init__` exports only conditionally, and package importability must not depend on an environment flag or on where Python is launched from. Removing the flag also likely removes the need for the in-package `.env`, which is itself unusual
@@ -62,6 +62,11 @@ Out of scope for the current script-migration work. Recorded here so the context
 _masked_quantile_higher is called only from the tuning fori_loop, which is why it does not sort internally: re-sorting unchanging data on each of the ~30 iterations would be wasteful. The sort precondition is the price of that optimization; prefer a sortedness assertion in _calibrate_impl (cheap, once per alibration) over sorting inside the loop.
 
 - Performance: _calibrate_impl sorts the full buffer on every batch (O(N log N) per batch). For large datasets (ACDC) it would be better to sort once when calibration is finalized, not per batch.
+
+- Zero-copy in tuning: `get_uncertainty_from_proba` does `np.asarray(to_jax(...))`
+  (`uncertaintyQuantifier.py:431`), forcing a host copy and negating DLPack zero-copy on the
+  tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning
+  consume the jnp array directly (see the TODO at :430).
 
 ## Canonical migration recipe (new API)
 
@@ -130,7 +135,11 @@ Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the co
 Only the legacy subset exercised by the legacy golden — `calibrate`, `get_uncertainty_jit`, `predict` — is maintained and tested. The rest of the legacy surface is broken against the
 current core and has NO test coverage:
 - `get_uncertainty` (no suffix) calls `_predict_sets`, which no longer exists → raises `AttributeError` at runtime.
-- `get_uncertainty_opt`, `fit_opt`, `predict_opt`, `fit` are absent entirely.
+- `get_uncertainty_opt` IS defined (`uncertaintyQuantifier.py:435-490`) but is model-bound
+  (calls `self.model.predict_proba`) and has no `*_from_proba` counterpart; it raises
+  `AttributeError` if the UQ is constructed without `model=`, so it is unusable under the
+  no-model migration.
+- `fit_opt`, `predict_opt`, `fit` are absent entirely.
 
 Consequence: any script using these does NOT run against the current package and cannot produce a local reference. Such scripts (convergence_analysis, data_size_analysis, setsize_analysis, MNIST_test_coverage, MNIST_test_convergence) are full rewrites — validate them against the paper, not a prior local run. Tests passing does NOT imply these methods work; tests cover the core, not the scripts, and not the unexercised legacy paths. All of this is removed in Phase 6.
 
@@ -141,6 +150,7 @@ Mapping to paper figures (Marchi & Liebl 2026, Mach. Learn.: Sci. Technol. 7 015
 | Script | Paper figures | Legacy methods used | Status |
 |---|---|---|---|
 | `MNIST_class_conditional_example.py` | 11, 12 | calibrate, get_uncertainty_jit, predict | Directly migratable (Phase 4) |
+| `MNIST_example.py` | 9, 10 | calibrate, get_uncertainty_opt, predict | Migrated (Phase 4) |
 | `ACDC_example.py` | 13–16, tables B1/B2 | calibrate, get_uncertainty, predict | Migratable (per-class, pixels) |
 | `convergence_analysis.py` | 7(b) | fit, get_uncertainty | Rewrite |
 | `data_size_analysis.py` | 7(a,c) | fit, get_uncertainty_opt | Rewrite |
