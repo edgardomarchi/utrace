@@ -60,6 +60,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
     BATCH_SIZE:int = 300
     splits = [0.02, 0.02, 0.96]  # Calibration, Tuning, Testing
+    IT:int = 20
 
     # Create an instance of the image classifier model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -99,8 +100,8 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         classes = np.arange(10)
 
         classifier = Pytorch_wrapper(classifier, classes=classes, device=device)
-        
-        uq = UncertaintyQuantifier(classifier, N=20000, classes=classes)
+
+        uq = UncertaintyQuantifier(N=20000, classes=None)
 
         ################################
         #### Uncertainty evaluation ####
@@ -204,37 +205,39 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 logger.debug("Length of Test set: %d", len(testDataLoader.dataset))  #type: ignore
 
                 for X_cal, y_cal in calDataLoader:
-                    uq.calibrate(X_cal, y_cal, batched=True)
+                    p_cal = classifier.predict_proba(X_cal)
+                    y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                    uq.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
-                # Get uncertainty
-                alphas_: list[np.float64] = []
-                U_: list[np.float64] = []
+                # Precompute tune set (one model forward per batch)
+                tune_probs_list, tune_y_list = [], []
                 for X_tune, y_tune in tuneDataLoader:
-                    U, alpha = uq.get_uncertainty_opt(X_tune, y_tune)
-                    alphas_.append(alpha)
-                    U_.append(U)
-                alphas = np.array(alphas_)
-                Us = np.array(U_)
-                alpha = np.nanmean(alphas)
-                alpha_std = np.nanstd(alphas)
-                U = np.nanmean(Us)
-                U_std = np.nanstd(Us)
+                    tune_probs_list.append(classifier.predict_proba(X_tune))
+                    tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
+                tune_probs_all = torch.cat(tune_probs_list, dim=0)
+                tune_y_all = np.concatenate(tune_y_list, axis=0)
 
-                # Test
-                batch_coverages, batch_setsizes = [], []
-                uq.alpha = U
-                for X_n, y_n in testDataLoader:
-                    y_p, y_s = uq.predict(X_n, force_non_empty_sets=False)
-                    logger.debug("y_p: %s", y_p)
-                    logger.debug("y_s: %s", y_s)
-                    y_n = flatten_batch(y_n).ravel()#.astype(int)
+                # Tuning: one call over the full tune set (not batched/averaged)
+                U, alpha = uq.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=IT)
+                alpha_std = 0.0
+                U_std = 0.0
+                uq.alpha = alpha
 
-                    batch_coverages.append(get_coverage(y_n.numpy(), y_s))
-                    batch_setsizes.append(y_s.sum(axis=1).max())
+                # Test: coverage as a global proportion (size-weighted, batched)
+                batch_covs, batch_sizes = [], []
+                max_setsize = 0
+                for X_test, y_test in testDataLoader:
+                    p_test = classifier.predict_proba(X_test)
+                    y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
+                    y_p, y_s = uq.predict_from_proba(p_test)
+                    V = len(y_test_arr)
+                    if V > 0:
+                        batch_covs.append(get_coverage(y_test_arr, y_s))
+                        batch_sizes.append(V)
+                        max_setsize = max(max_setsize, int(y_s.sum(axis=1).max()))
 
-                coverage = np.array(batch_coverages).mean()
-                # Worst case scenario:
-                setsize = np.array(batch_setsizes).max()
+                coverage = np.average(batch_covs, weights=batch_sizes)  # exact global proportion
+                setsize = max_setsize
 
                 coverages.append(coverage)
                 set_sizes.append(setsize)
