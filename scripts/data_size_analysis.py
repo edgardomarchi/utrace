@@ -16,7 +16,7 @@ from utrace.utils.pytorch.transforms import AddGaussianNoise
 logger = logging.getLogger(__name__)
 
 
-def main(train_model=False, img_path:Path = Path('/img/')):
+def main(train_model=False, img_path:Path = Path('/img/'), num_sizes=40):
 
     plt.rcParams.update({
         'font.size': 6,
@@ -35,35 +35,7 @@ def main(train_model=False, img_path:Path = Path('/img/')):
 
     BATCH_SIZE = 1024*6
 
-    # train_dataset = datasets.MNIST(root='./data', train=False, download=True,
-    #                                transform=transforms.Compose([transforms.ToTensor(),
-    #                                                              transforms.Normalize((0.5,), (0.5,)),
-    #                                                              AddGaussianNoise(0., 0.5)]))
-
-    # train_base_dataset, _ = random_split(train_dataset, [0.9, 0.1])
-
-    # train_base_data_size = len(train_base_dataset)
-
-
     noise_std = 2.0
-    # test_full_dataset = datasets.MNIST(root='./data', train=True, download=True,
-    #                                    transform=transforms.Compose([transforms.ToTensor(),
-    #                                                                  transforms.Normalize((0.5,), (0.5,)),
-    #                                                                  AddGaussianNoise(0., noise_std)]))
-
-    # calibrate_dataset, tune_dataset, test_dataset = random_split(test_full_dataset, [0.2, 0.2, 0.6])
-
-
-    # train_base_loader = DataLoader(train_base_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    # calibrate_loader = DataLoader(calibrate_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    # tune_loader = DataLoader(tune_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    # test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-    # logger.info("Train dataset size: %d", len(train_base_loader.dataset))  #type: ignore
-    # logger.info("Calibrate dataset size: %d", len(calibrate_loader.dataset))  #type: ignore
-    # logger.info("Tune dataset size: %d", len(tune_loader.dataset))  #type: ignore
-    # logger.info("Test dataset size: %d", len(test_loader.dataset))  #type: ignore
-
 
     # Create an instance of the image classifier model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -91,8 +63,6 @@ def main(train_model=False, img_path:Path = Path('/img/')):
 
     classifier = Pytorch_wrapper(classifier, classes=classes)
 
-    cp = UncertaintyQuantifier(classifier)
-
     #Accuracy
     wholeDataset = datasets.MNIST(root='./data', train=True, download=True,
                                   transform=transforms.Compose([transforms.ToTensor(),
@@ -104,19 +74,22 @@ def main(train_model=False, img_path:Path = Path('/img/')):
     total_samples = len(wholeDataset)
     for images, labels in whole_data_loader:
         predicted = classifier(images)
-        labels = flatten_batch(labels).astype(int)
-        predicted = flatten_batch(predicted.cpu())
-        correct_pix += (predicted==labels).sum()
+        gt = flatten_batch(labels).numpy().astype(int)
+        pr = flatten_batch(predicted.cpu()).numpy().astype(int)
+        correct_pix += (pr == gt).sum()
 
     accuracy = correct_pix/total_samples
 
     logger.debug("Accuracy: %f", accuracy)
 
-    num_sizes = 40
-
     alphas = np.empty([num_sizes,num_sizes])
     calsizes = np.linspace(0.0005, 0.1, num_sizes)
     tunesizes = np.linspace(0.0005, 0.1, num_sizes)
+
+    # Fixed max_batch_size so the jitted search compiles once for the whole grid;
+    # +2 absorbs random_split's remainder round-robin (floor(frac*N)+1 in the worst case).
+    max_batch_size = int(np.ceil(tunesizes.max() * total_samples)) + 2
+    cp = UncertaintyQuantifier(N=20000, classes=None, max_batch_size=max_batch_size)
 
     for cs, calsize in enumerate(calsizes):
         for ts, tunesize in enumerate(tunesizes):
@@ -133,15 +106,21 @@ def main(train_model=False, img_path:Path = Path('/img/')):
             test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
             cp.reset()  # Reset the conformal predictor
-            for images, labels in calibrate_loader:
-                cp.fit(images, labels, batched=True)
+            for X_cal, y_cal in calibrate_loader:
+                p_cal = classifier.predict_proba(X_cal)
+                y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                cp.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
-            # Tune alpha
-            alphas_ = []
+            # Tune: materialize the full tune set, ONE call (alphas/U are non-linear in the
+            # data, so per-batch averaging is invalid)
+            tune_probs_list, tune_y_list = [], []
             for X_tune, y_tune in tune_loader:
-                U, alpha = cp.get_uncertainty_opt(X_tune, y_tune, classes, max_iters=30)
-                alphas_.append(U)
-            alphas[cs,ts] = np.array(alphas_).mean()
+                tune_probs_list.append(classifier.predict_proba(X_tune))
+                tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
+            tune_probs_all = torch.cat(tune_probs_list, dim=0)
+            tune_y_all = np.concatenate(tune_y_list, axis=0)
+            U, alpha = cp.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=30)
+            alphas[cs, ts] = U  # NOTE: 'alphas' holds U, matching the legacy naming the plots below read
 
     # Plot the results
     X,Y = np.meshgrid(calsizes*total_samples, tunesizes*total_samples, indexing='ij')
@@ -184,7 +163,6 @@ def main(train_model=False, img_path:Path = Path('/img/')):
         ax.set_xlabel(f"{config_dict['xlabel']} data size")
         ax.set_ylabel('U')
         ax.legend()
-        #fig.tight_layout()
         fig.savefig(img_path / Path(f'U_vs_{config_dict['xlabel']}_sizes.pdf'))
 
 
@@ -234,6 +212,8 @@ if __name__ == '__main__':
 
     mpl_logger = logging.getLogger('matplotlib')
     mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
+    jax_logger = logging.getLogger('jax')
+    jax_logger.setLevel(logging.WARNING)  # Set jax logger to WARNING level
 
-    main(train_model=True, img_path=img_path)
+    main(train_model=False, img_path=img_path, num_sizes=8)
     plt.show()
