@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 def main(train_model: bool=False,
          img_path: Path=Path("img/MNIST_example/"),
          tab_path: Path=Path("tab/MNIST_example/"),
-         data_path: Path=Path("data/MNIST_example/")):
+         data_path: Path=Path("data/MNIST_example/"),
+         iterations: int=10):
     
     # Graphics settings for publication quality
     plt.rcParams.update({
@@ -86,9 +87,7 @@ def main(train_model: bool=False,
 
         model = Pytorch_wrapper(pt_model, classes=classes)
 
-        cp = UncertaintyQuantifier(model, classes=classes)
-
-        iterations = 10
+        cp = UncertaintyQuantifier(N=20000, classes=None, max_batch_size=BATCH_SIZE)
 
         iter_coverages = np.empty(iterations, dtype=float)
         iter_Us = np.empty(iterations, dtype=float)
@@ -132,34 +131,33 @@ def main(train_model: bool=False,
             first_indices_history.append(first_index)
 
             # Calibrate the model
-            for images, labels in calibrate_loader:
-                cp.fit_opt(images, labels, batched=True)
+            for X_cal, y_cal in calibrate_loader:
+                p_cal = model.predict_proba(X_cal)
+                y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                cp.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
-            # Find Uncertainty
-            alphas_: list[np.float64] = []
-            U_: list[np.float64] = []
+            # Find Uncertainty: materialize the full tune set, ONE call (alpha/U are
+            # non-linear in the data, so per-batch averaging is invalid)
+            tune_probs_list, tune_y_list = [], []
             for X_tune, y_tune in tune_loader:
-                U = cp.get_uncertainty_opt(X_tune, y_tune, max_iters=30)
-                alphas_.append(cp.alpha)
-                U_.append(U)
-            alphas = np.array(alphas_)
-            Us = np.array(U_)
-            alpha = np.nanmean(alphas)
-            alpha_std = np.nanstd(alphas)
-            U = np.nanmean(Us)
-            U_std = np.nanstd(Us)
+                tune_probs_list.append(model.predict_proba(X_tune))
+                tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
+            tune_probs_all = torch.cat(tune_probs_list, dim=0)
+            tune_y_all = np.concatenate(tune_y_list, axis=0)
+            U, alpha = cp.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=30)
             iter_alphas[iteration] = alpha
             iter_Us[iteration] = U
 
             # Find coverage:
             batch_setsizes = []
             total_covered = 0
-            cp.alpha = U  # Set the alpha for the current iteration
+            cp.alpha = U  # intentional: threshold parameterized by U (Appendix-A design)
             for X_n, y_n in test_loader:
-                y_p, y_s = cp.predict_opt(X_n)
+                p_test = model.predict_proba(X_n)
+                y_p, y_s = cp.predict_from_proba(p_test)
                 # Filter out the ouputs that are not in the classes
-                y_n = flatten_batch(y_n).ravel().astype(int)
-                
+                y_n = flatten_batch(y_n).ravel().numpy().astype(int)
+
                 total_covered += (y_s[np.arange(len(y_n)), y_n]).sum()
                 batch_setsizes.append(y_s.sum(axis=1))
 
@@ -174,8 +172,8 @@ def main(train_model: bool=False,
             total_pix = 0
             for X_v, y_v in test_loader:
                 y_p = model(X_v)
-                y_v = flatten_batch(y_v).ravel().astype(int)
-                y_p = flatten_batch(y_p.cpu()).ravel().astype(int)
+                y_v = flatten_batch(y_v).ravel().numpy().astype(int)
+                y_p = flatten_batch(y_p.cpu()).ravel().numpy().astype(int)
                 total_pix += len(y_p)
                 correct_pix += (y_p==y_v).sum()
 
@@ -278,15 +276,16 @@ def main(train_model: bool=False,
 
 if __name__ == '__main__':
 
-    log_path = Path("log/MNIST_converage_example.log")
+    base_name = "MNIST_test_coverage"
+    log_path = Path(f"log/{base_name}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    img_path = Path("img/MNIST_converage_example/")
+    img_path = Path(f"img/{base_name}/")
     img_path.mkdir(parents=True, exist_ok=True)
     # Tables
-    tab_path = Path("tab/MNIST_converage_example/")
+    tab_path = Path(f"tab/{base_name}/")
     tab_path.mkdir(parents=True, exist_ok=True)
     # Data
-    data_path = Path("data/MNIST_converage_example/")
+    data_path = Path(f"fdata/{base_name}/")
     data_path.mkdir(parents=True, exist_ok=True)
 
     # Logging configuration
@@ -311,5 +310,8 @@ if __name__ == '__main__':
     mpl_logger = logging.getLogger('matplotlib')
     mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
 
-    main(train_model=False, img_path=img_path, tab_path=tab_path, data_path=data_path)
+    jax_logger = logging.getLogger('jax')
+    jax_logger.setLevel(logging.WARNING)  # Set jax logger to WARNING level
+
+    main(train_model=False, img_path=img_path, tab_path=tab_path, data_path=data_path, iterations=10)
     plt.show()
