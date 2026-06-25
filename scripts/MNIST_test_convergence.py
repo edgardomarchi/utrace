@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from _common import setup_example_io
+
 from scipy import stats
 
 import matplotlib.pyplot as plt
@@ -278,38 +280,7 @@ def main(train_model: bool=False,
 
 if __name__ == '__main__':
 
-    log_path = Path("log/MNIST_convergence_example.log")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    img_path = Path("img/MNIST_convergence_example/")
-    img_path.mkdir(parents=True, exist_ok=True)
-    # Tables
-    tab_path = Path("tab/MNIST_convergence_example/")
-    tab_path.mkdir(parents=True, exist_ok=True)
-    # Data
-    data_path = Path("data/MNIST_convergence_example/")
-    data_path.mkdir(parents=True, exist_ok=True)
-
-    # Logging configuration
-    logger = logging.getLogger('')
-    logger.setLevel(logging.DEBUG)  # Global level
-
-    # Console Handler: shows INFO or higher
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(levelname)s: %(message)s')
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-
-    # File Handler: only if global level is DEBUG
-    if logger.level <= logging.DEBUG:
-        file_handler = logging.FileHandler(log_path, mode='w')
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-
-    mpl_logger = logging.getLogger('matplotlib')
-    mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
+    img_path, data_path, tab_path, log_path = setup_example_io(__file__)
 
     main(train_model=False, img_path=img_path, tab_path=tab_path, data_path=data_path, iterations=10)
     plt.show()
