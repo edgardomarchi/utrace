@@ -65,9 +65,9 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 - Performance: _calibrate_impl sorts the full buffer on every batch (O(N log N) per batch). For large datasets (ACDC) it would be better to sort once when calibration is finalized, not per batch.
 
 - Zero-copy in tuning: `get_uncertainty_from_proba` does `np.asarray(to_jax(...))`
-  (`uncertaintyQuantifier.py:431`), forcing a host copy and negating DLPack zero-copy on the
-  tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning
-  consume the jnp array directly (see the TODO at :430).
+  (`uncertaintyQuantifier.py:431`), forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning consume the jnp array directly (see the TODO at :430).
+
+- Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
 ## Canonical migration recipe (new API)
 
