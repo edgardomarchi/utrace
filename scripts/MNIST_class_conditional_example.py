@@ -183,7 +183,10 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                                                                             #RandomPerspective(noise, 1),
                                                                             #ElasticTransform(noise),
                                                                             ]))
-                whole_data_loader = DataLoader(wholeDataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+                # num_workers=0: DataLoader workers fork(), which can deadlock once JAX has started its
+                # threads (fork + multithreading hazard, not a JAX bug). spawn or lazy JAX init could
+                # re-enable workers — deferred; see docs (TODO) / MIGRATION.md.
+                whole_data_loader = DataLoader(wholeDataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
 
                 correct_pix = np.zeros_like(classifier.classes_)
                 total_pix = np.zeros_like(classifier.classes_)
@@ -205,9 +208,9 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 logger.info("Estimating uncertainties with noise: %f.", noise)
                 cal_dataset, tune_dataset, test_dataset = random_split(wholeDataset, splits)
 
-                calDataLoader = DataLoader(cal_dataset, batch_size=CAL_BATCH_SIZE, shuffle=True, num_workers=4)
-                tuneDataLoader = DataLoader(tune_dataset, batch_size=TUNE_BATCH_SIZE, shuffle=True, num_workers=4)
-                testDataLoader = DataLoader(test_dataset, batch_size=TEST_BATCH_SIZE, shuffle=True, num_workers=4)
+                calDataLoader = DataLoader(cal_dataset, batch_size=CAL_BATCH_SIZE, shuffle=True, num_workers=0)
+                tuneDataLoader = DataLoader(tune_dataset, batch_size=TUNE_BATCH_SIZE, shuffle=True, num_workers=0)
+                testDataLoader = DataLoader(test_dataset, batch_size=TEST_BATCH_SIZE, shuffle=True, num_workers=0)
 
                 logger.debug("Length of Calibration set: %d", len(calDataLoader.dataset))  #type: ignore
                 logger.debug("Length of Tuning set: %d", len(tuneDataLoader.dataset))  #type: ignore
