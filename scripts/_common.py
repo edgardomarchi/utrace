@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+import torch
+
 
 def setup_example_io(script_path, *, transform: str | None = None,
                      roots=("img", "data", "tab"), level: int = logging.DEBUG):
@@ -72,3 +74,23 @@ def setup_example_io(script_path, *, transform: str | None = None,
     jax_logger.setLevel(logging.WARNING)
 
     return img_dir, data_dir, tab_dir, log_path
+
+
+def precompute_proba(loader, classifier):
+    """Run the classifier over a DataLoader and return concatenated (probs, labels).
+
+    Both are returned as raw torch tensors (no numpy conversion, no flatten_batch), so the
+    probabilities can take the zero-copy DLPack path into to_jax. Label dtype/shape handling
+    is left to the caller.
+
+    Returns
+    -------
+    (probs, labels) : (torch.Tensor [N, K], torch.Tensor [N, ...])
+        probs = torch.cat of classifier.predict_proba(X) over all batches.
+        labels = torch.cat of the raw DataLoader labels over all batches.
+    """
+    all_proba, all_labels = [], []
+    for X, y in loader:
+        all_proba.append(classifier.predict_proba(X))
+        all_labels.append(y)
+    return torch.cat(all_proba, dim=0), torch.cat(all_labels, dim=0)

@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import setup_example_io
+from _common import precompute_proba, setup_example_io
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
@@ -221,20 +221,12 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                         uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
                 # Precompute tune set (one model forward per batch, shared across classes)
-                tune_probs_list, tune_y_list = [], []
-                for X_tune, y_tune in tuneDataLoader:
-                    tune_probs_list.append(classifier.predict_proba(X_tune))
-                    tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
-                tune_probs_all = torch.cat(tune_probs_list, dim=0)
-                tune_y_all = np.concatenate(tune_y_list, axis=0)
+                tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
+                tune_y_all = flatten_batch(tune_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
 
                 # Precompute test set (one model forward per batch, shared across classes)
-                test_probs_list, test_y_list = [], []
-                for X_test, y_test in testDataLoader:
-                    test_probs_list.append(classifier.predict_proba(X_test))
-                    test_y_list.append(flatten_batch(y_test).ravel().numpy().astype(int))
-                test_probs_all = torch.cat(test_probs_list, dim=0)
-                test_y_all = np.concatenate(test_y_list, axis=0)
+                test_probs_all, test_y_all = precompute_proba(testDataLoader, classifier)
+                test_y_all = flatten_batch(test_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
 
                 for C in classifier.classes_:
                     # Tuning: one call over the full tune set (not batched/averaged)

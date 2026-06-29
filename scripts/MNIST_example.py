@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from _common import precompute_proba
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
 from mpl_toolkits.axes_grid1.inset_locator import mark_inset
@@ -210,12 +212,8 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                     uq.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
                 # Precompute tune set (one model forward per batch)
-                tune_probs_list, tune_y_list = [], []
-                for X_tune, y_tune in tuneDataLoader:
-                    tune_probs_list.append(classifier.predict_proba(X_tune))
-                    tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
-                tune_probs_all = torch.cat(tune_probs_list, dim=0)
-                tune_y_all = np.concatenate(tune_y_list, axis=0)
+                tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
+                tune_y_all = flatten_batch(tune_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
 
                 # Tuning: one call over the full tune set (not batched/averaged)
                 U, alpha = uq.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=IT)

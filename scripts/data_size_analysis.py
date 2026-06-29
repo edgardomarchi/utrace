@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import setup_example_io
+from _common import precompute_proba, setup_example_io
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -115,12 +115,8 @@ def main(train_model=False, *, img_path: Path, num_sizes=40):
 
             # Tune: materialize the full tune set, ONE call (alphas/U are non-linear in the
             # data, so per-batch averaging is invalid)
-            tune_probs_list, tune_y_list = [], []
-            for X_tune, y_tune in tune_loader:
-                tune_probs_list.append(classifier.predict_proba(X_tune))
-                tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
-            tune_probs_all = torch.cat(tune_probs_list, dim=0)
-            tune_y_all = np.concatenate(tune_y_list, axis=0)
+            tune_probs_all, tune_y_all = precompute_proba(tune_loader, classifier)
+            tune_y_all = flatten_batch(tune_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
             U, alpha = cp.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=30)
             alphas[cs, ts] = U  # NOTE: 'alphas' holds U, matching the legacy naming the plots below read
 

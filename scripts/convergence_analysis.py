@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import setup_example_io
+from _common import precompute_proba, setup_example_io
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,19 +17,6 @@ from utrace.utils.pytorch.transforms import AddGaussianNoise
 
 logger = logging.getLogger(__name__)
 
-
-def precompute_proba(loader, classifier):
-    """Run model forward on a DataLoader; return concatenated (proba, labels) as torch tensors.
-
-    Tensors are left unconverted so to_jax() can take the zero-copy DLPack path
-    when they are passed into the *_from_proba API.
-    """
-    all_proba = []
-    all_labels = []
-    for images, labels in loader:
-        all_proba.append(classifier.predict_proba(images))
-        all_labels.append(labels)
-    return torch.cat(all_proba, dim=0), torch.cat(all_labels, dim=0)
 
 
 def main(train_model=False, *, img_path: Path):
