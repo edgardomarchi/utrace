@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import precompute_proba, setup_example_io
+from _common import derive_max_batch_size, precompute_proba, setup_example_io
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
@@ -62,6 +62,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
          transform=AddGaussianNoise):
 
     BATCH_SIZE:int = 12000
+    MNIST_TRAIN_SIZE = 60000  # MNIST training set size (fixed; only the noise varies per iteration)
     splits = [0.2, 0.2, 0.6]  # Calibration, Tuning, Testing
     IT:int = 20
 
@@ -108,9 +109,10 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         #### Uncertainty evaluation ####
         ################################
 
+        max_batch_size = derive_max_batch_size(splits[1], MNIST_TRAIN_SIZE)
         uqs = []
         for C in classifier.classes_:
-            uqs.append(UncertaintyQuantifier(N=20000, classes=[C], max_batch_size=BATCH_SIZE))
+            uqs.append(UncertaintyQuantifier(N=20000, classes=[C], max_batch_size=max_batch_size))
 
         CAL_BATCH_SIZE = BATCH_SIZE
         TUNE_BATCH_SIZE = BATCH_SIZE

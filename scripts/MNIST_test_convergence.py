@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import precompute_proba, setup_example_io
+from _common import derive_max_batch_size, precompute_proba, setup_example_io
 
 from scipy import stats
 
@@ -88,8 +88,6 @@ def main(train_model: bool=False,
 
         model = Pytorch_wrapper(pt_model, classes=classes)
 
-        cp = UncertaintyQuantifier(N=20000, classes=None, max_batch_size=BATCH_SIZE)
-
         iter_coverages = np.empty(iterations, dtype=float)
         iter_Us = np.empty(iterations, dtype=float)
         iter_alphas = np.empty(iterations, dtype=float)
@@ -100,6 +98,9 @@ def main(train_model: bool=False,
                                             transform=transforms.Compose([transforms.ToTensor(),
                                                                           transforms.Normalize((0.5,), (0.5,)),
                                                                           AddGaussianNoise(0., 0.5)]))
+
+        max_batch_size = derive_max_batch_size(0.2, len(test_full_dataset))
+        cp = UncertaintyQuantifier(N=20000, classes=None, max_batch_size=max_batch_size)
 
         first_indices_history = []
         for iteration in range(iterations):

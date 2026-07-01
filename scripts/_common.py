@@ -1,4 +1,5 @@
 import logging
+import math
 from pathlib import Path
 
 import torch
@@ -94,3 +95,17 @@ def precompute_proba(loader, classifier):
         all_proba.append(classifier.predict_proba(X))
         all_labels.append(y)
     return torch.cat(all_proba, dim=0), torch.cat(all_labels, dim=0)
+
+
+def derive_max_batch_size(tune_split: float, dataset_len: int, *, margin: int = 2) -> int:
+    """Compute a safe max_batch_size for the uncertainty search jit padding.
+
+    Returns ceil(tune_split * dataset_len) + margin. The margin absorbs random_split's
+    remainder rounding (a split can yield floor(frac*N)+1 samples), which would otherwise
+    make the real tune set exceed max_batch_size and raise ValueError.
+
+    Note on per-class scripts: the FULL tune set (not the class-filtered subset) is passed to
+    get_uncertainty_from_proba — class filtering happens inside via valid_mask — so B is the
+    full tune-set size, NOT tune/n_classes. Pass the full tune_split accordingly.
+    """
+    return math.ceil(tune_split * dataset_len) + margin

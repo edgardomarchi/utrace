@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Union
 
-from _common import precompute_proba, setup_example_io
+from _common import derive_max_batch_size, precompute_proba, setup_example_io
 
 from scipy import stats
 
@@ -89,8 +89,6 @@ def main(train_model: bool=False,
 
         model = Pytorch_wrapper(pt_model, classes=classes)
 
-        cp = UncertaintyQuantifier(N=20000, classes=None, max_batch_size=BATCH_SIZE)
-
         iter_coverages = np.empty(iterations, dtype=float)
         iter_Us = np.empty(iterations, dtype=float)
         iter_alphas = np.empty(iterations, dtype=float)
@@ -104,6 +102,9 @@ def main(train_model: bool=False,
 
         data_partition = [0.2, 0.2, 0.6]  # Calibration, Tuning, Test
         Nc, Nt, Nv = np.round(len(test_full_dataset) * np.array(data_partition)).astype(int)
+
+        max_batch_size = derive_max_batch_size(data_partition[1], len(test_full_dataset))
+        cp = UncertaintyQuantifier(N=20000, classes=None, max_batch_size=max_batch_size)
 
         # For debbuging dataset split randomness:
         first_indices_history = []
