@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from _common import precompute_proba, setup_example_io
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -8,7 +10,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
 from utrace import UncertaintyQuantifier
-from utrace.utils import flatten_batch
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import ImageClassifierCNN, train_and_save
 from utrace.utils.pytorch.model_wrapper import Pytorch_wrapper
 from utrace.utils.pytorch.transforms import AddGaussianNoise
@@ -16,11 +18,15 @@ from utrace.utils.pytorch.transforms import AddGaussianNoise
 logger = logging.getLogger(__name__)
 
 
-def main(train_model=False, img_path=Path('img/')):
+
+def main(train_model=False, *, img_path: Path):
 
     BATCH_SIZE = 1024*6
     lambda_ = 0
+    MODEL_SEED = 42
+    SPLIT_SEED = 24
 
+    torch.manual_seed(MODEL_SEED)
     # Create an instance of the image classifier model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     classifier = ImageClassifierCNN().to(device)
@@ -34,27 +40,31 @@ def main(train_model=False, img_path=Path('img/')):
         train_dataset = datasets.MNIST(root='./data', train=False, download=True,
                                        transform=transforms.Compose([transforms.ToTensor(),
                                                                      transforms.Normalize((0.5,), (0.5,))]))
-        train_base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-        train_and_save(classifier=classifier, train_dataloader=train_base_loader,model_pth=model_pth)
+        train_generator = torch.Generator().manual_seed(MODEL_SEED)
+        train_base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
+                                       shuffle=True, generator=train_generator)
+        train_and_save(classifier=classifier, train_dataloader=train_base_loader,
+                       model_pth=model_pth, epochs=20, seed=MODEL_SEED)
 
 
     # Load the saved model
     with open(model_pth, 'rb') as f:
         classifier.load_state_dict(torch.load(f))
     logger.info("Model already trained.")
+    classifier.eval()  # Set the model to evaluation mode
 
     C = 10
     classes = np.arange(C)
 
     classifier = Pytorch_wrapper(classifier, classes=classes)
 
-    cp = UncertaintyQuantifier(classifier)
+    cp = UncertaintyQuantifier(N=48000)
 
     noises = np.array([0, 0.75, 1.25, 2])
     fig, axs = plt.subplots(1, 4, figsize=(16, 4))
 
-    iters = 10
-    num_sizes = 100
+    iters = 1
+    num_sizes = 10
 
     calsizes = np.linspace(0.001, 0.4, num_sizes)
     tunesize = 0.2
@@ -86,7 +96,7 @@ def main(train_model=False, img_path=Path('img/')):
 
             for images, labels in whole_data_loader:
                 predicted = classifier(images)
-                labels = flatten_batch(labels).astype(int)
+                labels = flatten_batch(labels).numpy().astype(int)
                 predicted = flatten_batch(predicted.cpu())
                 correct_pix += (predicted==labels).sum()
 
@@ -99,7 +109,9 @@ def main(train_model=False, img_path=Path('img/')):
                 logger.info("Calibrate size: %d - Tune size: %d - Test size: %d",
                             int(calsize*total_samples), int(tunesize*total_samples), int(testsize*total_samples))
                 # Re-calibrate and re-test with noise:
-                calibrate_dataset, tune_dataset, test_dataset = random_split(wholeDataset, [calsize, tunesize, testsize])
+                split_generator = torch.Generator().manual_seed(SPLIT_SEED)
+                calibrate_dataset, tune_dataset, test_dataset = random_split(
+                    wholeDataset, [calsize, tunesize, testsize], generator=split_generator)
 
                 calibrate_loader = DataLoader(calibrate_dataset, batch_size=BATCH_SIZE, shuffle=True)
                 tune_loader = DataLoader(tune_dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -108,23 +120,22 @@ def main(train_model=False, img_path=Path('img/')):
                 cp.reset()  # Reset the conformal predictor
                 logger.info("Calibrating the CP...")
                 for images, labels in calibrate_loader:
-                    cp.fit(images, labels, batched=True)
+                    p_cal = classifier.predict_proba(images)
+                    cp.calibrate_from_proba(p_cal, labels, batched=True)
 
-                # Find uncertainty
+                # Find uncertainty: materialize the full tune set, ONE call — no per-batch averaging
                 logger.info("Tuning the CP...")
-                Us_ = []
-                for X_tune, y_tune in tune_loader:
-                    U, _ = cp.get_uncertainty(X_tune, y_tune, classes)
-                    Us_.append(U)
+                tune_proba, tune_y = precompute_proba(tune_loader, classifier)
+                U, _ = cp.get_uncertainty_from_proba(tune_proba, tune_y, max_iters=20)
 
-                Us[n, cs] = np.array(Us_).mean()
+                Us[n, cs] = U
 
                 logger.info("Testing U...")
                 correct_test_pix = 0
                 total_test_samples = len(test_dataset)
                 for X_test, y_test in test_loader:
                     predicted = classifier(X_test)
-                    labels = flatten_batch(y_test).astype(int)
+                    labels = flatten_batch(y_test).numpy().astype(int)
                     predicted = flatten_batch(predicted.cpu())
                     correct_test_pix += (predicted==labels).sum()
                 Cov[n, cs] = 1 - (correct_test_pix/total_test_samples)
@@ -171,32 +182,7 @@ def main(train_model=False, img_path=Path('img/')):
 
 if __name__ == '__main__':
 
-    log_path = Path("log/convergence_analysis.log")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    img_path = Path('img/convergence_analysis/')
-    img_path.mkdir(parents=True, exist_ok=True)
-
-    # Logging configuration
-    logger = logging.getLogger('')
-    logger.setLevel(logging.DEBUG)  # Global level
-
-    # Console Handler: shows INFO or higher
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(levelname)s: %(message)s')
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-
-    # File Handler: only if global level is DEBUG
-    if logger.level <= logging.DEBUG:
-        file_handler = logging.FileHandler(log_path, mode='w')
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-
-    mpl_logger = logging.getLogger('matplotlib')
-    mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
+    img_path, data_path, tab_path, log_path = setup_example_io(__file__, roots=("img",))
 
     main(train_model=False, img_path=img_path)
     plt.show()

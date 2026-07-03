@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from _common import derive_max_batch_size, precompute_proba, setup_example_io
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
 from mpl_toolkits.axes_grid1.inset_locator import mark_inset
@@ -15,7 +17,8 @@ from torchvision import datasets, transforms
 from torchvision.transforms.v2 import RandomPerspective, ElasticTransform
 
 from utrace import UncertaintyQuantifier
-from utrace.utils import flatten_batch, get_coverage
+from utrace.utils import get_coverage
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import (
     ImageClassifierCNN,
     ImageClassifierLinear,
@@ -59,6 +62,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
          transform=AddGaussianNoise):
 
     BATCH_SIZE:int = 12000
+    MNIST_TRAIN_SIZE = 60000  # MNIST training set size (fixed; only the noise varies per iteration)
     splits = [0.2, 0.2, 0.6]  # Calibration, Tuning, Testing
     IT:int = 20
 
@@ -105,9 +109,10 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         #### Uncertainty evaluation ####
         ################################
 
+        max_batch_size = derive_max_batch_size(splits[1], MNIST_TRAIN_SIZE)
         uqs = []
         for C in classifier.classes_:
-            uqs.append(UncertaintyQuantifier(model=classifier, N=20000, classes=[C]))
+            uqs.append(UncertaintyQuantifier(N=20000, classes=[C], max_batch_size=max_batch_size))
 
         CAL_BATCH_SIZE = BATCH_SIZE
         TUNE_BATCH_SIZE = BATCH_SIZE
@@ -180,7 +185,10 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                                                                             #RandomPerspective(noise, 1),
                                                                             #ElasticTransform(noise),
                                                                             ]))
-                whole_data_loader = DataLoader(wholeDataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+                # num_workers=0: DataLoader workers fork(), which can deadlock once JAX has started its
+                # threads (fork + multithreading hazard, not a JAX bug). spawn or lazy JAX init could
+                # re-enable workers — deferred; see docs (TODO) / MIGRATION.md.
+                whole_data_loader = DataLoader(wholeDataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
 
                 correct_pix = np.zeros_like(classifier.classes_)
                 total_pix = np.zeros_like(classifier.classes_)
@@ -202,55 +210,48 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 logger.info("Estimating uncertainties with noise: %f.", noise)
                 cal_dataset, tune_dataset, test_dataset = random_split(wholeDataset, splits)
 
-                calDataLoader = DataLoader(cal_dataset, batch_size=CAL_BATCH_SIZE, shuffle=True, num_workers=4)
-                tuneDataLoader = DataLoader(tune_dataset, batch_size=TUNE_BATCH_SIZE, shuffle=True, num_workers=4)
-                testDataLoader = DataLoader(test_dataset, batch_size=TEST_BATCH_SIZE, shuffle=True, num_workers=4)
+                calDataLoader = DataLoader(cal_dataset, batch_size=CAL_BATCH_SIZE, shuffle=True, num_workers=0)
+                tuneDataLoader = DataLoader(tune_dataset, batch_size=TUNE_BATCH_SIZE, shuffle=True, num_workers=0)
+                testDataLoader = DataLoader(test_dataset, batch_size=TEST_BATCH_SIZE, shuffle=True, num_workers=0)
 
                 logger.debug("Length of Calibration set: %d", len(calDataLoader.dataset))  #type: ignore
                 logger.debug("Length of Tuning set: %d", len(tuneDataLoader.dataset))  #type: ignore
                 logger.debug("Length of Test set: %d", len(testDataLoader.dataset))  #type: ignore
 
+                # Calibration: batch-outer / class-inner (one model forward per batch)
+                for X_cal, y_cal in calDataLoader:
+                    p_cal = classifier.predict_proba(X_cal)
+                    y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                    for C in classifier.classes_:
+                        uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+
+                # Precompute tune set (one model forward per batch, shared across classes)
+                tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
+                tune_y_all = flatten_batch(tune_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
+
+                # Precompute test set (one model forward per batch, shared across classes)
+                test_probs_all, test_y_all = precompute_proba(testDataLoader, classifier)
+                test_y_all = flatten_batch(test_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
+
                 for C in classifier.classes_:
-                    for X_cal, y_cal in calDataLoader:
-                        uqs[C].calibrate(X_cal, y_cal, batched=True)
-
-                    # Get uncertainty
-                    alphas_: list[float] = []
-                    U_: list[float] = []
-                    for X_tune, y_tune in tuneDataLoader:
-                        U, alpha = uqs[C].get_uncertainty_jit(X_tune, y_tune) #, max_iters=IT)
-                        alphas_.append(alpha)
-                        U_.append(U)
-                    alphas = np.array(alphas_)
-                    Us = np.array(U_)
-                    alpha = np.nanmean(alphas)
-                    alpha_std = np.nanstd(alphas)
-                    U = np.nanmean(Us)
-                    U_std = np.nanstd(Us)
-
-                    # Test
-                    logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
-                    batch_coverages, batch_setsizes = [], []
+                    # Tuning: one call over the full tune set (not batched/averaged)
+                    U, alpha = uqs[C].get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=IT)
+                    alpha_std = 0.0
+                    U_std = 0.0
                     uqs[C].alpha = alpha
-                    for X_n, y_n in testDataLoader:
-                        y_p, y_s = uqs[C].predict(X_n, force_non_empty_sets=False)
-                        
-                        # Filter out the ouputs that are not in the classes
-                        y_n = flatten_batch(y_n).ravel()#.astype(int)
-                        valid_indexes = np.isin(y_n, np.array([C]))  #type: ignore
-                        y_n = y_n[valid_indexes]
-                        y_p = y_p[valid_indexes]
-                        y_s = y_s[valid_indexes]
 
-                        i_cov = get_coverage(y_n.numpy(), y_s)
-                        if i_cov >= 0.99:
-                            print(f'!!! Coverage of: {i_cov}!!!, Noise: {noise}, Class: {C}, Iter: {iteration}')
-                        batch_coverages.append(i_cov)
-                        batch_setsizes.append(y_s.sum(axis=1).max())
+                    # Test: coverage as a global proportion
+                    logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
+                    mask_C = (test_y_all == C)
+                    y_n_C = test_y_all[mask_C]
+                    y_p, y_s = uqs[C].predict_from_proba(test_probs_all)
+                    y_s_C = y_s[mask_C]
 
-                    coverage = np.array(batch_coverages).mean()
+                    coverage = get_coverage(y_n_C, y_s_C)
+                    if coverage >= 0.99:
+                        print(f'!!! Coverage of: {coverage}!!!, Noise: {noise}, Class: {C}, Iter: {iteration}')
                     # Worst case scenario:
-                    setsize = np.array(batch_setsizes).max()
+                    setsize = y_s_C.sum(axis=1).max() if len(y_s_C) > 0 else 0
 
                     coverages[C].append(coverage)
                     set_sizes[C].append(setsize)
@@ -494,39 +495,7 @@ if __name__ == '__main__':
         case _:
             transform = AddGaussianNoise
 
-
-    log_path = Path(f"log/{transform_str}/MNIST_c_example.log")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    img_path = Path("img/MNIST_c_example/")
-    img_path.mkdir(parents=True, exist_ok=True)
-    # Tables
-    tab_path = Path("tab/MNIST_c_example/")
-    tab_path.mkdir(parents=True, exist_ok=True)
-    # Data
-    data_path = Path("data/MNIST_c_example/")
-    data_path.mkdir(parents=True, exist_ok=True)
-
-    # Logging configuration
-    logger = logging.getLogger('')
-    logger.setLevel(logging.DEBUG)  # Global level
-
-    # Console Handler: shows INFO or higher
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter("[%(levelname)s]: %(message)s")
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-
-    # File Handler: only if global level is DEBUG
-    if logger.level <= logging.DEBUG:
-        file_handler = logging.FileHandler(log_path, mode='w')
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter("[%(levelname)s - %(filename)s:%(lineno)s - %(funcName)20s()]: %(message)s")
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-
-    mpl_logger = logging.getLogger('matplotlib')
-    mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
+    img_path, data_path, tab_path, log_path = setup_example_io(__file__, transform=transform_str)
 
     main(train_model=False, img_path=img_path, tab_path=tab_path, data_path=data_path, transform=transform)
     plt.show()

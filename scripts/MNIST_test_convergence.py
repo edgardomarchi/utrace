@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from _common import derive_max_batch_size, precompute_proba, setup_example_io
+
 from scipy import stats
 
 import matplotlib.pyplot as plt
@@ -11,7 +13,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
 from utrace import UncertaintyQuantifier
-from utrace.utils import flatten_batch, get_coverage
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import (
     ImageClassifierCNN,
     ImageClassifierLinear,
@@ -26,7 +28,8 @@ logger = logging.getLogger(__name__)
 def main(train_model: bool=False,
          img_path: Path=Path("img/MNIST_example/"),
          tab_path: Path=Path("tab/MNIST_example/"),
-         data_path: Path=Path("data/MNIST_example/")):
+         data_path: Path=Path("data/MNIST_example/"),
+         iterations: int=200):
     
     plt.rcParams.update({
         'font.size': 6,
@@ -43,7 +46,7 @@ def main(train_model: bool=False,
         'savefig.transparent': True,
     })
 
-    BATCH_SIZE = 1024*10
+    BATCH_SIZE = 12000  # lower this on low-VRAM GPUs
 
     # Create an instance of the image classifier model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -85,10 +88,6 @@ def main(train_model: bool=False,
 
         model = Pytorch_wrapper(pt_model, classes=classes)
 
-        cp = UncertaintyQuantifier(model)
-
-        iterations = 200
-
         iter_coverages = np.empty(iterations, dtype=float)
         iter_Us = np.empty(iterations, dtype=float)
         iter_alphas = np.empty(iterations, dtype=float)
@@ -98,7 +97,10 @@ def main(train_model: bool=False,
         test_full_dataset = datasets.MNIST(root='./data', train=True, download=True,
                                             transform=transforms.Compose([transforms.ToTensor(),
                                                                           transforms.Normalize((0.5,), (0.5,)),
-                                                                          AddGaussianNoise(0., 1.0)]))
+                                                                          AddGaussianNoise(0., 0.5)]))
+
+        max_batch_size = derive_max_batch_size(0.2, len(test_full_dataset))
+        cp = UncertaintyQuantifier(N=20000, classes=None, max_batch_size=max_batch_size)
 
         first_indices_history = []
         for iteration in range(iterations):
@@ -123,38 +125,31 @@ def main(train_model: bool=False,
             first_index = calibrate_dataset.indices[0]
             first_indices_history.append(first_index) 
             # Calibrate the model
-            for images, labels in calibrate_loader:
-                cp.fit(images, labels, batched=True)
+            for X_cal, y_cal in calibrate_loader:
+                p_cal = model.predict_proba(X_cal)
+                y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                cp.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
-            # Find Uncertainty
-            alphas_: list[float] = []
-            U_: list[float] = []
-            for X_tune, y_tune in tune_loader:
-                U, alpha = cp.get_uncertainty_opt(X_tune, y_tune, max_iters=30)
-                alphas_.append(alpha)
-                U_.append(U)
-            alphas = np.array(alphas_)
-            Us = np.array(U_)
-            alpha = np.nanmean(alphas)
-            alpha_std = np.nanstd(alphas)
-            U = np.nanmean(Us)
-            U_std = np.nanstd(Us)
+            # Find Uncertainty: materialize the full tune set, ONE call (alpha/U are
+            # non-linear in the data, so per-batch averaging is invalid)
+            tune_probs_all, tune_y_all = precompute_proba(tune_loader, model)
+            tune_y_all = flatten_batch(tune_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
+            U, alpha = cp.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=30)
             iter_alphas[iteration] = alpha
             iter_Us[iteration] = U
 
             # Find coverage:
-            batch_coverages, batch_setsizes = [], []
+            batch_setsizes = []
             total_covered = 0
+            cp.alpha = U  # aligned to the sibling: threshold parameterized by U, not the tuned alpha
             for X_n, y_n in test_loader:
-                y_p, y_s = cp.predict(X_n, alpha)
+                p_test = model.predict_proba(X_n)
+                y_p, y_s = cp.predict_from_proba(p_test)
                 # Filter out the ouputs that are not in the classes
-                y_n = flatten_batch(y_n).ravel().astype(int)
-                
-                total_covered += (y_s[np.arange(len(y_n)), y_n]).sum()
-                batch_coverages.append(get_coverage(y_n, y_s))
-                batch_setsizes.append(y_s.sum(axis=1))
+                y_n = flatten_batch(y_n).ravel().numpy().astype(int)
 
-            coverage = np.array(batch_coverages).mean()
+                total_covered += (y_s[np.arange(len(y_n)), y_n]).sum()
+                batch_setsizes.append(y_s.sum(axis=1))
 
             all_setsizes = np.concatenate(batch_setsizes)
             empty_sets = (all_setsizes == 0).sum()
@@ -162,15 +157,15 @@ def main(train_model: bool=False,
             # logger.info('Empty sets for model %s: %d out of %d',
             #             model_name, empty_sets, Nv)
 
-            iter_coverages[iteration] = total_covered #coverage
+            iter_coverages[iteration] = total_covered
 
             # Accuracy over the test set
             correct_pix = 0
             total_pix = 0
             for X_v, y_v in test_loader:
                 y_p = model(X_v)
-                y_v = flatten_batch(y_v).ravel().astype(int)
-                y_p = flatten_batch(y_p.cpu()).ravel().astype(int)
+                y_v = flatten_batch(y_v).ravel().numpy().astype(int)
+                y_p = flatten_batch(y_p.cpu()).ravel().numpy().astype(int)
                 total_pix += len(y_p)
                 correct_pix += (y_p==y_v).sum()
 
@@ -282,38 +277,7 @@ def main(train_model: bool=False,
 
 if __name__ == '__main__':
 
-    log_path = Path("log/MNIST_convergence_example.log")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    img_path = Path("img/MNIST_convergence_example/")
-    img_path.mkdir(parents=True, exist_ok=True)
-    # Tables
-    tab_path = Path("tab/MNIST_convergence_example/")
-    tab_path.mkdir(parents=True, exist_ok=True)
-    # Data
-    data_path = Path("data/MNIST_convergence_example/")
-    data_path.mkdir(parents=True, exist_ok=True)
+    img_path, data_path, tab_path, log_path = setup_example_io(__file__)
 
-    # Logging configuration
-    logger = logging.getLogger('')
-    logger.setLevel(logging.DEBUG)  # Global level
-
-    # Console Handler: shows INFO or higher
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(levelname)s: %(message)s')
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-
-    # File Handler: only if global level is DEBUG
-    if logger.level <= logging.DEBUG:
-        file_handler = logging.FileHandler(log_path, mode='w')
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-
-    mpl_logger = logging.getLogger('matplotlib')
-    mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
-
-    main(train_model=False, img_path=img_path, tab_path=tab_path, data_path=data_path)
+    main(train_model=False, img_path=img_path, tab_path=tab_path, data_path=data_path, iterations=10)
     plt.show()

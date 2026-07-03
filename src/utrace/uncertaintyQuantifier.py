@@ -12,7 +12,8 @@ from jax import jit, lax
 from functools import partial
 
 from .scores import aps, aps_cal, lac, lac_cal
-from .utils import flatten_batch, _masked_quantile_higher, _bucket_size
+from .utils.pytorch.helpers import flatten_batch
+from .utils import _masked_quantile_higher, _bucket_size
 from .utils.tensors import to_jax
 
 from .config import USE_JAX
@@ -128,7 +129,7 @@ def _search_uncertainty(
 
         # If frozen:
         setsize_next = jnp.where(will_freeze, setsize, setsize_curr)
-        EC_yt_next   = jnp.where(will_freeze, EC_yt,   EC_yt_curr)
+        EC_yt_next   = jnp.where(will_freeze, EC_yt, EC_yt_curr)
 
         return (alpha_next, delta_next, setsize_next, EC_yt_next, will_freeze)
 
@@ -204,9 +205,10 @@ class UncertaintyQuantifier:
         self.__alpha:np.float64 = np.float64('nan')
         self.__q_hat:np.float64 = np.float64('nan')
 
-        self._class_alphas:np.ndarray = np.zeros_like(self.classes, dtype=np.float64) if self.classes is not None else np.empty(self._max_N)
-        self._class_q_hats:np.ndarray = np.zeros_like(self.classes, dtype=np.float64) if self.classes is not None else np.empty(self._max_N)
-        self._class_scores:list[np.ndarray] = [np.empty(self._max_N) for _ in self.classes] if self.classes is not None else []
+        self._class_alphas:np.ndarray = np.zeros_like(self.classes, dtype=np.float64) if self.classes is not None else np.array([])
+        self._class_q_hats:np.ndarray = np.zeros_like(self.classes, dtype=np.float64) if self.classes is not None else np.array([])
+        self._class_scores: list[np.ndarray] = [np.array([]) for _ in self.classes] if self.classes is not None else []
+        self._class_N: np.ndarray = np.zeros(len(self.classes), dtype=int) if self.classes is not None else np.array([])
 
         self._N = 0
 
@@ -300,36 +302,37 @@ class UncertaintyQuantifier:
         
         # Classes
         if self.classes is not None:
-            total_scores = 0
             for c_idx, C in enumerate(self.classes):
                 logger.debug("Calibrating for class %d", C)
-                
                 scores = self.cal_score_(y[y==C], y_pred_proba[y==C])
-                num_scores = len(scores)
                 if batched:
                     self._class_scores[c_idx] = np.sort(
-                                                np.concatenate([self._class_scores[c_idx][:self._N],
-                                                                np.array(scores)]
-                                                ))
+                        np.concatenate([self._class_scores[c_idx][:self._class_N[c_idx]],
+                                        np.asarray(scores)]))
+                    self._class_N[c_idx] = self._class_N[c_idx] + len(scores)
                 else:
-                    self._class_scores[c_idx] = np.sort(np.array(scores))
+                    self._class_scores[c_idx] = np.sort(np.asarray(scores))
+                    self._class_N[c_idx] = len(scores)
                 if self._class_scores[c_idx].size == 0:
                     logger.warning("No scores for class %d after calibration.", C)
-                total_scores += num_scores
-                
-            logger.debug("Total conformity scores shape before class calibration: %s", self.conformity_scores_.shape)
-            sorted_all = np.sort(np.concatenate(self._class_scores))  # numpy, como antes
-            self.conformity_scores_ = self.conformity_scores_.at[:self._N + total_scores].set(
-                jnp.asarray(sorted_all, dtype=jnp.float64))
-            logger.debug("Total conformity scores shape after class calibration: %s", self.conformity_scores_.shape)
+
+            sorted_all = np.sort(np.concatenate(
+                [self._class_scores[c_idx][:self._class_N[c_idx]] for c_idx in range(len(self.classes))]))
+            total = int(self._class_N.sum())
+            self.conformity_scores_ = jnp.full((self._max_N,), jnp.inf, dtype=jnp.float64
+                ).at[:total].set(jnp.asarray(sorted_all, dtype=jnp.float64))
+            self._N = total
 
         else:   
             scores = self.cal_score_(y, y_pred_proba)
             num_scores = len(scores)
             if batched:
                 # If batched calibration, we need to concatenate the conformity scores for each batch
-                self.conformity_scores_ = self.conformity_scores_.at[self._N:self._N + num_scores].set(
-                jnp.asarray(np.asarray(scores), dtype=jnp.float64))
+                all_scores = np.sort(np.concatenate([
+                    np.asarray(self.conformity_scores_[:self._N]),
+                    np.asarray(scores)]))
+                self.conformity_scores_ = jnp.full((self._max_N,), jnp.inf, dtype=jnp.float64
+                    ).at[:self._N + num_scores].set(jnp.asarray(all_scores, dtype=jnp.float64))
             else:
                 #self.conformity_scores_ = scores
                 srt = np.sort(np.asarray(scores))
@@ -339,8 +342,8 @@ class UncertaintyQuantifier:
             
             logger.debug("Conformity scores shape: %s, used: %d", self.conformity_scores_.shape, self._N)
 
-        #Update number of scores
-        self._N = self._N + num_scores if batched else num_scores
+            #Update number of scores
+            self._N = self._N + num_scores if batched else num_scores
         
     def predict_from_proba(self, y_pred_proba, force_non_empty_sets: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """Predict class labels and prediction sets from precomputed probabilities.

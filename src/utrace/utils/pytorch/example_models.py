@@ -3,32 +3,35 @@
 import logging
 from pathlib import Path
 
+import numpy as np
+
 import torch
 from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
-def train_and_save(classifier:torch.nn.Module, train_dataloader:DataLoader,
-                   model_pth:Path=Path('./model/'), device='cuda', epochs:int=10):
+def train_and_save(classifier: torch.nn.Module, train_dataloader: DataLoader,
+                   model_pth: Path = Path('./model/'), device='cpu',
+                   epochs: int = 10, seed: int | None = None):
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
     # Define the optimizer and loss function
     optimizer = torch.optim.Adam(classifier.parameters(), lr=0.001)
     loss_fn = torch.nn.CrossEntropyLoss()
-
     # Train the model
-    for epoch in range(epochs):  # Train for 10 epochs
+    for epoch in range(epochs):
         for images, labels in train_dataloader:
             images, labels = images.to(device), labels.to(device)
-            optimizer.zero_grad()  # Reset gradients
-            outputs = classifier(images)  # Forward pass
-            loss = loss_fn(outputs, labels)  # Compute loss
-            loss.backward()  # Backward pass
-            optimizer.step()  # Update weights
-
+            optimizer.zero_grad()
+            outputs = classifier(images)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            optimizer.step()
         logger.info("Epoch: %d, loss is %f", epoch, loss.item())
-
-    # Save the trained model
     torch.save(classifier.state_dict(), model_pth)
     logger.info("Model state saved in: %s", model_pth)
+    
 
 def onnx_export(classifier:torch.nn.Module, model_pth:Path=Path('./model/onnx_model.onnx'),
                 input_shape=(1, 1, 28, 28), device='cuda'):

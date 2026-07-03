@@ -27,7 +27,8 @@ from torch.utils.data import DataLoader, random_split, Subset
 from torchvision import datasets, transforms
 
 from utrace import UncertaintyQuantifier
-from utrace.utils import flatten_batch, get_coverage
+from utrace.utils import get_coverage
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import ImageClassifierCNN
 from utrace.utils.pytorch.model_wrapper import Pytorch_wrapper
 from utrace.utils.pytorch.transforms import AddGaussianNoise

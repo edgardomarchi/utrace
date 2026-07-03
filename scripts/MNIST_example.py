@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from _common import precompute_proba
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
 from mpl_toolkits.axes_grid1.inset_locator import mark_inset
@@ -14,7 +16,8 @@ from torchvision import datasets, transforms
 from torchvision.transforms.v2 import RandomPerspective, ElasticTransform
 
 from utrace import UncertaintyQuantifier
-from utrace.utils import flatten_batch, get_coverage
+from utrace.utils import get_coverage
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import (
     ImageClassifierCNN,
     ImageClassifierLinear,
@@ -59,6 +62,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
     BATCH_SIZE:int = 300
     splits = [0.02, 0.02, 0.96]  # Calibration, Tuning, Testing
+    IT:int = 20
 
     # Create an instance of the image classifier model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -98,8 +102,8 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         classes = np.arange(10)
 
         classifier = Pytorch_wrapper(classifier, classes=classes, device=device)
-        
-        uq = UncertaintyQuantifier(classifier, N=20000, classes=classes)
+
+        uq = UncertaintyQuantifier(N=20000, classes=None)
 
         ################################
         #### Uncertainty evaluation ####
@@ -203,37 +207,35 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 logger.debug("Length of Test set: %d", len(testDataLoader.dataset))  #type: ignore
 
                 for X_cal, y_cal in calDataLoader:
-                    uq.calibrate(X_cal, y_cal, batched=True)
+                    p_cal = classifier.predict_proba(X_cal)
+                    y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                    uq.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
-                # Get uncertainty
-                alphas_: list[np.float64] = []
-                U_: list[np.float64] = []
-                for X_tune, y_tune in tuneDataLoader:
-                    U, alpha = uq.get_uncertainty_opt(X_tune, y_tune)
-                    alphas_.append(alpha)
-                    U_.append(U)
-                alphas = np.array(alphas_)
-                Us = np.array(U_)
-                alpha = np.nanmean(alphas)
-                alpha_std = np.nanstd(alphas)
-                U = np.nanmean(Us)
-                U_std = np.nanstd(Us)
+                # Precompute tune set (one model forward per batch)
+                tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
+                tune_y_all = flatten_batch(tune_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
 
-                # Test
-                batch_coverages, batch_setsizes = [], []
-                uq.alpha = U
-                for X_n, y_n in testDataLoader:
-                    y_p, y_s = uq.predict(X_n, force_non_empty_sets=False)
-                    logger.debug("y_p: %s", y_p)
-                    logger.debug("y_s: %s", y_s)
-                    y_n = flatten_batch(y_n).ravel()#.astype(int)
+                # Tuning: one call over the full tune set (not batched/averaged)
+                U, alpha = uq.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=IT)
+                alpha_std = 0.0
+                U_std = 0.0
+                uq.alpha = alpha
 
-                    batch_coverages.append(get_coverage(y_n.numpy(), y_s))
-                    batch_setsizes.append(y_s.sum(axis=1).max())
+                # Test: coverage as a global proportion (size-weighted, batched)
+                batch_covs, batch_sizes = [], []
+                max_setsize = 0
+                for X_test, y_test in testDataLoader:
+                    p_test = classifier.predict_proba(X_test)
+                    y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
+                    y_p, y_s = uq.predict_from_proba(p_test)
+                    V = len(y_test_arr)
+                    if V > 0:
+                        batch_covs.append(get_coverage(y_test_arr, y_s))
+                        batch_sizes.append(V)
+                        max_setsize = max(max_setsize, int(y_s.sum(axis=1).max()))
 
-                coverage = np.array(batch_coverages).mean()
-                # Worst case scenario:
-                setsize = np.array(batch_setsizes).max()
+                coverage = np.average(batch_covs, weights=batch_sizes)  # exact global proportion
+                setsize = max_setsize
 
                 coverages.append(coverage)
                 set_sizes.append(setsize)
@@ -381,8 +383,10 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
 
 if __name__ == '__main__':
+    from _common import setup_example_io
 
     transform_str = "AWGN"
+    transform = None
 
     match transform_str:
         case "AWGN":
@@ -394,41 +398,7 @@ if __name__ == '__main__':
         case _:
             transform = AddGaussianNoise
 
-
-    log_path = Path(f"log/{transform_str}/MNIST_example.log")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    img_path = Path(f"img/MNIST_example/{transform_str}/")
-    img_path.mkdir(parents=True, exist_ok=True)
-    # Tables
-    tab_path = Path(f"tab/MNIST_example/{transform_str}/")
-    tab_path.mkdir(parents=True, exist_ok=True)
-    # Data
-    data_path = Path(f"data/MNIST_example/{transform_str}/")
-    data_path.mkdir(parents=True, exist_ok=True)
-
-    # Logging configuration
-    logger = logging.getLogger('')
-    logger.setLevel(logging.DEBUG)  # Global level
-
-    # Console Handler: shows INFO or higher
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter("[%(levelname)s]: %(message)s")
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-
-    # File Handler: only if global level is DEBUG
-    if logger.level <= logging.DEBUG:
-        file_handler = logging.FileHandler(log_path, mode='w')
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter("[%(levelname)s - %(filename)s:%(lineno)s - %(funcName)20s()]: %(message)s")
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-
-    mpl_logger = logging.getLogger('matplotlib')
-    jax_logger = logging.getLogger('jax')
-    jax_logger.setLevel(logging.WARNING)  # Set jax logger to WARNING level
-    mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
+    img_path, data_path, tab_path, log_path = setup_example_io(__file__, transform=transform_str)
 
     main(train_model=False, img_path=img_path, tab_path=tab_path, data_path=data_path, transform=transform)
     plt.show()
