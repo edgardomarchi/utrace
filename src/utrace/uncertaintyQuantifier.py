@@ -229,8 +229,11 @@ class UncertaintyQuantifier:
         self.__alpha = np.float64(alpha)
         logger.debug("'q_level' set to %f for alpha %f and N %d", q_level, self.__alpha, self._N)
         logger.debug("Conformity scores: %s", self.conformity_scores_[:self._N])
-        self.__q_hat = np.nanquantile(
-        np.asarray(self.conformity_scores_[:self._N]), q_level, method='higher')
+        # Cap preserved: _masked_quantile_higher clips silently, but we keep
+        # explicit q_level <= 1.0 to match historical semantics and warning.
+        self.__q_hat = np.float64(
+            _masked_quantile_higher(self.conformity_scores_, jnp.int32(self._N), q_level)
+        )
         logger.debug("'q_hat' set to %f for alpha %f", self.__q_hat, self.__alpha)     
     
     def calibrate_from_proba(self, y_pred_proba, y, batched: bool = False):
