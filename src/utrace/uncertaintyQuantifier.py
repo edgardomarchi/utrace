@@ -201,7 +201,8 @@ class UncertaintyQuantifier:
 
     def reset(self):
         """Resets the scoores and alpha."""
-        self.conformity_scores_ = jnp.full(self._max_N, jnp.inf, dtype=jnp.float64)
+        self._conformity_scores_ = jnp.full(self._max_N, jnp.inf, dtype=jnp.float64)
+        self._sorted = True  # +inf buffer is trivially sorted; no lazy sort needed on empty read
         self.__alpha:np.float64 = np.float64('nan')
         self.__q_hat:np.float64 = np.float64('nan')
 
@@ -234,8 +235,23 @@ class UncertaintyQuantifier:
         self.__q_hat = np.float64(
             _masked_quantile_higher(self.conformity_scores_, jnp.int32(self._N), q_level)
         )
-        logger.debug("'q_hat' set to %f for alpha %f", self.__q_hat, self.__alpha)     
-    
+        logger.debug("'q_hat' set to %f for alpha %f", self.__q_hat, self.__alpha)
+
+    @property
+    def conformity_scores_(self):
+        """Calibration buffer: sorted ascending in [:_N], +inf padding in [_N:].
+
+        Lazy-sorts the valid prefix on first read after a calibration write.
+        Single-threaded access assumed per instance.
+        """
+        if not self._sorted:
+            if self._N > 0:
+                self._conformity_scores_ = self._conformity_scores_.at[:self._N].set(
+                    jnp.sort(self._conformity_scores_[:self._N])
+                )
+            self._sorted = True
+        return self._conformity_scores_
+
     def calibrate_from_proba(self, y_pred_proba, y, batched: bool = False):
         """Calibrate the conformal predictor with precomputed probabilities.
         
@@ -294,7 +310,7 @@ class UncertaintyQuantifier:
         y : np.ndarray
             Target labels for calibration.
         batched : bool, optional
-            For batched calibration; concatenates new scores with prvious ones. By default False
+            For batched calibration; appends new scores to the buffer. By default False
         """
         if self.classes is not None:
             mask = np.isin(np.asarray(y), np.asarray(self.classes))
@@ -304,22 +320,21 @@ class UncertaintyQuantifier:
         scores = self.cal_score_(y, y_pred_proba)
         num_scores = len(scores)
         if batched:
-            # If batched calibration, we need to concatenate the conformity scores for each batch
-            all_scores = np.sort(np.concatenate([
-                np.asarray(self.conformity_scores_[:self._N]),
-                np.asarray(scores)]))
-            self.conformity_scores_ = jnp.full((self._max_N,), jnp.inf, dtype=jnp.float64
-                ).at[:self._N + num_scores].set(jnp.asarray(all_scores, dtype=jnp.float64))
+            # Append new scores at offset _N without sorting (lazy sort deferred to property getter).
+            self._conformity_scores_ = self._conformity_scores_.at[
+                self._N:self._N + num_scores
+            ].set(jnp.asarray(scores, dtype=jnp.float64))
         else:
-            #self.conformity_scores_ = scores
-            srt = np.sort(np.asarray(scores))
-            self.conformity_scores_ = jnp.full((self._max_N,), jnp.inf,
-                                                dtype=jnp.float64
-            ).at[:num_scores].set(jnp.asarray(srt, dtype=jnp.float64))
-        
-        logger.debug("Conformity scores shape: %s, used: %d", self.conformity_scores_.shape, self._N)
+            # Non-batched: reset buffer to +inf and write scores at offset 0 without sorting.
+            self._conformity_scores_ = jnp.full(
+                (self._max_N,), jnp.inf, dtype=jnp.float64
+            ).at[:num_scores].set(jnp.asarray(scores, dtype=jnp.float64))
 
-        #Update number of scores
+        if num_scores > 0:
+            self._sorted = False  # valid prefix is unsorted; getter will sort on next read
+
+        logger.debug("Conformity scores shape: %s, used: %d", self._conformity_scores_.shape, self._N)
+
         self._N = self._N + num_scores if batched else num_scores
 
         if self.classes is not None and self._N == 0:
