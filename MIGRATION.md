@@ -26,8 +26,34 @@ computes probabilities externally and passes them to the `*_from_proba` API.
       Done: MNIST_class_conditional_example.py (merged), ACDC_example.py (migrated, pending numerical validation against the paper), setsize_analysis.py (migrated), convergence_analysis.py (migrated to *_from_proba; core fixes already in), MNIST_example.py (migrated; quick AWGN sweep, 2 iter, reproduces figs 9(a)/10(a): U_bar tracks U_E and (1-Cov), slightly conservative on the Linear model; full multi-degradation / higher-iteration reproduction pending), data_size_analysis.py (migrated; quick num_sizes=8 sweep reproduces fig 7 trends — U converges onto the U_E plane as calibration grows, stabilizing past cal ~1000; tuning size negligible; surface spiky at small sizes; full 40x40 reproduction pending), MNIST_test_coverage.py (migrated; Appendix-A coverage test validated at 10 iterations — KS and Cramér-von Mises pass for both CNN and FC; Linear KS p marginal at ~0.05, higher iteration count advisable for a stronger check), MNIST_test_convergence.py (migrated; aligned to MNIST_test_coverage's Appendix-A convention — predicts at cp.alpha = U and parameterizes the BetaBinom null with U, resolving the script's prior internal alpha/U inconsistency; numerical validation at full iteration count pending). Pending: none.
       Open paper-level validations (separate from migration): convergence_analysis (fig 7b full sweep), ACDC_example (numerical vs paper), MNIST_test_convergence (full 200-iteration run), MNIST_test_coverage (advisable to strengthen beyond 10 iterations).
 - [x] Phase 5 — Migrate remaining state to `jnp` storage. Closure audit: zero array-valued object state remains on numpy. `conformity_scores_` is the only persistent array state and is a jnp buffer. Achieved via (1) the quantile swap — host-side `np.nanquantile` replaced by the jit `_masked_quantile_higher` in the alpha setter (commit 0f8512f) — and (2) defer-sort — new scores are written into the fixed jnp buffer without per-batch sorting; a single `jnp.sort` runs lazily on first read via the `conformity_scores_` property, gated by a `_sorted` dirty flag (commit 4852c3b). Deliberate exclusion: `__alpha` and `__q_hat` REMAIN `np.float64` host scalars — they are Python-level static args (never traced inside `jit`), not array state, so they are out of scope for "state → jnp" by design. NOTE: "migrating state to jnp" is DONE; this does NOT mean the core is numpy-free. Residual scalar/host-prep numpy (label arrays, class masks, staging buffers on transient locals) is intentional and untouched by this phase. The remaining numpy round-trips are Phase-6 perf/cleanup items (see Backlog), not Phase-5 state.
-- [ ] Phase 6 — Remove legacy API, `model` parameter, `*_opt`/`get_uncertainty`/`_trn`
-      methods, legacy golden, and `baselines/legacy/`, remove the `USE_JAX` flag entirely. The JAX-based `_masked_quantile_higher` is part of the core and should always be available; the core should not import a symbol that the utils `__init__` exports only conditionally, and package importability must not depend on an environment flag or on where Python is launched from. Removing the flag also likely removes the need for the in-package `.env`, which is itself unusual
+- [ ] Phase 6 — Remove legacy API, `model` parameter, the `USE_JAX` flag, and the legacy
+      golden/baselines. Revised step ordering below (supersedes the original single-item
+      plan above; re-derived after a diagnostic pass found the original order had an
+      avoidable dependency and after the first two steps were already executed):
+      1. DONE — `_max_N` overflow guard.
+      2. DONE — remove dead legacy: `get_uncertainty`, `get_uncertainty_opt`, `get_U`.
+      3. Remove USE_JAX: `src/utrace/__init__.py`, `utils/__init__.py`, `scores/__init__.py`,
+         the two call sites in `uncertaintyQuantifier.py`, `config.py`, `.env`, `.env.example`,
+         `scores/numpy_impl.py`, and the `python-dotenv` dependency.
+         Rationale: moved earlier (was step 5) because it was established that the USE_JAX=false
+         branch is unreachable, which makes this change behaviour-preserving by construction.
+      4. Remove the legacy tests, `baselines/legacy/`, the `--api legacy` branch of
+         `regenerate_baselines.py`, and the `LEGACY_BASELINE_DIR` entry in `_baselines.py`.
+         Note: no property tests need extracting first — the two that survive Phase 6
+         (`test_jax_cache_does_not_grow`, `test_golden_run_under_threshold`) are commented-out dead
+         code in `test_golden_mnist.py` and already live in `test_golden_mnist_new_api.py`.
+      5. Remove `calibrate`, `predict`, `get_uncertainty_jit`, and the `flatten_batch` import.
+         This is what makes the core importable without torch.
+      6. Remove the `model=` constructor parameter. Note: this step DOES require deleting two
+         tests (`tests/core/test_from_proba_api.py` and
+         `tests/integration/torch/test_legacy_equivalence.py` both test the `model=` deprecation
+         warning); it is the only Phase 6 step that requires a test edit.
+      7. Labels host-copy: remove the `# COMPAT` numpy round-trip in the core and in scripts.
+      8. `flatten_batch` -> `flatten_to_pixels` unification.
+
+      (The original text of this item also mentioned removing "`_trn`" methods; no symbol
+      matching `_trn` exists anywhere in `src/`, `tests/`, or `scripts/` as of this pass —
+      dropped from the ordering above as unverifiable rather than carried forward.)
 
 ## Backlog (does not block the phases)
 
@@ -37,7 +63,11 @@ computes probabilities externally and passes them to the `*_from_proba` API.
 - Packaging: remove torch from the main dependencies.
 - Performance benchmark per phase.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
-- [Phase 6] `_max_N` overflow guard: `_calibrate_impl` has no bounds check that `_N + num_scores <= _max_N` before writing into the fixed buffer; if calibration data exceeds the sized buffer, the write silently overflows/corrupts rather than raising. Fix is a one-line assert; own small commit, safety guardrail. Cross-references the manual buffer-sizing item above — a design that scales sizing automatically would still need this guard as a backstop.
+- [DONE] `_max_N` overflow guard (Phase 6 step 1): `_calibrate_impl` now checks capacity before writing, in both branches, raising `ValueError` instead of allowing an out-of-bounds write. The pre-fix diagnostic found the failure was not one mode but three distinct behaviours, empirically reproduced:
+  1. Batched write whose start index (`_N`) is already `>= _max_N`: JAX's `.at[].set()` silently dropped the update; `_N` still incremented regardless; neither reading `conformity_scores_` afterward nor setting `alpha` raised anything — the only fully silent failure of the three, and the one a caller relying on repeated `batched=True` streaming calibration would hit first.
+  2. Batched write straddling the boundary (starts in-bounds, overruns past `_max_N`): raised `ValueError` from JAX broadcasting (the in-bounds slice clips shorter than the incoming values).
+  3. Non-batched write with `num_scores > _max_N` in a single call: same `ValueError` as (2).
+  Both branches of `_calibrate_impl` now check `_N + num_scores <= _max_N` (batched) / `num_scores <= _max_N` (non-batched) before any state mutation, so all three cases now raise consistently instead of only two of three doing so. Cross-references the manual buffer-sizing item above — a design that scales sizing automatically would still need this guard as a backstop.
 
 - force_non_empty_sets is silently ignored in the new prediction path. The jit _predict_sets does not implement it, and predict_from_proba accepts the parameter but does not pass it through. The legacy _predict_sets (initial commit) honored it (y_sets[arange, y_pred] = True). This is behavior lost in the jit migration. Harmless for callers passing False, but a latent bug for any script relying on force_non_empty_sets=True.
 
@@ -67,7 +97,7 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 
 - [RESOLVED]/[DONE] Performance: _calibrate_impl sorts the full buffer on every batch (O(N log N) per batch). For large datasets (ACDC) it would be better to sort once when calibration is finalized, not per batch. Implemented as defer-sort (commit 4852c3b): new scores are written into the fixed buffer at `_conformity_scores_[_N:_N+num_scores]` without per-batch sorting; a single `jnp.sort` runs lazily on first read of `conformity_scores_`, gated by the `_sorted` flag. MEASURED on RTX 3070 (CPU-unmeasured): streaming calibration ~357x faster than the prior sort-per-batch design at ~2M-score ACDC scale (7.2s → 20ms).
 
-- [Phase 6] Zero-copy in tuning: `get_uncertainty_from_proba` does `np.asarray(to_jax(...))` (`uncertaintyQuantifier.py:426`), forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning consume the jnp array directly (see the TODO at :425). Re-confirmed still present as of the Phase-5 audit; perf impact is UNMEASURED (the RTX 3070 GPU benchmark above measured the calibration path, not the tuning/uncertainty path).
+- [Phase 6] Zero-copy in tuning: `get_uncertainty_from_proba`'s body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:417-418` as of HEAD `ebc5ddb`, but re-verify by symbol/grep rather than trusting that number after further commits). Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark above measured the calibration path, not the tuning/uncertainty path).
 
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
@@ -85,6 +115,22 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 - Forward-pass batch vs jit padding are SEPARATE knobs; do not tie them. The DataLoader batch size only chunks the model forward (no effect on results — the tune set is re-concatenated and passed whole to get_uncertainty_from_proba). max_batch_size is the jit padding and must be >= the materialized tune set. On an 8GB GPU the OOMs were ALWAYS in the model forward (predict_proba), never in the utrace core/tuning. Scripts pin max_batch_size to a hardcoded constant (e.g. 12000) tied to the 0.2 tune split of 60k MNIST; prefer deriving it (ceil(tune_split * len(dataset)) + margin) instead of a magic number.
 - [DONE for now] DataLoader num_workers set to 0 in MNIST_class_conditional_example (the only script that used workers; ACDC already used 0, the rest default to 0). Reason: num_workers>0 forks, and forking after JAX has initialized its threads can deadlock (generic fork-with-multithreading hazard, not a JAX bug). Resolved at the root by disabling workers. Deferred alternatives if workers are wanted back (e.g. if data loading becomes the bottleneck rather than the GPU forward pass): (a) spawn start method — robust but pays interpreter startup cost, requires picklable transforms (already satisfied: lambda->AddGaussianNoise) and the __main__ guard (already present); (b) lazy JAX initialization so all worker forks happen before XLA threads start — fragile/non-deterministic, NOT recommended. Decide by measuring workers=4 vs 0 wall-time on GPU first (the per-class script is likely GPU-forward-bound, so workers may add little). A permanent user-facing note belongs in docs/ (future), since this affects anyone using torch DataLoaders alongside the package — MIGRATION.md is process log only.
 - 8GB VRAM is a hard constraint, not a bug: the per-class script (10 CPs) runs but only just fits with small forward batches. Not something to "fix"; scripts should scale by config.
+
+## Phase 6 diagnostic findings (empirically verified, not yet acted on)
+
+- Running with `USE_JAX=false` raises `ImportError` at package-import time, reproduced directly (`USE_JAX=false uv run --extra=cpu python -c "import utrace"`):
+  ```
+  File "src/utrace/__init__.py", line 2, in <module>
+      from .uncertaintyQuantifier import UncertaintyQuantifier
+  File "src/utrace/uncertaintyQuantifier.py", line 16, in <module>
+      from .utils import _masked_quantile_higher, _bucket_size
+  ImportError: cannot import name '_masked_quantile_higher' from 'utrace.utils'
+  ```
+  `utils/__init__.py` only defines `_masked_quantile_higher` inside `if USE_JAX:`. Consequently, `scores/numpy_impl.py` is unreachable code today: no configuration can load it — the package fails to import before `scores/__init__.py`'s own `if USE_JAX:` branch would even matter.
+- Consequence: `score='aps'` is non-functional in every currently-reachable configuration. `scores/jax_impl.py`'s `aps`/`aps_cal` both unconditionally `raise NotImplementedError()`; the numpy implementation that does implement them (`scores/numpy_impl.py`) can never load, per the point above. Open decision, not resolved here: drop `'aps'` from the constructor's accepted `score` values, or implement it under JAX. Flagging for Phase 6 step 3 (USE_JAX removal), since that step touches `scores/numpy_impl.py` directly and will have to decide this one way or the other.
+- `src/utrace/.env.example` ships `USE_JAX=False`; the actual development `src/utrace/.env` in this checkout has `USE_JAX=True`. A fresh clone following the repo's own example file would get a package that raises `ImportError` on `import utrace`, per the first point above.
+- `scores/numpy_impl.py`'s `lac_cal` is not actually numpy-typed despite the module name: `return 1 - smx[np.arange(len(y)), y].cpu().numpy().astype(np.float64)` calls `.cpu().numpy()` on the indexed result, which only works if `smx` is a torch tensor at that point — a plain `np.ndarray` has neither method. Currently unreachable per the first point above, so this doesn't bite today, but it means "numpy_impl" was already a misnomer even when the branch was reachable.
+- x64 precision is enabled and verified working (checked directly: `jnp.zeros(1, dtype=jnp.float64).dtype` is `float64`) even though `src/utrace/__init__.py` imports `.uncertaintyQuantifier` (line 2) BEFORE calling `jax.config.update("jax_enable_x64", True)` (lines 13-15, itself gated behind `if USE_JAX:`). This works because nothing at import time of `uncertaintyQuantifier.py` actually computes a float64 array before the flag gets set — the module only *defines* jit functions and the class at import time; no array materializes until the caller uses the class. Preserve this ordering (or verify the replacement is equivalent) when the flag becomes unconditional in Phase 6 step 3.
 
 ## Canonical migration recipe (new API)
 
@@ -156,16 +202,15 @@ Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the co
 
 ## Legacy method state (discovered during ACDC migration)
 
-Only the legacy subset exercised by the legacy golden — `calibrate`, `get_uncertainty_jit`, `predict` — is maintained and tested. The rest of the legacy surface is broken against the
-current core and has NO test coverage:
-- `get_uncertainty` (no suffix) calls `_predict_sets`, which no longer exists → raises `AttributeError` at runtime.
-- `get_uncertainty_opt` IS defined (`uncertaintyQuantifier.py:435-490`) but is model-bound
-  (calls `self.model.predict_proba`) and has no `*_from_proba` counterpart; it raises
-  `AttributeError` if the UQ is constructed without `model=`, so it is unusable under the
-  no-model migration.
-- `fit_opt`, `predict_opt`, `fit` are absent entirely.
+Only the legacy subset exercised by the legacy golden — `calibrate`, `get_uncertainty_jit`, `predict` — is maintained and tested. These three, plus the `model=` constructor parameter, are still present, pending Phase 6 steps 5-6.
 
-Consequence: any script using these does NOT run against the current package and cannot produce a local reference. Such scripts (convergence_analysis, data_size_analysis, setsize_analysis, MNIST_test_coverage, MNIST_test_convergence) are full rewrites — validate them against the paper, not a prior local run. Tests passing does NOT imply these methods work; tests cover the core, not the scripts, and not the unexercised legacy paths. All of this is removed in Phase 6.
+Two further legacy methods were found broken/orphaned during the ACDC migration and have since been **removed** (Phase 6 step 2; confirmed absent from `src/utrace/uncertaintyQuantifier.py` as of current HEAD — grepping either name in `src/` returns nothing):
+- `get_uncertainty` (no suffix) called `self._predict_sets`, which was never defined as a method anywhere in the class (only as a same-named module-level function taking no `self`) → raised `AttributeError` at runtime on every call. Removed.
+- `get_uncertainty_opt` was model-bound (called `self.model.predict_proba`, had no `*_from_proba` counterpart) and raised `AttributeError` if the UQ was constructed without `model=`, making it unusable under the no-model migration. Removed, together with its sole helper `get_U` — which had exactly one call site in the entire repo (inside `get_uncertainty_opt` itself) and so had no other consumer to preserve.
+
+`fit_opt`, `predict_opt`, `fit` remain absent entirely — unrelated to this pass; they were never part of the current `UncertaintyQuantifier` and are not something Phase 6 needs to remove.
+
+Consequence: any script relying on the two now-removed methods, or on `fit`/`fit_opt`/`predict_opt`, does NOT run against the current package and cannot produce a local reference. Such scripts (convergence_analysis, data_size_analysis, setsize_analysis, MNIST_test_coverage, MNIST_test_convergence) are full rewrites — validate them against the paper, not a prior local run. Tests passing does NOT imply the remaining legacy methods (`calibrate`, `predict`, `get_uncertainty_jit`) are correct in every path either; tests cover the core, not the scripts, and not every legacy branch. The remaining legacy surface (`calibrate`, `predict`, `get_uncertainty_jit`, `model=`) is removed in Phase 6 steps 5-6.
 
 ## Example script inventory
 
@@ -184,7 +229,7 @@ Mapping to paper figures (Marchi & Liebl 2026, Mach. Learn.: Sci. Technol. 7 015
 | `btorch_MNIST_test.py` | Appendix C | (none — bayesian-torch) | DO NOT TOUCH |
 
 Notes:
-- `fit` was the former name of `calibrate`. `*_opt` were "optimized" variants; part of their logic was folded into the main methods. These scripts are written against a previous API and do NOT run as-is against the current package: migrating them means rewriting them against the new API. Note: `fit`, `fit_opt`, and `predict_opt` are fully absent from the current `UncertaintyQuantifier` (not merely deprecated).
+- `fit` was the former name of `calibrate`. `*_opt` were "optimized" variants; part of their logic was folded into the main methods. These scripts are written against a previous API and do NOT run as-is against the current package: migrating them means rewriting them against the new API. Note: `fit`, `fit_opt`, and `predict_opt` are fully absent from the current `UncertaintyQuantifier` (not merely deprecated). `get_uncertainty_opt`, bare `get_uncertainty`, and their helper `get_U` (also named in this table's "Legacy methods used" column) are now ALSO fully absent (removed, Phase 6 step 2) — unlike `get_uncertainty_jit`, `calibrate`, and `predict`, which still exist as deprecated methods pending Phase 6 step 5. This table's "Legacy methods used" column is a historical record of what each script called before its Phase 4 rewrite; it is not a claim about what still exists in the current class.
 - `ACDC_example.py`: cardiac model loaded via MONAI bundle (do not touch the loading); CP "samples" are pixels (high volume → calibration streaming matters); generates LaTeX tables (preserve).
 
 ## Validation notes (analysis scripts)
