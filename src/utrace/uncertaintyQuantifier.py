@@ -320,11 +320,23 @@ class UncertaintyQuantifier:
         scores = self.cal_score_(y, y_pred_proba)
         num_scores = len(scores)
         if batched:
+            if self._N + num_scores > self._max_N:
+                raise ValueError(
+                    f"Batched calibration buffer overflow: current _N={self._N} + "
+                    f"num_scores={num_scores} exceeds _max_N={self._max_N}. "
+                    f"N is set at construction time."
+                )
             # Append new scores at offset _N without sorting (lazy sort deferred to property getter).
             self._conformity_scores_ = self._conformity_scores_.at[
                 self._N:self._N + num_scores
             ].set(jnp.asarray(scores, dtype=jnp.float64))
         else:
+            if num_scores > self._max_N:
+                raise ValueError(
+                    f"Non-batched calibration buffer overflow: num_scores={num_scores} "
+                    f"exceeds _max_N={self._max_N} (current _N={self._N}). "
+                    f"N is set at construction time."
+                )
             # Non-batched: reset buffer to +inf and write scores at offset 0 without sorting.
             self._conformity_scores_ = jnp.full(
                 (self._max_N,), jnp.inf, dtype=jnp.float64
