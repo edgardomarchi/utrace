@@ -4,7 +4,6 @@ Paths are resolved relative to THIS file (tests/integration/torch/), not the
 current working directory, so the script works regardless of where it is run.
 
 Usage:
-    uv run --extra=cpu python tests/integration/torch/regenerate_baselines.py --api legacy
     uv run --extra=cpu python tests/integration/torch/regenerate_baselines.py --api new
 
 Run only for an intentional change to the algorithm or test setup. Commit the
@@ -16,22 +15,17 @@ from pathlib import Path
 
 import numpy as np
 
-from _baselines import LEGACY_BASELINE_DIR, NEW_API_BASELINE_DIR
+from _baselines import NEW_API_BASELINE_DIR
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--api', choices=['legacy', 'new'], default='legacy',
+    parser.add_argument('--api', choices=['new'], default='new',
                         help="Which golden's baselines to regenerate.")
     args = parser.parse_args()
 
-    if args.api == 'legacy':
-        from test_golden_mnist import _compute_golden_run
-        results = _compute_golden_run()
-        out_dir = LEGACY_BASELINE_DIR
-    else:
-        from test_golden_mnist_new_api import _compute_golden_run_new_api
-        results = _compute_golden_run_new_api()
-        out_dir = NEW_API_BASELINE_DIR
+    from test_golden_mnist_new_api import _compute_golden_run_new_api
+    results = _compute_golden_run_new_api()
+    out_dir = NEW_API_BASELINE_DIR
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, arr in results.items():
