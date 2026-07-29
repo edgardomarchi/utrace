@@ -122,7 +122,7 @@ explicit = true
 [[tool.uv.index]]
 name = "torch-rocm"
 url = "https://download.pytorch.org/whl/rocm6.4"
-eexplicit = true
+explicit = true
 
 [[tool.uv.index]]
 name = "torch-rocm5"
