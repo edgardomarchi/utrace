@@ -196,12 +196,6 @@ class TestGetUncertaintyFromProba:
 
 # ----- constructor deprecation -----------------------------------------
 
-def test_constructor_warns_when_model_passed():
-    """Passing `model` should emit DeprecationWarning (no torch involved)."""
-    with pytest.warns(DeprecationWarning, match="model"):
-        UncertaintyQuantifier(N=100, classes=[0], model=object(), max_batch_size=64)
-
-
 def test_constructor_no_warning_without_model():
     """Default construction (no model) should NOT emit DeprecationWarning."""
     with warnings.catch_warnings():

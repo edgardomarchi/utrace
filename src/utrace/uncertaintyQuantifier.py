@@ -2,7 +2,6 @@
 """
 
 import logging
-import warnings
 from typing import Literal, Union, Callable
 
 import numpy as np
@@ -120,8 +119,6 @@ class UncertaintyQuantifier:
 
     Parameters
     ----------
-    model : Any
-        (deprecated) A trained model with a `predict_proba` method.
     classes : Union[list[int], np.ndarray, None], optional
         labels defining the conditioning group; instantiate one object per class/group; None → marginal calibration.
     score : Literal['lac'], optional
@@ -130,10 +127,9 @@ class UncertaintyQuantifier:
     def __init__(self, N: int = 1000,
                  classes: Union[list[int], np.ndarray, None] = None,
                  score: Literal['lac'] = 'lac',
-                 max_batch_size: int = None,
-                 model=None):
+                 max_batch_size: int = None):
         """Wrapper for uncertainty quantification using U-TraCE.
-        
+
         Parameters
         ----------
         N : int, default=1000
@@ -144,19 +140,7 @@ class UncertaintyQuantifier:
             Scoring function for nonconformity. For now, only 'lac' is supported.
         max_batch_size : int, optional
             Fixed padding size for input batches. See _get_uncertainty_jit_impl.
-        model : object, optional
-            [DEPRECATED] A model with `predict_proba` method. Pass only if using
-            the legacy API (calibrate(X), predict(X), get_uncertainty_jit(X)).
-            Prefer the *_from_proba methods which accept precomputed probabilities.
         """
-        if model is not None:
-            warnings.warn(
-                "Passing `model` to UncertaintyQuantifier is deprecated. "
-                "The class will not accept a model in a future version. "
-                "Compute probabilities externally and use the *_from_proba methods.",
-                DeprecationWarning, stacklevel=2,
-            )
-        self.model = model
         self.classes = classes
         self._max_batch_size = max_batch_size
 
@@ -247,12 +231,6 @@ class UncertaintyQuantifier:
             Integer class labels.
         batched : bool, default=False
             If True, append to existing calibration scores instead of replacing.
-        
-        Notes
-        -----
-        This is the preferred API. The legacy `calibrate(X, y, ...)` method that
-        takes raw input X and runs a model internally is deprecated and will be
-        removed in a future version.
         """
         y_pred_proba = to_jax(y_pred_proba)
         y_arr = np.asarray(y).astype(int)
