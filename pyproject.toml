@@ -122,6 +122,12 @@ explicit = true
 [[tool.uv.index]]
 name = "torch-rocm"
 url = "https://download.pytorch.org/whl/rocm6.4"
+# NOTE: this index was previously misspelled as `eexplicit`, which left it as a
+# general-purpose index serving transitive deps (numpy, pillow, fsspec,
+# pytorch-triton-rocm) to every variant. Fixing it exposes that the rocm/rocm5
+# extras do not resolve: pytorch-triton-rocm is not on any explicit index, and
+# rocm5 pins torch 2.3.x, which has no cp314 wheels under requires-python <3.15.
+# Do not re-introduce the typo to make `uv lock` pass. See MIGRATION.md.
 explicit = true
 
 [[tool.uv.index]]
