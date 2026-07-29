@@ -32,35 +32,98 @@ computes probabilities externally and passes them to the `*_from_proba` API.
       avoidable dependency and after the first two steps were already executed):
       1. DONE — `_max_N` overflow guard.
       2. DONE — remove dead legacy: `get_uncertainty`, `get_uncertainty_opt`, `get_U`.
-      3. Remove USE_JAX: `src/utrace/__init__.py`, `utils/__init__.py`, `scores/__init__.py`,
-         the two call sites in `uncertaintyQuantifier.py`, `config.py`, `.env`, `.env.example`,
-         `scores/numpy_impl.py`, and the `python-dotenv` dependency.
-         Rationale: moved earlier (was step 5) because it was established that the USE_JAX=false
-         branch is unreachable, which makes this change behaviour-preserving by construction.
-      4. Remove the legacy tests, `baselines/legacy/`, the `--api legacy` branch of
-         `regenerate_baselines.py`, and the `LEGACY_BASELINE_DIR` entry in `_baselines.py`.
-         Note: no property tests need extracting first — the two that survive Phase 6
-         (`test_jax_cache_does_not_grow`, `test_golden_run_under_threshold`) are commented-out dead
-         code in `test_golden_mnist.py` and already live in `test_golden_mnist_new_api.py`.
-      5. Remove `calibrate`, `predict`, `get_uncertainty_jit`, and the `flatten_batch` import.
-         This is what makes the core importable without torch.
-      6. Remove the `model=` constructor parameter. Note: this step DOES require deleting two
-         tests (`tests/core/test_from_proba_api.py` and
-         `tests/integration/torch/test_legacy_equivalence.py` both test the `model=` deprecation
-         warning); it is the only Phase 6 step that requires a test edit.
+      3a. DONE — `score='aps'` now raises `ValueError` at construction, naming the numpy
+          backend as the only (unreachable) implementation and `'lac'` as the supported
+          value. The generic `case _` branch, which previously fell back silently to
+          `'lac'` for any unrecognized `score` value, was also closed to raise `ValueError`:
+          with `'lac'` and `'aps'` as explicit cases, the default branch had to do
+          *something*, and silently substituting a different scoring function on a typo is
+          a correctness failure, not a convenience worth preserving. Verified: no call site
+          anywhere in the repo (`src/`, `tests/`, `scripts/`) passes `score=` explicitly —
+          every existing construction relies on the default.
+      3b. DONE — `USE_JAX` removed: unconditional now in `src/utrace/__init__.py`,
+          `utils/__init__.py`, `scores/__init__.py`, and both call sites in
+          `uncertaintyQuantifier.py` (in `calibrate_from_proba` and the since-removed
+          legacy `calibrate`); `config.py`, `.env.example`, and `scores/numpy_impl.py`
+          deleted, along with the `aps`/`aps_cal` stub functions in `scores/jax_impl.py`.
+          All six golden `.npy` baseline files (three new-API, three legacy — the legacy
+          set still existed at this point in the sequence) were confirmed byte-identical
+          (SHA-256) before and after, which is what confirmed the USE_JAX=false branch
+          really was unreachable: the change was behaviour-preserving by construction, not
+          merely by luck.
+      3c. BLOCKED, not done — removing the now-unused `python-dotenv` dependency from
+          `pyproject.toml`. See "Phase 6 step 3c — packaging cleanup [BLOCKED]" below.
+      4. DONE — removed the legacy tests (`test_golden_mnist.py`,
+         `test_legacy_equivalence.py`), `baselines/legacy/`, the `--api legacy` branch of
+         `regenerate_baselines.py` (the flag now has a single choice, `'new'`; narrowing
+         rather than collapsing the flag was a deliberate, separate decision — see Backlog),
+         and the `LEGACY_BASELINE_DIR` entry in `_baselines.py`. Required zero test edits:
+         the two property tests that survive Phase 6 (`test_jax_cache_does_not_grow`,
+         `test_golden_run_under_threshold`) were already commented-out dead code in
+         `test_golden_mnist.py` and already lived, active, in `test_golden_mnist_new_api.py`.
+         Test count: 113 → 106 (minus exactly the 7 active tests in the two deleted files).
+      5. DONE — removed `calibrate`, `predict`, `get_uncertainty_jit`, and the
+         `flatten_batch` import from `uncertaintyQuantifier.py`. This is what makes the core
+         importable without torch — confirmed by `tests/core/test_import_properties.py`'s
+         `test_core_does_not_import_torch` (a subprocess check; see the honest limitation
+         noted under "What steps 4-6 established" below). Required zero test edits. Test
+         count stayed at 106 (a separate commit then added
+         `tests/core/test_x64_is_enabled.py` and `tests/core/test_import_properties.py`,
+         bringing the count to 107 ahead of step 6).
+      6. DONE — removed the `model=` constructor parameter outright (not kept as an
+         accepted-but-warning parameter): `UncertaintyQuantifier(model=x)` now raises
+         `TypeError` from Python itself, with no compatibility shim. Required exactly one
+         test deletion, predicted by name in advance:
+         `tests/core/test_from_proba_api.py::test_constructor_warns_when_model_passed` (the
+         only construction anywhere in the repo passing `model=`). Test count: 107 → 106.
       7. Labels host-copy: remove the `# COMPAT` numpy round-trip in the core and in scripts.
-      8. `flatten_batch` -> `flatten_to_pixels` unification.
+      8. `flatten_batch` -> `flatten_to_pixels` unification. Diagnostic finding: as of this
+         pass, `flatten_to_pixels` (in `utils/tensors.py`) and the three `unflatten_*`
+         functions (`utils/pytorch/helpers.py`) have ZERO call sites anywhere in `src/`,
+         `tests/`, or `scripts/`. `flatten_to_pixels` also raises `TypeError` on a raw torch
+         tensor input (`jnp.moveaxis` requires an ndarray/scalar, not a `torch.Tensor`)
+         because it does not route through `to_jax` first. This step is real work, not a
+         swap.
 
       (The original text of this item also mentioned removing "`_trn`" methods; no symbol
       matching `_trn` exists anywhere in `src/`, `tests/`, or `scripts/` as of this pass —
       dropped from the ordering above as unverifiable rather than carried forward.)
+
+      **What steps 4-6 established (verified):**
+      - The suite's entire warning budget (92) came from the two legacy test files deleted
+        in step 4, and is now 0. This zero baseline makes any new warning introduced by a
+        later change immediately visible, rather than lost among pre-existing ones.
+      - The core no longer imports torch at package-import time (step 5). This is verified
+        by `tests/core/test_import_properties.py::test_core_does_not_import_torch`, a
+        subprocess check asserting `'torch' not in sys.modules` after `import utrace`. Stated
+        honestly: this proves nothing on the import path reaches for torch in an environment
+        where torch happens to be installed but is otherwise unused — it does NOT prove the
+        package works in an environment where torch is not installed at all. That still needs
+        a clean, torch-free environment to confirm, and remains open.
+      - `flatten_batch` itself was NOT removed and was never at risk: it survives with its
+        callers intact in `tests/integration/torch/test_golden_mnist_new_api.py` and in
+        several `scripts/`. Only the core's own module-level import of it
+        (`uncertaintyQuantifier.py`) was removed in step 5.
+      - `regenerate_baselines.py`'s `--api` flag now has a single remaining choice (`'new'`).
+        It was deliberately left in place with `choices=['new']` rather than collapsed to no
+        flag at all — collapsing the CLI is a separate, deliberate decision, not a side
+        effect of removing the legacy branch. Open, minor.
+
+      **Remaining for Phase 6:** steps 7 (labels host-copy) and 8 (`flatten_batch` ->
+      `flatten_to_pixels` unification, real work per the diagnostic under step 8 above — not
+      a swap), plus the step 3c packaging block (see below). Separately, the `_new_api`
+      suffixes and `NEW_API_BASELINE_DIR` naming in `tests/integration/torch/` are now
+      redundant — there is no old API left to contrast against — and are a rename candidate.
+      That rename should NOT be done while collected test IDs are still being used as an
+      acceptance criterion for other Phase 6 steps (a rename changes every affected test ID),
+      per the pattern used throughout steps 4-6 above.
 
 ## Backlog (does not block the phases)
 
 - `get_uncertainty_grid_from_proba`: alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
 - `tuning_stability(probs, y, n_splits)`: diagnostic for tuning-set size adequacy (runs the search on disjoint subsets and reports spread). This is the formalization of the "L random splits" scheme from the paper.
 - Golden test with a trained model (current ones use an untrained model: reproducible but in a degenerate regime, unstable alphas).
-- Packaging cleanup (post-Phase 6): see the index/extras finding under "Phase 6 diagnostic findings". Note that torch is already absent from `[project].dependencies` - it only appears in the optional-dependency groups. What actually keeps torch mandatory is that the core imports `flatten_batch` at module level; Phase 6 step 5 removes that.
+- Packaging cleanup (post-Phase 6): see "Phase 6 step 3c — packaging cleanup [BLOCKED]" below. Note that torch is already absent from `[project].dependencies` - it only appears in the optional-dependency groups. What used to keep torch mandatory was that the core imported `flatten_batch` at module level; Phase 6 step 5 removed that import, and `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards the property.
 - Performance benchmark per phase.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
 - [DONE] `_max_N` overflow guard (Phase 6 step 1): `_calibrate_impl` now checks capacity before writing, in both branches, raising `ValueError` instead of allowing an out-of-bounds write. The pre-fix diagnostic found the failure was not one mode but three distinct behaviours, empirically reproduced:
@@ -97,7 +160,7 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 
 - [RESOLVED]/[DONE] Performance: _calibrate_impl sorts the full buffer on every batch (O(N log N) per batch). For large datasets (ACDC) it would be better to sort once when calibration is finalized, not per batch. Implemented as defer-sort (commit 4852c3b): new scores are written into the fixed buffer at `_conformity_scores_[_N:_N+num_scores]` without per-batch sorting; a single `jnp.sort` runs lazily on first read of `conformity_scores_`, gated by the `_sorted` flag. MEASURED on RTX 3070 (CPU-unmeasured): streaming calibration ~357x faster than the prior sort-per-batch design at ~2M-score ACDC scale (7.2s → 20ms).
 
-- [Phase 6] Zero-copy in tuning: `get_uncertainty_from_proba`'s body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:417-418` as of HEAD `ebc5ddb`, but re-verify by symbol/grep rather than trusting that number after further commits). Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark above measured the calibration path, not the tuning/uncertainty path).
+- [Phase 6] Zero-copy in tuning: `get_uncertainty_from_proba`'s body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:355-356` as of HEAD `a0ea8f6`, but re-verify by symbol/grep rather than trusting that number after further commits — it has already moved once, from `417-418` as of `ebc5ddb`, purely from unrelated deletions earlier in the file). Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark above measured the calibration path, not the tuning/uncertainty path).
 
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
@@ -116,9 +179,9 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 - [DONE for now] DataLoader num_workers set to 0 in MNIST_class_conditional_example (the only script that used workers; ACDC already used 0, the rest default to 0). Reason: num_workers>0 forks, and forking after JAX has initialized its threads can deadlock (generic fork-with-multithreading hazard, not a JAX bug). Resolved at the root by disabling workers. Deferred alternatives if workers are wanted back (e.g. if data loading becomes the bottleneck rather than the GPU forward pass): (a) spawn start method — robust but pays interpreter startup cost, requires picklable transforms (already satisfied: lambda->AddGaussianNoise) and the __main__ guard (already present); (b) lazy JAX initialization so all worker forks happen before XLA threads start — fragile/non-deterministic, NOT recommended. Decide by measuring workers=4 vs 0 wall-time on GPU first (the per-class script is likely GPU-forward-bound, so workers may add little). A permanent user-facing note belongs in docs/ (future), since this affects anyone using torch DataLoaders alongside the package — MIGRATION.md is process log only.
 - 8GB VRAM is a hard constraint, not a bug: the per-class script (10 CPs) runs but only just fits with small forward batches. Not something to "fix"; scripts should scale by config.
 
-## Phase 6 diagnostic findings (empirically verified, not yet acted on)
+## Phase 6 diagnostic findings (historical — resolved by steps 3a/3b except where marked)
 
-- Running with `USE_JAX=false` raises `ImportError` at package-import time, reproduced directly (`USE_JAX=false uv run --extra=cpu python -c "import utrace"`):
+- [RESOLVED, step 3b] Running with `USE_JAX=false` used to raise `ImportError` at package-import time, reproduced directly at the time (`USE_JAX=false uv run --extra=cpu python -c "import utrace"`):
   ```
   File "src/utrace/__init__.py", line 2, in <module>
       from .uncertaintyQuantifier import UncertaintyQuantifier
@@ -126,21 +189,26 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
       from .utils import _masked_quantile_higher, _bucket_size
   ImportError: cannot import name '_masked_quantile_higher' from 'utrace.utils'
   ```
-  `utils/__init__.py` only defines `_masked_quantile_higher` inside `if USE_JAX:`. Consequently, `scores/numpy_impl.py` is unreachable code today: no configuration can load it — the package fails to import before `scores/__init__.py`'s own `if USE_JAX:` branch would even matter.
-- Consequence: `score='aps'` is non-functional in every currently-reachable configuration. `scores/jax_impl.py`'s `aps`/`aps_cal` both unconditionally `raise NotImplementedError()`; the numpy implementation that does implement them (`scores/numpy_impl.py`) can never load, per the point above. Open decision, not resolved here: drop `'aps'` from the constructor's accepted `score` values, or implement it under JAX. Flagging for Phase 6 step 3 (USE_JAX removal), since that step touches `scores/numpy_impl.py` directly and will have to decide this one way or the other.
-- `src/utrace/.env.example` ships `USE_JAX=False`; the actual development `src/utrace/.env` in this checkout has `USE_JAX=True`. A fresh clone following the repo's own example file would get a package that raises `ImportError` on `import utrace`, per the first point above.
-- `scores/numpy_impl.py`'s `lac_cal` is not actually numpy-typed despite the module name: `return 1 - smx[np.arange(len(y)), y].cpu().numpy().astype(np.float64)` calls `.cpu().numpy()` on the indexed result, which only works if `smx` is a torch tensor at that point — a plain `np.ndarray` has neither method. Currently unreachable per the first point above, so this doesn't bite today, but it means "numpy_impl" was already a misnomer even when the branch was reachable.
-- x64 precision is enabled and verified working (checked directly: `jnp.zeros(1, dtype=jnp.float64).dtype` is `float64`) even though `src/utrace/__init__.py` imports `.uncertaintyQuantifier` (line 2) BEFORE calling `jax.config.update("jax_enable_x64", True)` (lines 13-15, itself gated behind `if USE_JAX:`). This works because nothing at import time of `uncertaintyQuantifier.py` actually computes a float64 array before the flag gets set — the module only *defines* jit functions and the class at import time; no array materializes until the caller uses the class. Preserve this ordering (or verify the replacement is equivalent) when the flag becomes unconditional in Phase 6 step 3.
-- Packaging: `uv.lock` and `pyproject.toml` are knowingly out of sync as of Phase 6 step 3c, and this is deliberate — do not "fix" it by reverting the pyproject change. The `torch-rocm` index declared `eexplicit = true` (a typo). Unrecognised, the key left that index general-purpose, so it was serving ordinary packages: regenerating the lock reassigned `numpy`, `pillow` and `fsspec` from `pypi.org/simple` to `download.pytorch.org/whl/rocm6.4` - same versions, same content hashes, different attributed origin. The typo is now fixed, but the committed lock was resolved while  it was still in effect, so the lock is no longer derivable from the pyproject. Correcting the spelling makes `uv lock` FAIL for the `rocm5` extra: `pytorch-triton-rocm` is a transitive dependency of torch, is not mapped in `[tool.uv.sources]`, and is not on any explicit index; and `rocm5` pins torch 2.3.x, which has no cp314 wheels under `requires-python = ">=3.11,<3.15"`. Separately, `jax[rocm]` does not exist (`uv lock` warns: the package jax==0.9.2 does not have an extra named rocm). uv stops at the first unsatisfiable split, so there may be more behind it.
-  Consequence: `python-dotenv` remains in `dependencies` even though its only consumer (`config.py`) was deleted in step 3b - removing it forces a re-resolve, which is what surfaced all of the above. It is inert (nothing imports it), so it is deferred rather than forced through.
-  Deferred to a packaging cleanup after Phase 6, deliberately kept out of the phase so that a moving golden in step 5 has only one candidate cause. That cleanup should decide, per extra, whether it is actually supported — `rocm`/`rocm5` look aspirational - and its success criterion is that every declared extra resolves, not merely that `uv lock` exits zero.
+  `utils/__init__.py` used to define `_masked_quantile_higher` only inside `if USE_JAX:`. Consequently, `scores/numpy_impl.py` was unreachable code: no configuration could load it — the package failed to import before `scores/__init__.py`'s own `if USE_JAX:` branch would even matter. `USE_JAX` no longer exists anywhere in `src/`; `_masked_quantile_higher` is exported unconditionally; `scores/numpy_impl.py` was deleted (step 3b). Kept here as the historical record of why this diagnostic made the removal behaviour-preserving by construction, not merely by luck.
+- [RESOLVED, step 3a] Consequence at the time: `score='aps'` was non-functional in every reachable configuration (`scores/jax_impl.py`'s `aps`/`aps_cal` both unconditionally raised `NotImplementedError()`; the numpy implementation that did implement them could never load, per the point above). Resolved: `score='aps'` now raises `ValueError` explicitly at construction, naming `'lac'` as the supported value; the `aps`/`aps_cal` stub functions were removed from `scores/jax_impl.py` in step 3b.
+- [RESOLVED, step 3b] `src/utrace/.env.example` used to ship `USE_JAX=False` while the actual development `src/utrace/.env` in this checkout had `USE_JAX=True`; a fresh clone following the repo's own example file would have gotten a package that raised `ImportError` on `import utrace`. `.env.example` was deleted; `USE_JAX` has no effect anywhere now, so there is no longer a variable for an example file to get wrong.
+- [RESOLVED, step 3b — moot] `scores/numpy_impl.py`'s `lac_cal` was not actually numpy-typed despite the module name (it called `.cpu().numpy()` on the indexed result, which only works on a torch tensor). This was unreachable code even before removal, so it never bit in practice; the file was deleted outright.
+- [RESOLVED, step 3b] x64 precision's ordering concern — `src/utrace/__init__.py` imports `.uncertaintyQuantifier` BEFORE calling `jax.config.update("jax_enable_x64", True)`, which worked only because nothing at import time of `uncertaintyQuantifier.py` computes a float64 array before the flag is set — was preserved when the call became unconditional (the `if USE_JAX:` guard was removed, not the ordering). Now directly guarded by `tests/core/test_x64_is_enabled.py::test_x64_is_enabled`.
+
+### Phase 6 step 3c — packaging cleanup [BLOCKED]
+
+- `python-dotenv` remains in `pyproject.toml`'s `dependencies` even though its only consumer, `config.py`, was deleted in step 3b. It is inert (nothing imports it). Removing it forces a `uv.lock` re-resolve, and the re-resolve fails (see below) — that failure is what blocks this item, not the removal edit itself.
+- The `torch-rocm` index in `pyproject.toml` declared `eexplicit = true`, a typo. Unrecognised by `uv`, the key left that index general-purpose instead of restricted to the wheels mapped to it, so it was silently serving ordinary packages and transitive dependencies to every variant: regenerating the lock while investigating this reassigned `numpy`, `pillow`, and `fsspec` from `pypi.org/simple` to `download.pytorch.org/whl/rocm6.4` — same versions, same content hashes, different attributed origin. The typo is now fixed in `pyproject.toml`, but the committed `uv.lock` was resolved while the typo was still in effect, so the lock is not currently derivable from the pyproject as it stands. That gap is deliberate — do not "fix" it by reverting the pyproject typo-fix.
+- With the spelling fixed, `uv lock` FAILS for the `rocm5` extra: `pytorch-triton-rocm` is a transitive dependency of torch, is not mapped in `[tool.uv.sources]`, and is not on any explicit index; and `rocm5` pins torch 2.3.x, which has no cp314 wheels under `requires-python = ">=3.11,<3.15"`. Separately, `jax[rocm]` does not exist (`uv lock` warns: the package `jax==0.9.2` does not have an extra named `rocm`). `uv` stops at the first unsatisfiable split, so there may be more failures behind it that haven't surfaced yet.
+- Deferred to a packaging cleanup after Phase 6, deliberately kept out of the phase so that a moving golden in step 5 would have had one candidate cause rather than two. Its success criterion is that every declared extra resolves, not merely that `uv lock` exits zero — it should decide, per extra, whether that extra is actually supported (`rocm`/`rocm5` look aspirational rather than tested).
 
 ## Canonical migration recipe (new API)
 
 Apply to each script. The canonical alpha-search method is the **binary** one (`get_uncertainty_from_proba`), which accepts `max_iters` to adjust precision.
 
 1. **Construction**: `UncertaintyQuantifier(N=..., classes=[C], max_batch_size=...)`.
-   Do NOT pass `model` (it is deprecated). For the per-class case, one UQ per class.
+   There is no `model` parameter to pass — it was removed in Phase 6 step 6;
+   `UncertaintyQuantifier(model=...)` raises `TypeError`. For the per-class case, one UQ per class.
    **Buffer sizing for high-volume cases (segmentation).** The default `N=1000` is correct for moderate sample counts (classification, MNIST). In segmentation each image   contributes ~65k pixel-samples, so the fixed-size padded buffer (`_max_N`) overflows.
    Size `N` per class from the data: one pass over the full dataset counts per-class samples (invariant to noise — the GT is not transformed), then `N_class_C = ceil(count_C * cal_fraction * margin)` (e.g. cal_fraction=0.2, margin~1.5).
    Background gets a large buffer, the structures small ones. The fixed-size padding from Phase 2 assumes moderate volumes; a buffer design that scales to high-volume regimes is a possible future task (backlog).
@@ -188,8 +256,9 @@ Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the co
 
 - `tests/core/`: does NOT import torch (or any framework). Inputs are synthetic numpy/jnp.
 - `tests/integration/torch/`: may import torch (legitimate).
-- Baselines: `tests/integration/torch/baselines/legacy/` (legacy) and `tests/integration/torch/baselines/` (new API). Regenerate with `regenerate_baselines.py --api {legacy,new}` (paths relative to the file).
+- Baselines: `tests/integration/torch/baselines/` (new API only — `baselines/legacy/` was removed in Phase 6 step 4). Regenerate with `regenerate_baselines.py --api new` (the flag now has a single remaining choice; paths relative to the file).
 - Core property tests that survive Phase 6 (cache, performance smoke) live alongside the new-API golden.
+- `tests/core/test_x64_is_enabled.py` and `tests/core/test_import_properties.py` assert properties of the package as an importable artifact (global JAX x64 config, torch absent from `sys.modules` after `import utrace`) rather than API behavior; they are grouped by that subject, not by mechanism — the torch-absence check runs in a subprocess because the rest of the integration suite imports torch into the main test process.
 
 ## Decisions to respect (do NOT "fix" without confirming)
 
@@ -205,15 +274,15 @@ Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the co
 
 ## Legacy method state (discovered during ACDC migration)
 
-Only the legacy subset exercised by the legacy golden — `calibrate`, `get_uncertainty_jit`, `predict` — is maintained and tested. These three, plus the `model=` constructor parameter, are still present, pending Phase 6 steps 5-6.
+The legacy subset exercised by the former legacy golden — `calibrate`, `get_uncertainty_jit`, `predict` — plus the `model=` constructor parameter, have all been **removed** (Phase 6 steps 5-6; confirmed absent from `src/utrace/uncertaintyQuantifier.py` as of current HEAD — grepping any of the four in `src/` returns nothing, and `UncertaintyQuantifier(model=x)` now raises `TypeError` from Python itself, with no compatibility shim).
 
-Two further legacy methods were found broken/orphaned during the ACDC migration and have since been **removed** (Phase 6 step 2; confirmed absent from `src/utrace/uncertaintyQuantifier.py` as of current HEAD — grepping either name in `src/` returns nothing):
+Two further legacy methods were found broken/orphaned during the ACDC migration and were **removed** earlier (Phase 6 step 2; confirmed absent from `src/utrace/uncertaintyQuantifier.py` as of current HEAD — grepping either name in `src/` returns nothing):
 - `get_uncertainty` (no suffix) called `self._predict_sets`, which was never defined as a method anywhere in the class (only as a same-named module-level function taking no `self`) → raised `AttributeError` at runtime on every call. Removed.
 - `get_uncertainty_opt` was model-bound (called `self.model.predict_proba`, had no `*_from_proba` counterpart) and raised `AttributeError` if the UQ was constructed without `model=`, making it unusable under the no-model migration. Removed, together with its sole helper `get_U` — which had exactly one call site in the entire repo (inside `get_uncertainty_opt` itself) and so had no other consumer to preserve.
 
-`fit_opt`, `predict_opt`, `fit` remain absent entirely — unrelated to this pass; they were never part of the current `UncertaintyQuantifier` and are not something Phase 6 needs to remove.
+`fit_opt`, `predict_opt`, `fit` remain absent entirely — unrelated to this pass; they were never part of the current `UncertaintyQuantifier` and were never something Phase 6 needed to remove.
 
-Consequence: any script relying on the two now-removed methods, or on `fit`/`fit_opt`/`predict_opt`, does NOT run against the current package and cannot produce a local reference. Such scripts (convergence_analysis, data_size_analysis, setsize_analysis, MNIST_test_coverage, MNIST_test_convergence) are full rewrites — validate them against the paper, not a prior local run. Tests passing does NOT imply the remaining legacy methods (`calibrate`, `predict`, `get_uncertainty_jit`) are correct in every path either; tests cover the core, not the scripts, and not every legacy branch. The remaining legacy surface (`calibrate`, `predict`, `get_uncertainty_jit`, `model=`) is removed in Phase 6 steps 5-6.
+Consequence: any script relying on any of the six now-removed methods (`get_uncertainty`, `get_uncertainty_opt`, `get_U`, `calibrate`, `predict`, `get_uncertainty_jit`), on the removed `model=` parameter, or on `fit`/`fit_opt`/`predict_opt`, does NOT run against the current package and cannot produce a local reference. Such scripts (convergence_analysis, data_size_analysis, setsize_analysis, MNIST_test_coverage, MNIST_test_convergence) are full rewrites — validate them against the paper, not a prior local run. Tests passing does NOT imply these scripts are correct against the current API; the test suite covers the core, not the scripts.
 
 ## Example script inventory
 
@@ -232,7 +301,7 @@ Mapping to paper figures (Marchi & Liebl 2026, Mach. Learn.: Sci. Technol. 7 015
 | `btorch_MNIST_test.py` | Appendix C | (none — bayesian-torch) | DO NOT TOUCH |
 
 Notes:
-- `fit` was the former name of `calibrate`. `*_opt` were "optimized" variants; part of their logic was folded into the main methods. These scripts are written against a previous API and do NOT run as-is against the current package: migrating them means rewriting them against the new API. Note: `fit`, `fit_opt`, and `predict_opt` are fully absent from the current `UncertaintyQuantifier` (not merely deprecated). `get_uncertainty_opt`, bare `get_uncertainty`, and their helper `get_U` (also named in this table's "Legacy methods used" column) are now ALSO fully absent (removed, Phase 6 step 2) — unlike `get_uncertainty_jit`, `calibrate`, and `predict`, which still exist as deprecated methods pending Phase 6 step 5. This table's "Legacy methods used" column is a historical record of what each script called before its Phase 4 rewrite; it is not a claim about what still exists in the current class.
+- `fit` was the former name of `calibrate`. `*_opt` were "optimized" variants; part of their logic was folded into the main methods. These scripts are written against a previous API and do NOT run as-is against the current package: migrating them means rewriting them against the new API. Note: `fit`, `fit_opt`, and `predict_opt` are fully absent from the current `UncertaintyQuantifier` (not merely deprecated). `get_uncertainty_opt`, bare `get_uncertainty`, and their helper `get_U` (also named in this table's "Legacy methods used" column) are likewise fully absent (removed, Phase 6 step 2) — and, as of Phase 6 steps 5-6, so are `get_uncertainty_jit`, `calibrate`, and `predict` (and the `model=` parameter). Every name in this table's "Legacy methods used" column is now fully absent from the current `UncertaintyQuantifier`. This column is a historical record of what each script called before its Phase 4 rewrite; it is not a claim about what still exists in the current class.
 - `ACDC_example.py`: cardiac model loaded via MONAI bundle (do not touch the loading); CP "samples" are pixels (high volume → calibration streaming matters); generates LaTeX tables (preserve).
 
 ## Validation notes (analysis scripts)
@@ -270,6 +339,6 @@ Does the function import or assume a backend?
 The dependency rule above is already enforced in the code:
 - Torch-dependent helpers — `flatten_batch`, `unflatten_batch` (typo `unflatten_bath` fixed), `unflatten_pixels`, `unflatten_set_sizes`, `view_classify` — live in `utils/pytorch/`. `utils.py` is torch-free.
 - Pure-numpy helpers (`get_coverage`, `relabel`, `check_row_sums`, etc.) remain in `utils/` root.
-- One residual torch dependency remains in the core: `uncertaintyQuantifier.py` imports `flatten_batch` (from `utils/pytorch/`) for the deprecated `calibrate` path only. This is removed in Phase 6 with `calibrate`. Until then it is expected, not a violation to "fix" now.
+- [RESOLVED, step 5] The core's one residual torch dependency — `uncertaintyQuantifier.py` importing `flatten_batch` (from `utils/pytorch/`) for the deprecated `calibrate` path — was removed together with `calibrate` in Phase 6 step 5. `flatten_batch` itself is untouched and still lives in `utils/pytorch/helpers.py` with its other callers; only the core's import of it is gone. `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards this directly.
 
 This rule guides both the script migration (Phase 4) and the packaging cleanup (make torch an optional extra) tracked in the backlog and Phase 6.
