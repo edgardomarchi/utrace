@@ -11,7 +11,7 @@ from jax import jit, lax
 
 from functools import partial
 
-from .scores import aps, aps_cal, lac, lac_cal
+from .scores import lac, lac_cal
 from .utils.pytorch.helpers import flatten_batch
 from .utils import _masked_quantile_higher, _bucket_size
 from .utils.tensors import to_jax
@@ -127,12 +127,12 @@ class UncertaintyQuantifier:
         (deprecated) A trained model with a `predict_proba` method.
     classes : Union[list[int], np.ndarray, None], optional
         labels defining the conditioning group; instantiate one object per class/group; None → marginal calibration.
-    score : Literal['lac','aps'], optional
+    score : Literal['lac'], optional
         The scoring function to use, by default 'lac'
     """
     def __init__(self, N: int = 1000,
                  classes: Union[list[int], np.ndarray, None] = None,
-                 score: Literal['lac', 'aps'] = 'lac',
+                 score: Literal['lac'] = 'lac',
                  max_batch_size: int = None,
                  model=None):
         """Wrapper for uncertainty quantification using U-TraCE.
@@ -143,8 +143,8 @@ class UncertaintyQuantifier:
             Maximum number of calibration scores to retain.
         classes : list[int] or array, optional
             labels defining the conditioning group; instantiate one object per class/group; None → marginal calibration.
-        score : {'lac', 'aps'}, default='lac'
-            Scoring function for nonconformity.
+        score : {'lac'}, default='lac'
+            Scoring function for nonconformity. For now, only 'lac' is supported.
         max_batch_size : int, optional
             Fixed padding size for input batches. See _get_uncertainty_jit_impl.
         model : object, optional
@@ -168,11 +168,17 @@ class UncertaintyQuantifier:
                 self.cal_score_ = lac_cal
                 self.score_ = lac
             case 'aps':
-                self.cal_score_ = aps_cal
-                self.score_ = aps
+                raise ValueError(
+                    "score='aps' is not implemented in the JAX backend. "
+                    "The only implementation of APS lived in the numpy "
+                    "backend, which is unreachable in the current "
+                    "configuration. This is a known gap, not a typo. "
+                    "'lac' is the supported value."
+                )
             case _:
-                self.cal_score_ = lac_cal
-                self.score_ = lac
+                raise ValueError(
+                    f"Unknown score {score!r}. The supported value is 'lac'."
+                )
         self._N = 0 #TODO: Count the number of trully used samples
         self._max_N = N
         self.reset()
