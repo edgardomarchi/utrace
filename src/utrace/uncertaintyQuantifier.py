@@ -12,7 +12,6 @@ from jax import jit, lax
 from functools import partial
 
 from .scores import lac, lac_cal
-from .utils.pytorch.helpers import flatten_batch
 from .utils import _masked_quantile_higher, _bucket_size
 from .utils.tensors import to_jax
 
@@ -260,28 +259,6 @@ class UncertaintyQuantifier:
         y_arr = to_jax(y_arr)
         self._calibrate_impl(y_pred_proba, y_arr, batched=batched)
 
-    def calibrate(self, X, y, batched: bool = False):
-        """[DEPRECATED] Calibrate with raw input X (requires self.model to be set).
-        
-        Use calibrate_from_proba(y_pred_proba, y, batched) instead.
-        """
-        warnings.warn(
-            "calibrate(X, y) is deprecated; use calibrate_from_proba(y_pred_proba, y) "
-            "with precomputed probabilities. This method will be removed in a future "
-            "version. See migration guide for details.",
-            DeprecationWarning, stacklevel=2,
-        )
-        if self.model is None:
-            raise ValueError(
-                "Cannot use legacy calibrate(X, ...) without a model. "
-                "Either pass model at construction, or use calibrate_from_proba()."
-            )
-        y_arr = flatten_batch(y).ravel().numpy().astype(int)
-        y_pred_proba = self.model.predict_proba(X)
-        y_arr = to_jax(y_arr)
-        y_pred_proba = to_jax(y_pred_proba)
-        self._calibrate_impl(y_pred_proba, y_arr, batched=batched)
-
     def _calibrate_impl(self, y_pred_proba, y, batched: bool = False):
         """Calibrates the conformal predictor with the given data.
 
@@ -355,25 +332,6 @@ class UncertaintyQuantifier:
         y_pred, y_sets = _predict_sets(y_pred_proba, self.__q_hat, score_fn=self.score_)
         return np.array(y_pred), np.array(y_sets)
 
-
-    def predict(self, X, force_non_empty_sets: bool = False):
-        """[DEPRECATED] Predict from raw input X (requires self.model to be set).
-        
-        Use predict_from_proba(y_pred_proba, force_non_empty_sets) instead.
-        """
-        warnings.warn(
-            "predict(X) is deprecated; use predict_from_proba(y_pred_proba) "
-            "with precomputed probabilities. This method will be removed in a "
-            "future version.",
-            DeprecationWarning, stacklevel=2,
-        )
-        if self.model is None:
-            raise ValueError("Cannot use legacy predict(X) without a model.")
-        y_pred_proba = self.model.predict_proba(X)
-        y_pred_proba = to_jax(y_pred_proba)
-        y_pred, y_sets = _predict_sets(y_pred_proba, self.__q_hat, score_fn=self.score_)
-        return np.array(y_pred), np.array(y_sets)
-    
     def get_uncertainty_from_proba(self, y_pred_proba, y, max_iters: int = 30) -> tuple[np.float64, np.float64]:
         """Estimate model uncertainty over a tuning set via conformal prediction.
 
@@ -421,24 +379,6 @@ class UncertaintyQuantifier:
         y_arr = np.asarray(y).flatten().astype(int)
         return self._get_uncertainty_jit_impl(y_pred_proba, y_arr, max_iters=max_iters)
 
-    def get_uncertainty_jit(self, X, y, max_iters: int = 30):
-        """[DEPRECATED] Estimate uncertainty from raw input X (requires self.model).
-        
-        Use get_uncertainty_from_proba(y_pred_proba, y, max_iters) instead.
-        """
-        warnings.warn(
-            "get_uncertainty_jit(X, y) is deprecated; use "
-            "get_uncertainty_from_proba(y_pred_proba, y). This method will be "
-            "removed in a future version.",
-            DeprecationWarning, stacklevel=2,
-        )
-        if self.model is None:
-            raise ValueError("Cannot use legacy get_uncertainty_jit(X, ...) without a model.")
-        y_pred_proba = self.model.predict_proba(X).cpu().numpy()
-        y_arr = y.numpy().flatten().astype(int)
-        return self._get_uncertainty_jit_impl(y_pred_proba, y_arr, max_iters=max_iters)
-    
-    
     def _get_uncertainty_jit_impl(self, y_pred_proba, y, max_iters=30):
         """y_pred_proba: (B, K) array (jnp/np), B variable.
            y:            (B,)   int labels.
