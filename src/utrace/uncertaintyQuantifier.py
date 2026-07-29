@@ -16,8 +16,6 @@ from .utils.pytorch.helpers import flatten_batch
 from .utils import _masked_quantile_higher, _bucket_size
 from .utils.tensors import to_jax
 
-from .config import USE_JAX
-
 logger = logging.getLogger(__name__)
 
 @partial(jit, static_argnames=["score_fn"])
@@ -259,8 +257,7 @@ class UncertaintyQuantifier:
         """
         y_pred_proba = to_jax(y_pred_proba)
         y_arr = np.asarray(y).astype(int)
-        if USE_JAX:
-            y_arr = to_jax(y_arr)
+        y_arr = to_jax(y_arr)
         self._calibrate_impl(y_pred_proba, y_arr, batched=batched)
 
     def calibrate(self, X, y, batched: bool = False):
@@ -281,9 +278,8 @@ class UncertaintyQuantifier:
             )
         y_arr = flatten_batch(y).ravel().numpy().astype(int)
         y_pred_proba = self.model.predict_proba(X)
-        if USE_JAX:
-            y_arr = to_jax(y_arr)
-            y_pred_proba = to_jax(y_pred_proba)
+        y_arr = to_jax(y_arr)
+        y_pred_proba = to_jax(y_pred_proba)
         self._calibrate_impl(y_pred_proba, y_arr, batched=batched)
 
     def _calibrate_impl(self, y_pred_proba, y, batched: bool = False):

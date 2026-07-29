@@ -17,12 +17,3 @@ def lac(smx:jnp.ndarray) -> jnp.ndarray:
         np.array: LAC score
     """
     return 1 - smx
-
-def aps_cal(
-    y: jnp.ndarray,
-    smx: jnp.ndarray,
-    ) -> jnp.ndarray:
-    raise NotImplementedError()
-
-def aps(smx:jnp.ndarray) -> jnp.ndarray:
-    raise NotImplementedError()
