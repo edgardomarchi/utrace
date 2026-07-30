@@ -218,10 +218,13 @@ class UncertaintyQuantifier:
         Single-threaded access assumed per instance.
         """
         if not self._sorted:
-            if self._N > 0:
-                self._conformity_scores_ = self._conformity_scores_.at[:self._N].set(
-                    jnp.sort(self._conformity_scores_[:self._N])
-                )
+            # Sort the FULL buffer, not just [:self._N]: the region beyond
+            # self._N is +inf-padded (see reset() and _calibrate_impl), and
+            # +inf entries sort to the tail regardless, so this is
+            # bit-identical to sorting the variable-length prefix while
+            # keeping the sort's input shape fixed at (self._max_N,) across
+            # every call, instead of one XLA compilation per distinct _N.
+            self._conformity_scores_ = jnp.sort(self._conformity_scores_)
             self._sorted = True
         return self._conformity_scores_
 
