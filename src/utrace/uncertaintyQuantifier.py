@@ -142,12 +142,18 @@ class UncertaintyQuantifier:
             Fixed padding size for input batches. See _get_uncertainty_jit_impl.
         """
         self.classes = classes
+        self._classes_jax = jnp.asarray(classes) if classes is not None else None
         self._max_batch_size = max_batch_size
 
         match score:
             case 'lac':
                 self.cal_score_ = lac_cal
                 self.score_ = lac
+                # Declared by the score family, not hardcoded at the boundary: a future
+                # regression score would declare a float dtype here, and hardcoding an
+                # integer cast in calibrate_from_proba would silently truncate continuous
+                # targets.
+                self.label_dtype_ = jnp.int32
             case 'aps':
                 raise ValueError(
                     "score='aps' is not implemented in the JAX backend. "
@@ -233,8 +239,7 @@ class UncertaintyQuantifier:
             If True, append to existing calibration scores instead of replacing.
         """
         y_pred_proba = to_jax(y_pred_proba)
-        y_arr = np.asarray(y).astype(int)
-        y_arr = to_jax(y_arr)
+        y_arr = to_jax(y).astype(self.label_dtype_)
         self._calibrate_impl(y_pred_proba, y_arr, batched=batched)
 
     def _calibrate_impl(self, y_pred_proba, y, batched: bool = False):
@@ -249,8 +254,8 @@ class UncertaintyQuantifier:
         batched : bool, optional
             For batched calibration; appends new scores to the buffer. By default False
         """
-        if self.classes is not None:
-            mask = np.isin(np.asarray(y), np.asarray(self.classes))
+        if self._classes_jax is not None:
+            mask = jnp.isin(y, self._classes_jax)
             y = y[mask]
             y_pred_proba = y_pred_proba[mask]
 
