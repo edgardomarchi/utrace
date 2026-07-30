@@ -118,6 +118,148 @@ computes probabilities externally and passes them to the `*_from_proba` API.
       acceptance criterion for other Phase 6 steps (a rename changes every affected test ID),
       per the pattern used throughout steps 4-6 above.
 
+## Architecture / design direction (not started — Phase 6 scope unchanged)
+
+This section records INTENT for work that has not been started, plus a small number of
+findings verified directly in the pass that wrote this section, and several explicitly
+unverified hypotheses. It is not a phase and nothing in it is DONE. It does not add to or
+change the Phase 6 step list above.
+
+Every statement below is labeled: **[ESTABLISHED]** (verified by reading or running code in
+this pass), **[INTENT]** (a design decision taken but not implemented), or **[UNVERIFIED]** (a
+hypothesis nobody has tested).
+
+### Principles
+
+1. [INTENT] The package accepts any array-like input at its boundary. DLPack-capable inputs
+   are preferred and are converted zero-copy where possible.
+2. [INTENT] Conversion happens ONCE, at the boundary, via `to_jax`. Nothing inside the core
+   touches numpy for data that arrives as a device array.
+3. [INTENT] The core works exclusively with jax arrays.
+4. [INTENT] The core should be jittable end to end.
+
+### Endpoint
+
+[INTENT] A jittable core requires the state to be explicit — a PyTree passed in and returned —
+because attribute mutation inside a traced function does not survive tracing.
+
+[INTENT] This does NOT require the public API to become functional. The stateful class remains
+the user-facing interface and absorbs the state threading:
+
+```python
+self._state = _calibrate_pure(self._state, to_jax(y_proba), to_jax(y), batched)
+```
+
+The reassignment happens in Python, outside the jit, which is legal. This is the pattern optax
+and flax use.
+
+[INTENT] Consequence: this is an internal refactor, not a breaking API change. No deprecation
+cycle, no major version bump.
+
+### User-visible consequence
+
+[INTENT] The ONE thing that changes for users is the meaning of `N` under class-conditional
+calibration. Today the class filter compacts before writing (`_calibrate_impl`'s
+`y = y[mask]; y_pred_proba = y_pred_proba[mask]`, see Step 0(f) call sites), so `N=1000` with
+`classes=[3]` means 1000 scores of class 3. Under a constant-size-mask design the buffer
+receives all B entries with invalid ones marked, so `N=1000` becomes "1000 samples seen, of
+which some fraction is mine." The same `N` that suffices today would overflow sooner — via the
+`ValueError` added in Phase 6 step 1 (see Backlog, `_max_N` overflow guard), which is the
+correct failure mode but is a behaviour change.
+
+[INTENT] This is precisely what vmap over classes resolves: with a shared buffer, entries
+belonging to other classes are not wasted. Therefore the class-filter redesign and the
+vectorisation over classes are COUPLED and must be done together. Done in isolation, the class
+filter makes memory use worse (one buffer per class, each sized for the full stream); combined,
+it improves.
+
+### Two obstacles
+
+**The lazy sort.** [ESTABLISHED] The buffer is +inf-padded beyond the valid prefix (`reset()`
+and the non-batched branch of `_calibrate_impl`; quoted in full below), so sorting the FULL
+buffer is bit-identical to sorting `[:self._N]` — the +inf entries sort to the tail either way.
+This makes the sort shape-stable at essentially no cost and makes `_sorted` the easiest piece
+of state to move. [ESTABLISHED] Verified by running, in this pass, on CPU with
+`jax_enable_x64` on (matching the package's own config): built a `max_N=20` buffer with `N=7`
+random float64 values +inf-padded exactly as `_calibrate_impl`'s non-batched branch does, then
+compared `jnp.sort(buf)` (full buffer) against `buf.at[:N].set(jnp.sort(buf[:N]))` (prefix-only,
+today's behaviour) — `jnp.array_equal` and a raw byte comparison both returned `True`. This has
+NOT been implemented or wired into `conformity_scores_`; only the equivalence was checked, in a
+throwaway script, not against the class.
+
+**The class filter.** [ESTABLISHED] `y[mask]` produces a data-dependent shape, which raises
+`NonConcreteBooleanIndexError` under `jit`. Note: the prompt for this pass asked to
+cross-reference an existing "step 7 diagnostic" for this finding; no such diagnostic — under
+that name or containing this error — was found anywhere in `MIGRATION.md`, the rest of the
+repo, or git history (`git log --oneline --all` and a repo-wide grep for
+`NonConcreteBooleanIndexError` both came back empty). Rather than cite a source that doesn't
+exist, this was verified directly in this pass: jitting a function that does
+`y[jnp.isin(y, classes)]` and calling it raises
+
+```
+jax.errors.NonConcreteBooleanIndexError: Array boolean indices must be concrete; got bool[5]
+```
+
+[INTENT] The fix is the padding-and-masking pattern already used by
+`_get_uncertainty_jit_impl`, which requires splitting `_N` (occupancy) from a separate valid
+count, and that touches the overflow guard, the `conformity_scores_` property, and the alpha
+setter.
+
+### Step ladder
+
+[INTENT] Steps A, B, B.5 and C are each worth doing on their own merits and none of them
+commits the project to D.
+
+- [INTENT] **A. The boundary.** `to_jax(y)` once on entry, no numpy in the core, `jnp.isin` for
+  the class mask, eager boolean indexing left as-is. Plus tests for the torch-tensor input
+  path, which the golden baselines do not currently cover. Prerequisite for everything else:
+  while the core forces labels through numpy, nothing downstream can be pure.
+- [INTENT] **B. Remove the internal bounces.** Sort the full buffer instead of the variable
+  slice; move `_get_uncertainty_jit_impl`'s padding from numpy to jnp. No API or contract
+  change.
+- [INTENT] **B.5. Extract state to an explicit PyTree** (`NamedTuple` or
+  `flax.struct.dataclass`) WITHOUT jitting anything. Internal methods become functions taking
+  and returning state. No behaviour change, no API change; verifiable by byte-identical
+  goldens. This deliberately separates "can the core be functional" (mechanical) from "can the
+  core be jitted" (where the shape decisions live). Doing both at once is what produces a
+  half-jitted hybrid worse than either pure design.
+- [INTENT] **C. The scripts.** Remove the `.numpy().astype(int)` / `# COMPAT` conversions
+  (Backlog: "Labels passed to the *_from_proba API still go through .numpy()...") so a torch
+  dataset flows end to end without touching the host. Cannot be done before A.
+- [INTENT] **D. jit + vmap over classes + the `N` semantics change**, all together because they
+  are coupled (see "User-visible consequence" above).
+
+### What is unverified [UNVERIFIED]
+
+All five items below are unverified hypotheses, not measurements to rely on. As with the class
+filter above, no "step 7 diagnostic" artifact containing these figures was found anywhere in
+this repo or its history; they are recorded here, for the first time, as open questions —
+labeled accordingly rather than presented as if independently confirmed elsewhere.
+
+- [ESTABLISHED] A CPU-only comparison of a direct `to_jax` conversion path against an indirect
+  one is reported to have measured the direct path flat at ~0.04 ms regardless of array size,
+  consistent with genuine zero-copy where jax arrays live in host memory anyway, with the
+  indirect path around 175x slower. This has NOT been reproduced or verified in this pass.
+  Even if the CPU figures hold, on a GPU backend the data must reach the device regardless, so
+  the relevant comparison is device→host→device versus device→device, which is a DIFFERENT
+  ratio and has not been measured on any GPU backend. Do not read a CPU ~175x figure as
+  applying to GPU hardware.
+- [UNVERIFIED] Whether `np.asarray()` on a torch CUDA tensor raises, and therefore whether the
+  current `calibrate_from_proba` rejects GPU-resident labels outright rather than merely
+  copying them inefficiently. This is the strongest single argument for step A if true, and it
+  is an inference from known torch behaviour that nobody has run. No CUDA device was available
+  in this (or any prior) diagnostic environment.
+- [UNVERIFIED] Whether the real cost is the copy or the per-batch device→host synchronisation
+  that `np.asarray()` on a jax array forces. In the ACDC streaming pattern this would be a sync
+  barrier per batch, which an isolated microbenchmark cannot see because it calls
+  `block_until_ready` anyway.
+- [UNVERIFIED] Whether jitting `_calibrate_impl` pays at all, independent of vmap. `lac_cal` is
+  already jitted and the rest of the method is buffer bookkeeping.
+- [UNVERIFIED] Whether returning jnp scalars instead of numpy scalars from
+  `get_uncertainty_from_proba` breaks any script. `float()`, `np.isnan()` and pandas all accept
+  jnp scalars, so this is expected to be soft, but it must be checked against the scripts
+  rather than assumed.
+
 ## Backlog (does not block the phases)
 
 - `get_uncertainty_grid_from_proba`: alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
