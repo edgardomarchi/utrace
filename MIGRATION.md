@@ -183,9 +183,9 @@ of state to move. [ESTABLISHED] Verified by running, in this pass, on CPU with
 `jax_enable_x64` on (matching the package's own config): built a `max_N=20` buffer with `N=7`
 random float64 values +inf-padded exactly as `_calibrate_impl`'s non-batched branch does, then
 compared `jnp.sort(buf)` (full buffer) against `buf.at[:N].set(jnp.sort(buf[:N]))` (prefix-only,
-today's behaviour) — `jnp.array_equal` and a raw byte comparison both returned `True`. This has
-NOT been implemented or wired into `conformity_scores_`; only the equivalence was checked, in a
-throwaway script, not against the class.
+today's behaviour) — `jnp.array_equal` and a raw byte comparison both returned `True`. 
+Implemented and wired into conformity_scores_ in 972ef7f; the equivalence was verified against 
+the real class, byte-comparing results, including _N == 0, _N == 1 and _N == _max_N.
 
 **The class filter.** [ESTABLISHED] `y[mask]` produces a data-dependent shape, which raises
 `NonConcreteBooleanIndexError` under `jit`. Note: the prompt for this pass asked to
@@ -205,18 +205,64 @@ jax.errors.NonConcreteBooleanIndexError: Array boolean indices must be concrete;
 count, and that touches the overflow guard, the `conformity_scores_` property, and the alpha
 setter.
 
+### Measured negative result: jnp-native padding (B2, reverted)
+
+[ESTABLISHED] jnp-native padding in the tuning path was implemented and reverted. Outside a
+jit boundary it is a measured performance regression, not a step toward the jit goal:
+
+- Isolated uncertainty section of a real MNIST class-conditional workload at B=12002: 0.5043s
+  median under numpy versus 0.8524s median under jnp, five cold-process runs each, clusters
+  non-overlapping (numpy max 0.5197 < jnp min 0.8427). About a 69% increase.
+- A controlled call-count sweep showed the absolute delta GROWING with call count rather than
+  flattening: at B=12002, 0.227s at 10 calls, 0.308s at 40, 0.580s at 160. Fitting those gives
+  roughly 2.4 ms per call of persistent overhead plus about 0.20s of fixed compilation cost. At
+  B=200 the same pattern holds at roughly 1.0 ms per call. There is no break-even: more calls
+  widen the gap.
+- The golden integration run went from 6.13s to 6.28s median (+2.4%), measured independently
+  before the production-scale work, consistent in sign.
+- Numerically value-preserving: golden `.npy` baselines byte-identical, and all per-class (U,
+  alpha, coverage, setsize) values identical across all ten runs of both variants.
+
+[ESTABLISHED] The mechanism: jax arrays are immutable, so `arr.at[:B].set(x)` allocates a new
+array and dispatches an op, where numpy's `arr[:B] = x` is an in-place memcpy. The padding
+construction is memory-movement work, which eager jnp does worse; this is the opposite of the
+class mask, where `jnp.isin`'s compiled kernel beats `np.isin` at the same sizes. An isolated
+benchmark of the mask alone therefore pointed the wrong way about the change as a whole.
+
+[UNVERIFIED] The expectation for step D: inside a single jit trace, XLA should fuse the
+`.at[].set()` chain and eliminate the intermediates, so the same construction that costs ~2.4
+ms per call eagerly may cost nothing. This is the hypothesis D has to validate, and it has not
+been tested.
+
+**Measurement conditions** (recorded because these numbers are now in a document people will
+rely on):
+
+- The Task 1 timings were taken on a workstation that was in interactive use during the runs.
+  Two of the five jnp runs show elevated values in both total and isolated time, consistent
+  with external contention. The effect survives regardless: the signal is roughly 5-15x the
+  within-cluster spread, and the three uncontended jnp runs still sit far above every numpy
+  run.
+- Run ordering was not documented, so runs were not verifiably interleaved between variants.
+  Interleaving would be the definitive control against drift. Record this as a known
+  limitation of the measurement, not as a reason to distrust the conclusion.
+- All measurements are CPU backend. GPU is unmeasured and the balance could differ, since
+  dispatch overhead and memory-movement costs have different relative weights there.
+
 ### Step ladder
 
-[INTENT] Steps A, B, B.5 and C are each worth doing on their own merits and none of them
-commits the project to D.
+[INTENT] Steps B1, B.5 and C are each worth doing on their own merits and none of them commits
+the project to D. B2 no longer exists as a standalone step — see below.
 
-- [INTENT] **A. The boundary.** `to_jax(y)` once on entry, no numpy in the core, `jnp.isin` for
-  the class mask, eager boolean indexing left as-is. Plus tests for the torch-tensor input
-  path, which the golden baselines do not currently cover. Prerequisite for everything else:
-  while the core forces labels through numpy, nothing downstream can be pure.
-- [INTENT] **B. Remove the internal bounces.** Sort the full buffer instead of the variable
-  slice; move `_get_uncertainty_jit_impl`'s padding from numpy to jnp. No API or contract
-  change.
+- [ESTABLISHED] **A. The boundary.** DONE. `to_jax(y)` once on entry, no numpy in the core,
+  `jnp.isin` for the class mask, eager boolean indexing left as-is. Plus tests for the
+  torch-tensor input path, which the golden baselines do not currently cover.
+- [ESTABLISHED] **B1. Sort the full buffer.** DONE. Sort the full buffer instead of the
+  variable slice (commit 972ef7f). This one WAS a win, and stands on its own merits
+  independently of D: 40 compiled sort shapes collapsed to 1, and a 40-batch streaming loop
+  went from 5.20s to 2.44s.
+- **B2. REMOVED as a standalone step.** It is not a stepping stone to D, because the jnp
+  padding only pays off inside a single jit trace — see "Measured negative result" above. Its
+  content is absorbed into D.
 - [INTENT] **B.5. Extract state to an explicit PyTree** (`NamedTuple` or
   `flax.struct.dataclass`) WITHOUT jitting anything. Internal methods become functions taking
   and returning state. No behaviour change, no API change; verifiable by byte-identical
@@ -226,8 +272,25 @@ commits the project to D.
 - [INTENT] **C. The scripts.** Remove the `.numpy().astype(int)` / `# COMPAT` conversions
   (Backlog: "Labels passed to the *_from_proba API still go through .numpy()...") so a torch
   dataset flows end to end without touching the host. Cannot be done before A.
-- [INTENT] **D. jit + vmap over classes + the `N` semantics change**, all together because they
-  are coupled (see "User-visible consequence" above).
+- [INTENT] **D. jit + vmap over classes + the `N` semantics change**, all together because
+  they are coupled (see "User-visible consequence" above). Now also carries what was B2: the
+  `_get_uncertainty_jit_impl` padding, the class mask leftover in `_get_uncertainty_jit_impl`
+  (its own `np.asarray(self.classes)`), and the `np.asarray(to_jax(...))` on entry to
+  `get_uncertainty_from_proba` — because all of them must land inside the jit boundary or not
+  at all.
+
+### Output types
+
+[INTENT] Scalars are returned as host floats. They have no device to preserve, no zero-copy to
+protect, and no pipeline to return to. Python's float is IEEE 754 binary64, identical in
+precision to `np.float64`; the float64 guarantee comes from `jax_enable_x64` upstream, not from
+the return type.
+
+[INTENT] Arrays are returned on device, with a conversion helper for callers who want them
+elsewhere. `predict_from_proba` returns arrays and currently returns numpy; changing it is a
+real API decision, not yet taken. Open questions to record: the helper's signature, whether it
+lives in `utils.tensors` next to `to_jax`, and whether it supports only torch and numpy or
+anything with `__dlpack__`.
 
 ### What is unverified [UNVERIFIED]
 
