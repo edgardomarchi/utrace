@@ -250,8 +250,11 @@ rely on):
 
 ### Step ladder
 
-[INTENT] Steps B1, B.5 and C are each worth doing on their own merits and none of them commits
-the project to D. B2 no longer exists as a standalone step — see below.
+[ESTABLISHED] A, B1 and B.5 are DONE. B2 was removed as a standalone step after a measured
+negative result (see "Measured negative result: jnp-native padding (B2, reverted)" above); its
+content was absorbed into D. C and D remain, alongside the step 3c packaging block (see "Phase
+6 step 3c — packaging cleanup [BLOCKED]" below) and the rename batch (see "Forwarding
+accessors: temporary scaffolding" below).
 
 - [ESTABLISHED] **A. The boundary.** DONE. `to_jax(y)` once on entry, no numpy in the core,
   `jnp.isin` for the class mask, eager boolean indexing left as-is. Plus tests for the
@@ -263,12 +266,23 @@ the project to D. B2 no longer exists as a standalone step — see below.
 - **B2. REMOVED as a standalone step.** It is not a stepping stone to D, because the jnp
   padding only pays off inside a single jit trace — see "Measured negative result" above. Its
   content is absorbed into D.
-- [INTENT] **B.5. Extract state to an explicit PyTree** (`NamedTuple` or
-  `flax.struct.dataclass`) WITHOUT jitting anything. Internal methods become functions taking
-  and returning state. No behaviour change, no API change; verifiable by byte-identical
-  goldens. This deliberately separates "can the core be functional" (mechanical) from "can the
-  core be jitted" (where the shape decisions live). Doing both at once is what produces a
-  half-jitted hybrid worse than either pure design.
+- [ESTABLISHED] **B.5. Extract state to an explicit PyTree.** DONE (commit 53b1e8d). A plain
+  `typing.NamedTuple` (`_UQState`, holding `N`, `conformity_scores`, `sorted`, `alpha`, `q_hat`)
+  sufficed — no `flax.struct.dataclass`, no hand-registered pytree node, no flax import. The
+  reason is the partition itself: with configuration (`_max_N`, `label_dtype_`, `cal_score_`,
+  `score_`, `classes`, `_classes_jax`, `_max_batch_size`) excluded from the state, no field
+  needed a static designation, so JAX's automatic NamedTuple registration was enough. The lazy
+  sort kept its laziness: a pure module-level `_ensure_sorted(state) -> state` returns a new
+  state, and the `conformity_scores_` property calls it and reassigns `self._state` in ordinary
+  Python, outside any jit — sorting eagerly on write was rejected because it would revert the
+  measured 357x defer-sort win recorded above. Verified in two halves so the mechanical
+  extraction and the sort-laziness rewrite stay separately attributable: the mechanical
+  extraction alone passed with byte-identical goldens before the sort work started; the full
+  change passed with zero test edits and an empty collected-test-ID diff. Also corrected
+  `get_uncertainty_from_proba`'s docstring, which claimed the method was pure — a diagnostic had
+  verified by execution that it flips `_sorted` and rebinds the buffer through the same
+  lazy-sort path as `conformity_scores_`; the mutation is idempotent and value-preserving, so
+  only the documented claim was wrong, not the behaviour.
 - [INTENT] **C. The scripts.** Remove the `.numpy().astype(int)` / `# COMPAT` conversions
   (Backlog: "Labels passed to the *_from_proba API still go through .numpy()...") so a torch
   dataset flows end to end without touching the host. Cannot be done before A.
@@ -278,6 +292,47 @@ the project to D. B2 no longer exists as a standalone step — see below.
   (its own `np.asarray(self.classes)`), and the `np.asarray(to_jax(...))` on entry to
   `get_uncertainty_from_proba` — because all of them must land inside the jit boundary or not
   at all.
+
+### Forwarding accessors: temporary scaffolding
+
+[INTENT] The forwarding properties for `_N`, `_sorted`, `_conformity_scores_` and the
+name-mangled `__alpha`/`__q_hat` exist so that roughly 45 external read sites across the test
+suite keep resolving unchanged, which is what made a ~200-line restructuring (the module-level
+`_UQState` and `_ensure_sorted`, plus the rewritten `_calibrate_impl`, `alpha` setter and
+`_get_uncertainty_jit_impl`) verifiable by a zero-test-edit criterion rather than merely
+plausible. They are temporary: nothing about the design requires `_N` etc. to keep resolving
+under those exact names forever, only that they did not need to change AT THIS STEP.
+
+Removing them is a candidate for the rename batch, alongside the `_new_api` suffixes and
+`NEW_API_BASELINE_DIR` naming already flagged as a rename candidate (see Phase 6, "Remaining for
+Phase 6" above), and the consolidation of the two import-property tests
+(`tests/core/test_x64_is_enabled.py` and `tests/core/test_import_properties.py`, currently
+separate files grouped by subject — see "Test conventions" below). All three change collected
+test IDs and so, per the pattern already established for the `_new_api` rename, must wait until
+collected test IDs stop being used as an acceptance criterion for other steps.
+
+### What the state PyTree revealed for step D
+
+[ESTABLISHED] `jax.tree_util.tree_flatten` of a populated `_UQState` yields five leaves: `N` as
+a Python `int`, the conformity-score buffer as a jax array, `sorted` as a Python `bool`, and
+`alpha`/`q_hat` as numpy `float64` scalars. Only one of the five is a jax array. No
+configuration value appears among the leaves — `_max_N`, `label_dtype_`, etc. are not fields of
+`_UQState` and never reach `tree_flatten`.
+
+[UNVERIFIED] The consequences for D, none of them tested:
+- Under jit every leaf becomes a traced value. `sorted` as a traced bool breaks the Python `if`
+  inside `_ensure_sorted` (`if state.sorted: return state`) — a data-dependent Python
+  conditional cannot be traced. That flag will have to leave the state, become static, or be
+  eliminated in favour of sorting on write once inside a jit boundary. This confirms, from a
+  second direction, the observation already recorded under "Two obstacles" above.
+- `N` as a traced value means the buffer write needs a dynamic-slice update with a statically
+  known size, and the overflow guard's Python comparison (`if old_N + num_scores >
+  self._max_N: raise ValueError(...)`) cannot be traced either — it has to stay at the untraced
+  wrapper level, where it already is (`_calibrate_impl` is a plain method, not jitted).
+- `alpha` and `q_hat` are host scalars sitting in the same structure as a device array. D has to
+  decide whether they convert at the jit boundary or leave the state entirely (living instead as
+  plain wrapper attributes, the way configuration already does). This interacts with the
+  output-types rule recorded below: scalars are returned as host floats.
 
 ### Output types
 
@@ -365,7 +420,7 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 
 - [RESOLVED]/[DONE] Performance: _calibrate_impl sorts the full buffer on every batch (O(N log N) per batch). For large datasets (ACDC) it would be better to sort once when calibration is finalized, not per batch. Implemented as defer-sort (commit 4852c3b): new scores are written into the fixed buffer at `_conformity_scores_[_N:_N+num_scores]` without per-batch sorting; a single `jnp.sort` runs lazily on first read of `conformity_scores_`, gated by the `_sorted` flag. MEASURED on RTX 3070 (CPU-unmeasured): streaming calibration ~357x faster than the prior sort-per-batch design at ~2M-score ACDC scale (7.2s → 20ms).
 
-- [Phase 6] Zero-copy in tuning: `get_uncertainty_from_proba`'s body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:355-356` as of HEAD `a0ea8f6`, but re-verify by symbol/grep rather than trusting that number after further commits — it has already moved once, from `417-418` as of `ebc5ddb`, purely from unrelated deletions earlier in the file). Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark above measured the calibration path, not the tuning/uncertainty path).
+- [Phase 6] Zero-copy in tuning: `get_uncertainty_from_proba`'s body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:435-436` as of HEAD `53b1e8d`, but re-verify by symbol/grep rather than trusting that number after further commits — it has now moved twice, from `417-418` as of `ebc5ddb`, to `355-356` as of `a0ea8f6`, to `435-436` as of `53b1e8d` (the B.5 state-extraction commit added ~150 lines earlier in the file), each time purely from unrelated line-count changes, never from this call site itself being touched. Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark above measured the calibration path, not the tuning/uncertainty path).
 
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
