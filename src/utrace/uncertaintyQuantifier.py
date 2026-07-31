@@ -2,7 +2,7 @@
 """
 
 import logging
-from typing import Literal, Union, Callable
+from typing import Literal, Union, Callable, NamedTuple
 
 import numpy as np
 from jax import numpy as jnp
@@ -114,6 +114,41 @@ def _search_uncertainty(
     U = 1.0 - EC_yt_f * (1.0 - alpha_f)
     return alpha_f, U
 
+class _UQState(NamedTuple):
+    """Mutable calibration state for UncertaintyQuantifier, threaded explicitly
+    through the methods below instead of being mutated on `self` in place.
+
+    A plain NamedTuple: JAX registers NamedTuple subclasses as PyTrees
+    automatically, so this needs no flax dependency and no hand-written
+    tree_flatten/tree_unflatten. Every field here is MUTABLE STATE (changes as
+    calibration proceeds); configuration (`_max_N`, `label_dtype_`,
+    `cal_score_`, `score_`, `classes`, `_classes_jax`, `_max_batch_size`)
+    stays on the class and is deliberately excluded, which is also why no
+    field of this NamedTuple needs to be static.
+    """
+    N: int
+    conformity_scores: jnp.ndarray
+    sorted: bool
+    alpha: np.float64
+    q_hat: np.float64
+
+
+def _ensure_sorted(state: _UQState) -> _UQState:
+    """Sorts the FULL conformity-score buffer if it is not already sorted.
+
+    Pure: returns a new state rather than mutating one in place. Sorting the
+    full (max_N,) buffer rather than just [:N] is deliberate -- the region
+    beyond N is +inf-padded (see UncertaintyQuantifier.reset() and
+    _calibrate_impl), and +inf entries sort to the tail regardless, so this
+    is bit-identical to sorting the variable-length prefix while keeping the
+    sort's input shape fixed at (max_N,) across every call, instead of one
+    XLA compilation per distinct N.
+    """
+    if state.sorted:
+        return state
+    return state._replace(conformity_scores=jnp.sort(state.conformity_scores), sorted=True)
+
+
 class UncertaintyQuantifier:
     """Wrapper for uncertainty quantification using U-TraCE.
 
@@ -166,7 +201,6 @@ class UncertaintyQuantifier:
                 raise ValueError(
                     f"Unknown score {score!r}. The supported value is 'lac'."
                 )
-        self._N = 0 #TODO: Count the number of trully used samples
         self._max_N = N
         self.reset()
 
@@ -174,59 +208,83 @@ class UncertaintyQuantifier:
 
     def reset(self):
         """Resets the scoores and alpha."""
-        self._conformity_scores_ = jnp.full(self._max_N, jnp.inf, dtype=jnp.float64)
-        self._sorted = True  # +inf buffer is trivially sorted; no lazy sort needed on empty read
-        self.__alpha:np.float64 = np.float64('nan')
-        self.__q_hat:np.float64 = np.float64('nan')
-
-        self._N = 0
+        self._state = _UQState(
+            N=0,
+            conformity_scores=jnp.full(self._max_N, jnp.inf, dtype=jnp.float64),
+            sorted=True,  # +inf buffer is trivially sorted; no lazy sort needed on empty read
+            alpha=np.float64('nan'),
+            q_hat=np.float64('nan'),
+        )
 
         logger.debug("UQ reset.")
 
+    # ── Forwarding accessors (temporary scaffolding for Step B.5) ────────────
+    # self._state (a _UQState NamedTuple) is the single source of truth for
+    # calibration state. These read-only properties keep _N, _sorted,
+    # _conformity_scores_ and the name-mangled __alpha/__q_hat resolving to
+    # the same values external readers (tests) already expect, so that
+    # extracting the state into an explicit PyTree requires zero test edits.
+    @property
+    def _N(self):
+        return self._state.N
+
+    @property
+    def _sorted(self):
+        return self._state.sorted
+
+    @property
+    def _conformity_scores_(self):
+        """Raw (possibly unsorted) backing buffer. Distinct from the public
+        conformity_scores_ property below, which lazy-sorts on read."""
+        return self._state.conformity_scores
+
+    @property
+    def __alpha(self):
+        return self._state.alpha
+
+    @property
+    def __q_hat(self):
+        return self._state.q_hat
 
     @property
     def alpha(self) -> np.float64:
         """The alpha value used for the conformal prediction stage."""
         return self.__alpha
-    
+
     @alpha.setter
     def alpha(self, alpha: np.float64):
         """Sets the alpha value and calculates the q_hat level based on the current conformity scores."""
         # n = self.conformity_scores_.shape[0]
         if self._N == 0:
             raise ValueError("The model must be calibrated before setting alpha.")
-        
+
         q_level = np.divide(np.ceil((self._N + 1) * (1 - alpha)), self._N, dtype=np.float64)
         if q_level > 1.0:
             logger.warning("'q_level' > 1.0, setting to 1.0 - Scores size: %d (< 1/alpha???) - alpha %f", self._N, alpha)
             q_level = np.float64(1.0)
-        self.__alpha = np.float64(alpha)
-        logger.debug("'q_level' set to %f for alpha %f and N %d", q_level, self.__alpha, self._N)
-        logger.debug("Conformity scores: %s", self.conformity_scores_[:self._N])
+        new_alpha = np.float64(alpha)
+        logger.debug("'q_level' set to %f for alpha %f and N %d", q_level, new_alpha, self._N)
+        self._state = _ensure_sorted(self._state)
+        logger.debug("Conformity scores: %s", self._state.conformity_scores[:self._N])
         # Cap preserved: _masked_quantile_higher clips silently, but we keep
         # explicit q_level <= 1.0 to match historical semantics and warning.
-        self.__q_hat = np.float64(
-            _masked_quantile_higher(self.conformity_scores_, jnp.int32(self._N), q_level)
+        new_q_hat = np.float64(
+            _masked_quantile_higher(self._state.conformity_scores, jnp.int32(self._N), q_level)
         )
-        logger.debug("'q_hat' set to %f for alpha %f", self.__q_hat, self.__alpha)
+        self._state = self._state._replace(alpha=new_alpha, q_hat=new_q_hat)
+        logger.debug("'q_hat' set to %f for alpha %f", new_q_hat, new_alpha)
 
     @property
     def conformity_scores_(self):
         """Calibration buffer: sorted ascending in [:_N], +inf padding in [_N:].
 
         Lazy-sorts the valid prefix on first read after a calibration write.
-        Single-threaded access assumed per instance.
+        The sort itself is the pure _ensure_sorted(); this property performs
+        the (legal, outside-jit) self._state reassignment and returns the
+        buffer. Single-threaded access assumed per instance.
         """
-        if not self._sorted:
-            # Sort the FULL buffer, not just [:self._N]: the region beyond
-            # self._N is +inf-padded (see reset() and _calibrate_impl), and
-            # +inf entries sort to the tail regardless, so this is
-            # bit-identical to sorting the variable-length prefix while
-            # keeping the sort's input shape fixed at (self._max_N,) across
-            # every call, instead of one XLA compilation per distinct _N.
-            self._conformity_scores_ = jnp.sort(self._conformity_scores_)
-            self._sorted = True
-        return self._conformity_scores_
+        self._state = _ensure_sorted(self._state)
+        return self._state.conformity_scores
 
     def calibrate_from_proba(self, y_pred_proba, y, batched: bool = False):
         """Calibrate the conformal predictor with precomputed probabilities.
@@ -264,37 +322,43 @@ class UncertaintyQuantifier:
 
         scores = self.cal_score_(y, y_pred_proba)
         num_scores = len(scores)
+        old_N = self._state.N
         if batched:
-            if self._N + num_scores > self._max_N:
+            if old_N + num_scores > self._max_N:
                 raise ValueError(
-                    f"Batched calibration buffer overflow: current _N={self._N} + "
+                    f"Batched calibration buffer overflow: current _N={old_N} + "
                     f"num_scores={num_scores} exceeds _max_N={self._max_N}. "
                     f"N is set at construction time."
                 )
             # Append new scores at offset _N without sorting (lazy sort deferred to property getter).
-            self._conformity_scores_ = self._conformity_scores_.at[
-                self._N:self._N + num_scores
+            new_conformity_scores = self._state.conformity_scores.at[
+                old_N:old_N + num_scores
             ].set(jnp.asarray(scores, dtype=jnp.float64))
         else:
             if num_scores > self._max_N:
                 raise ValueError(
                     f"Non-batched calibration buffer overflow: num_scores={num_scores} "
-                    f"exceeds _max_N={self._max_N} (current _N={self._N}). "
+                    f"exceeds _max_N={self._max_N} (current _N={old_N}). "
                     f"N is set at construction time."
                 )
             # Non-batched: reset buffer to +inf and write scores at offset 0 without sorting.
-            self._conformity_scores_ = jnp.full(
+            new_conformity_scores = jnp.full(
                 (self._max_N,), jnp.inf, dtype=jnp.float64
             ).at[:num_scores].set(jnp.asarray(scores, dtype=jnp.float64))
 
-        if num_scores > 0:
-            self._sorted = False  # valid prefix is unsorted; getter will sort on next read
+        # valid prefix is unsorted after any write; getter will sort on next read
+        new_sorted = False if num_scores > 0 else self._state.sorted
+        new_N = old_N + num_scores if batched else num_scores
 
-        logger.debug("Conformity scores shape: %s, used: %d", self._conformity_scores_.shape, self._N)
+        logger.debug("Conformity scores shape: %s, used: %d", new_conformity_scores.shape, old_N)
 
-        self._N = self._N + num_scores if batched else num_scores
+        self._state = self._state._replace(
+            N=new_N,
+            conformity_scores=new_conformity_scores,
+            sorted=new_sorted,
+        )
 
-        if self.classes is not None and self._N == 0:
+        if self.classes is not None and new_N == 0:
             logger.warning("No calibration scores for the requested class group %s after calibration.", self.classes)
         
     def predict_from_proba(self, y_pred_proba, force_non_empty_sets: bool = False) -> tuple[np.ndarray, np.ndarray]:
@@ -326,9 +390,17 @@ class UncertaintyQuantifier:
         to the true error probability with the tuning set size (conformal
         guarantee); it does NOT require batching.
 
-        This method is PURE: it does not modify the object's state. In particular,
-        it does not set self.alpha or self.q_hat. To use the returned alpha for
-        subsequent predictions, set it explicitly:
+        This method does not set self.alpha or self.q_hat -- the caller decides
+        whether and how to apply the returned alpha. It is NOT fully free of
+        side effects, though: it reads the conformity-score buffer through the
+        same lazy-sort path as conformity_scores_, so if the buffer has not
+        been read since the last calibration write, this call sorts it and
+        updates self._state accordingly (self._sorted flips to True). That
+        mutation is idempotent and value-preserving -- it does not change the
+        buffer's contents or this method's return value, only the internal
+        representation used to compute it -- but callers should not assume
+        this method leaves self._state completely untouched. To use the
+        returned alpha for subsequent predictions, set it explicitly:
 
             U, alpha = uq.get_uncertainty_from_proba(tune_probs, tune_y)
             uq.alpha = alpha                  # explicit, caller's decision
@@ -409,7 +481,8 @@ class UncertaintyQuantifier:
         p_j    = jnp.asarray(p_padded, dtype=jnp.float64)
         mask_j = jnp.asarray(mask_padded)
 
-        cs_padded = self.conformity_scores_
+        self._state = _ensure_sorted(self._state)
+        cs_padded = self._state.conformity_scores
         n_cs = jnp.int32(self._N)
 
         alpha, U = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs, max_iters, self.score_)
