@@ -208,12 +208,12 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
                 for X_cal, y_cal in calDataLoader:
                     p_cal = classifier.predict_proba(X_cal)
-                    y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                    y_cal_arr = flatten_batch(y_cal).ravel()
                     uq.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
                 # Precompute tune set (one model forward per batch)
                 tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
-                tune_y_all = flatten_batch(tune_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
+                tune_y_all = flatten_batch(tune_y_all).ravel()
 
                 # Tuning: one call over the full tune set (not batched/averaged)
                 U, alpha = uq.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=IT)

@@ -41,8 +41,7 @@ def get_beta_dist(mu, sigma, C, num_points=1000):
 def precompute_proba(loader, classifier):
     """Run model forward on a DataLoader; return (proba, labels).
 
-    proba is a stacked torch tensor (DLPack-compatible for the *_from_proba API).
-    labels is a numpy int array.
+    Both are stacked torch tensors (DLPack-compatible for the *_from_proba API).
     """
     all_proba = []
     all_labels = []
@@ -50,7 +49,7 @@ def precompute_proba(loader, classifier):
         all_proba.append(classifier.predict_proba(images))
         all_labels.append(labels)
     proba = torch.cat(all_proba, dim=0)
-    labels = torch.cat(all_labels, dim=0).cpu().numpy().astype(int)
+    labels = torch.cat(all_labels, dim=0)
     return proba, labels
 
 
