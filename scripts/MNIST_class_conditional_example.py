@@ -221,17 +221,18 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 # Calibration: batch-outer / class-inner (one model forward per batch)
                 for X_cal, y_cal in calDataLoader:
                     p_cal = classifier.predict_proba(X_cal)
-                    y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                    y_cal_arr = flatten_batch(y_cal).ravel()
                     for C in classifier.classes_:
                         uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
                 # Precompute tune set (one model forward per batch, shared across classes)
                 tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
-                tune_y_all = flatten_batch(tune_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
+                tune_y_all = flatten_batch(tune_y_all).ravel()
 
                 # Precompute test set (one model forward per batch, shared across classes)
                 test_probs_all, test_y_all = precompute_proba(testDataLoader, classifier)
-                test_y_all = flatten_batch(test_y_all).ravel().numpy().astype(int)  # COMPAT: remove in the labels .numpy() cleanup step
+                # test_y_all feeds mask_C / get_coverage below (non-core, numpy-typed), not the core: kept as numpy.
+                test_y_all = flatten_batch(test_y_all).ravel().numpy().astype(int)
 
                 for C in classifier.classes_:
                     # Tuning: one call over the full tune set (not batched/averaged)
