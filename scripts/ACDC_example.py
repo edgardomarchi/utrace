@@ -304,7 +304,7 @@ def main(img_path: Path=Path("img/ACDC_example/"),
             # Calibration: batch-outer / class-inner (one model forward per batch)
             for X_cal, y_cal in calDataLoader:
                 p_cal = model.predict_proba(X_cal)
-                y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
+                y_cal_arr = flatten_batch(y_cal).ravel()
                 for C in model.classes_:
                     uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
 
@@ -312,9 +312,9 @@ def main(img_path: Path=Path("img/ACDC_example/"),
             tune_probs_list, tune_y_list = [], []
             for X_tune, y_tune in tuneDataLoader:
                 tune_probs_list.append(model.predict_proba(X_tune))
-                tune_y_list.append(flatten_batch(y_tune).ravel().numpy().astype(int))
+                tune_y_list.append(flatten_batch(y_tune).ravel())
             tune_probs_all = torch.cat(tune_probs_list, dim=0)
-            tune_y_all = np.concatenate(tune_y_list, axis=0)
+            tune_y_all = torch.cat(tune_y_list, dim=0)
 
             U_per_class: dict[int, float] = {}
             alpha_per_class: dict[int, float] = {}
@@ -332,6 +332,7 @@ def main(img_path: Path=Path("img/ACDC_example/"),
 
             for X_test, y_test in testDataLoader:
                 p_test = model.predict_proba(X_test)
+                # y_test_arr feeds mask_C / y_s indexing below (non-core, numpy-typed), not the core: kept as numpy.
                 y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
                 for C in model.classes_:
                     y_p, y_s = uqs[C].predict_from_proba(p_test)
