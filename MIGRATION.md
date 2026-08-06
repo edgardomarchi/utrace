@@ -5,6 +5,10 @@ status, the canonical migration pattern, and agreed conventions. This is the sou
 truth for the refactor: when in doubt about "how something is done here," this document
 and the tests are authoritative.
 
+Supporting diagnostic and execution reports live outside this repository, in a private
+companion repo checked out at `.reports/` (gitignored). Findings and figures here are backed
+by those reports and cite them by filename; their absence from this repo is by design.
+
 ## Refactor goal
 
 Make the `UncertaintyQuantifier` core independent of the tensor backend (PyTorch, JAX,
@@ -188,12 +192,7 @@ Implemented and wired into conformity_scores_ in 972ef7f; the equivalence was ve
 the real class, byte-comparing results, including _N == 0, _N == 1 and _N == _max_N.
 
 **The class filter.** [ESTABLISHED] `y[mask]` produces a data-dependent shape, which raises
-`NonConcreteBooleanIndexError` under `jit`. Note: the prompt for this pass asked to
-cross-reference an existing "step 7 diagnostic" for this finding; no such diagnostic — under
-that name or containing this error — was found anywhere in `MIGRATION.md`, the rest of the
-repo, or git history (`git log --oneline --all` and a repo-wide grep for
-`NonConcreteBooleanIndexError` both came back empty). Rather than cite a source that doesn't
-exist, this was verified directly in this pass: jitting a function that does
+`NonConcreteBooleanIndexError` under `jit`. Verified directly: jitting a function that does
 `y[jnp.isin(y, classes)]` and calling it raises
 
 ```
@@ -237,7 +236,8 @@ been tested.
 **Measurement conditions** (recorded because these numbers are now in a document people will
 rely on):
 
-- The Task 1 timings were taken on a workstation that was in interactive use during the runs.
+- The Task 1 timings were taken on a workstation (Ryzen 7 5700G) that was in interactive use
+  during the runs.
   Two of the five jnp runs show elevated values in both total and isolated time, consistent
   with external contention. The effect survives regardless: the signal is roughly 5-15x the
   within-cluster spread, and the three uncontended jnp runs still sit far above every numpy
@@ -250,9 +250,9 @@ rely on):
 
 ### Step ladder
 
-[ESTABLISHED] A, B1 and B.5 are DONE. B2 was removed as a standalone step after a measured
+[ESTABLISHED] A, B1, B.5 and C are DONE. B2 was removed as a standalone step after a measured
 negative result (see "Measured negative result: jnp-native padding (B2, reverted)" above); its
-content was absorbed into D. C and D remain, alongside the step 3c packaging block (see "Phase
+content was absorbed into D. D and E remain, alongside the step 3c packaging block (see "Phase
 6 step 3c — packaging cleanup [BLOCKED]" below) and the rename batch (see "Forwarding
 accessors: temporary scaffolding" below).
 
@@ -262,7 +262,8 @@ accessors: temporary scaffolding" below).
 - [ESTABLISHED] **B1. Sort the full buffer.** DONE. Sort the full buffer instead of the
   variable slice (commit 972ef7f). This one WAS a win, and stands on its own merits
   independently of D: 40 compiled sort shapes collapsed to 1, and a 40-batch streaming loop
-  went from 5.20s to 2.44s.
+  went from 5.20s to 2.44s. Measured on a Ryzen 7 5700G workstation (see "Convention:
+  performance figures carry their machine" below).
 - **B2. REMOVED as a standalone step.** It is not a stepping stone to D, because the jnp
   padding only pays off inside a single jit trace — see "Measured negative result" above. Its
   content is absorbed into D.
@@ -283,15 +284,154 @@ accessors: temporary scaffolding" below).
   verified by execution that it flips `_sorted` and rebinds the buffer through the same
   lazy-sort path as `conformity_scores_`; the mutation is idempotent and value-preserving, so
   only the documented claim was wrong, not the behaviour.
-- [INTENT] **C. The scripts.** Remove the `.numpy().astype(int)` / `# COMPAT` conversions
-  (Backlog: "Labels passed to the *_from_proba API still go through .numpy()...") so a torch
-  dataset flows end to end without touching the host. Cannot be done before A.
+- [ESTABLISHED] **C. The scripts.** DONE, across three commits (32a1309, 6a630e5, 0caad12).
+  Removed the `.numpy().astype(int)` / `# COMPAT` conversions that fed the core, in all eight
+  scripts touched by this refactor (five scripts in 32a1309, `MNIST_class_conditional_example.py`
+  in 6a630e5, `ACDC_example.py` in 0caad12). This completes the boundary work started in step A:
+  labels now reach the core as torch tensors and take the DLPack path in `to_jax`, rather than
+  being forced through the host via `.numpy()`. Conversions that feed a script's own numpy math
+  (accuracy tallies, coverage indexing, plotting) are untouched by design — see "Passing tensors
+  to the core" above and "Step C: the `# COMPAT` marker post-mortem" below.
 - [INTENT] **D. jit + vmap over classes + the `N` semantics change**, all together because
   they are coupled (see "User-visible consequence" above). Now also carries what was B2: the
   `_get_uncertainty_jit_impl` padding, the class mask leftover in `_get_uncertainty_jit_impl`
   (its own `np.asarray(self.classes)`), and the `np.asarray(to_jax(...))` on entry to
   `get_uncertainty_from_proba` — because all of them must land inside the jit boundary or not
   at all.
+- [INTENT] **E. Device coherence in the script layer.** Not started. Make probabilities and
+  labels reach the core committed to the same device (see "Step C: device-commitment risk"
+  below). Open questions to record, none of them decided:
+  - Where the transfer belongs: inside the dataset/model wrappers, or in the scripts. Moving it
+    into the dataset wrapper is not free — several consumers legitimately need host arrays
+    (ACDC's accuracy tally over `gt_img`, the coverage indexing over `y_test_arr`), so a wrapper
+    that unconditionally returns device tensors would force those back down.
+  - It touches `src/utrace/utils/pytorch/`, which no step of this refactor has modified, and
+    changes the contract of helpers all eight scripts consume.
+  - It is only observable on CUDA hardware: on a CPU backend `.to(device)` is a no-op and a
+    passing test suite would demonstrate nothing.
+  Sequenced after D deliberately: D restructures the core with jit and vmap, and the wrapper
+  contract should not move at the same time.
+
+### Step C: the `# COMPAT` marker post-mortem
+
+[ESTABLISHED] The `# COMPAT` markers left by the Phase 4 helper consolidation (see "GPU /
+scalability (example scripts)" below) were not a reliable inventory of the conversions step C
+needed to remove, and failed in both directions:
+
+- They UNDERCOUNTED. In the first group of five scripts, nine core-bound conversions existed
+  where only four were tagged (commit 32a1309). The markers were placed during the Phase 4
+  helper consolidation and only ever tagged the tune-set conversions that flow through
+  `precompute_proba`; the per-batch calibration loops convert the DataLoader's labels directly
+  and were never tagged.
+- They MISFIRED. In `MNIST_class_conditional_example.py` a tag sat on `test_y_all`, which never
+  reaches an `UncertaintyQuantifier` at all (commit 6a630e5).
+- They were ABSENT. `ACDC_example.py`, the largest-scale consumer, carried none at all (commit
+  0caad12).
+
+The lesson: a marker placed for one batch of work is not an index of a category, and later
+passes should not treat it as one. The criterion that actually worked was tracing each variable
+to the end of its file and asking whether it feeds the core — not whether it would still work if
+left unconverted, which in several cases it would have, by `__array__` coercion.
+
+### Step C: the ACDC measurement
+
+[ESTABLISHED] At pixel scale (commit 0caad12) the benefit of removing the label round-trip is
+MEMORY, not time:
+
+- Wall clock: null result. Three interleaved cold runs per variant at one iteration and one
+  noise level. The edited variant's entire range sat inside the unedited variant's, whose own
+  run-to-run spread was about four times the nominal median delta. Reported as no measurable
+  effect, not as a small improvement.
+- Peak RSS: about 490 MB lower, cleanly separated — the edited variant's maximum was below the
+  unedited variant's minimum across all three runs. Consistent with dropping one host-side int64
+  copy of the label arrays; the tune set alone is roughly 46M labels, about 371 MB in int64, at
+  the full six-noise-level scale.
+- Measured on a Ryzen AI 7 350, CPU backend, under light desktop load, with runs interleaved
+  between variants rather than grouped. Not comparable to the 5700G figures elsewhere in this
+  document — see "Convention: performance figures carry their machine" below.
+
+### Step C: device-commitment risk
+
+[UNVERIFIED] Step C may have introduced a device mismatch that is invisible on CPU.
+`Pytorch_wrapper.predict_proba` (`src/utrace/utils/pytorch/model_wrapper.py`) returns its
+result without moving it to host — the `.cpu()` call is present only as a trailing,
+commented-out no-op:
+
+```python
+def predict_proba(self, X):
+    X = X.to(self.device)
+    with torch.no_grad():
+        model_out = self.model(X)
+    return flatten_batch(torch.softmax(model_out, dim=1))#.cpu())
+```
+
+ACDC moves the network to CUDA when available (`self.device = torch.device(device)`;
+`self.model.to(self.device)` in `__init__`), so on such a machine the probabilities come back
+device-resident. The dataloader helpers in `src/utrace/utils/pytorch/dataset_wrapper.py`
+(`ACDCDataset.__getitem__`, `get_ACDC_dataloader`, `get_ACDC_cal_tun_tst_dataloaders`) move
+nothing — labels are built with plain `torch.tensor(...)` and never `.to(device)`'d — so labels
+stay in host memory regardless of where the model runs.
+
+`to_jax` (`src/utrace/utils/tensors.py`) checks `isinstance(array_like, np.ndarray)` BEFORE the
+`__dlpack__` branch: numpy arrays take `jnp.asarray`, landing uncommitted on JAX's default
+compute device; anything else exposing `__dlpack__` (including CPU and CUDA torch tensors)
+takes `jax.dlpack.from_dlpack`, which preserves the source device.
+
+Before step C, ACDC's labels were numpy and took `to_jax`'s `jnp.asarray` branch, landing
+uncommitted on the default device alongside the probabilities. After step C they are torch
+tensors (`y_cal_arr = flatten_batch(y_cal).ravel()`; `tune_y_all = torch.cat(tune_y_list,
+dim=0)`) and take the DLPack branch, which preserves the source device — the host, since the
+dataloader never moves them. So on a machine where `torch.cuda.is_available()` is true, `p_cal`
+(device-resident) and `y_cal_arr` (host-resident) would reach `lac_cal` committed to DIFFERENT
+devices. `to_jax`'s own docstring states it does "NOT reconcile mismatches between two genuine
+tensors on different devices... that remains the caller's responsibility."
+
+This is an inference from reading the code, not an observation: every machine used in this
+refactor has been CPU-only, where all placements coincide and the mismatch cannot appear. No
+test covers it.
+
+[UNVERIFIED] Whether an array is committed to a particular device, and whether two arguments
+reaching the same jitted call agree, is not observable on a CPU backend — every device is the
+same device there. This needs the RTX 3070, which is on a machine that has not been available
+during this work.
+
+### Verification method for unvalidated scripts
+
+[ESTABLISHED] The scripts are covered by no test, so step C developed a repeatable equivalence
+procedure worth reusing for any future change to them:
+
+- Check out HEAD into a git worktree for the "before" side.
+- Assert environment parity between the two trees before running anything — interpreter path,
+  python version, jax and torch versions — because a worktree is a fresh checkout and does not
+  carry untracked files, including any tool-version-manager config that decides which
+  interpreter is active.
+- Seed from an external driver, since none of the scripts seeds itself and several have multiple
+  randomness sources, including per-image noise transforms.
+- Where a full run is too slow, apply an IDENTICAL scope reduction to both copies and diff them,
+  asserting the diff contains exactly the intended edit and nothing else.
+- Compare exactly rather than approximately, and capture accumulators out of the running frame
+  where they do not reach disk.
+- Run sequentially and, for timing, interleave the variants.
+
+### Convention: performance figures carry their machine
+
+[ESTABLISHED] Measurements in this document come from more than one machine and are not
+comparable across them. Every performance figure recorded from now on must name the machine it
+was taken on. Retroactively labelled by this pass: the B1 sort-buffer win and the B2 regression
+figures (the isolated-section comparison, the call-count sweep, and the golden-run delta) were
+taken on a Ryzen 7 5700G workstation; the ACDC step-C figures were taken on a Ryzen AI 7 350
+laptop.
+
+The defer-sort win (~357x, 7.2s → 20ms, in the Backlog "defer-sort" entry below) keeps its
+existing attribution to an RTX 3070. The `to_jax` direct-vs-indirect figures under "What is
+unverified" below were measured on the 5700G; see
+`.reports/2026-07-29_phase6_step7_diagnostic_labels_hostcopy_5700G.md`.
+
+[UNVERIFIED] All measurements to date are CPU backend, except the RTX 3070 defer-sort figure
+noted above. The open GPU questions — the device-to-host-to-device ratio, whether np.asarray
+rejects a torch CUDA tensor, whether the jnp padding pays inside a jit trace, and now the
+device-commitment risk from step C — require an RTX 3070 on a third machine. This is a
+constraint on where, not only on when.
 
 ### Forwarding accessors: temporary scaffolding
 
@@ -349,19 +489,18 @@ anything with `__dlpack__`.
 
 ### What is unverified [UNVERIFIED]
 
-All five items below are unverified hypotheses, not measurements to rely on. As with the class
-filter above, no "step 7 diagnostic" artifact containing these figures was found anywhere in
-this repo or its history; they are recorded here, for the first time, as open questions —
-labeled accordingly rather than presented as if independently confirmed elsewhere.
+The items below are open questions about GPU behaviour. Where a CPU measurement exists it is
+labelled and attributed; what remains unverified is the extrapolation to GPU.
 
-- [ESTABLISHED] A CPU-only comparison of a direct `to_jax` conversion path against an indirect
-  one is reported to have measured the direct path flat at ~0.04 ms regardless of array size,
-  consistent with genuine zero-copy where jax arrays live in host memory anyway, with the
-  indirect path around 175x slower. This has NOT been reproduced or verified in this pass.
-  Even if the CPU figures hold, on a GPU backend the data must reach the device regardless, so
-  the relevant comparison is device→host→device versus device→device, which is a DIFFERENT
-  ratio and has not been measured on any GPU backend. Do not read a CPU ~175x figure as
-  applying to GPU hardware.
+- [ESTABLISHED] Measured on the 5700G, CPU backend
+  (`.reports/2026-07-29_phase6_step7_diagnostic_labels_hostcopy_5700G.md`, Q7): the direct
+  `to_jax` path runs flat at ~0.04 ms/call regardless of array size — 0.0410 ms at 500
+  elements, 0.0398 at 12k, 0.0399 at 2M — while the indirect path scales with it: 0.0804 ms,
+  0.0852 ms and 6.98 ms respectively, a 175x ratio at ACDC pixel scale. The flatness is
+  consistent with genuine DLPack zero-copy doing no data movement.
+  On a GPU backend the data must reach the device regardless, so the relevant comparison is
+  device→host→device versus device→device, which is a DIFFERENT ratio and has not been
+  measured on any GPU backend. Do not read a CPU ~175x figure as applying to GPU hardware.
 - [UNVERIFIED] Whether `np.asarray()` on a torch CUDA tensor raises, and therefore whether the
   current `calibrate_from_proba` rejects GPU-resident labels outright rather than merely
   copying them inefficiently. This is the strongest single argument for step A if true, and it
@@ -424,7 +563,7 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
-- [Phase 6] Labels passed to the *_from_proba API still go through .numpy() in the canonical recipe and in all example scripts (e.g. flatten_batch(y).ravel().numpy().astype(int)). This violates the "do not call .cpu().numpy() on values feeding the core" rule and, after the to_jax fix, forces a host->device hop (correct device now, but not zero-copy). Task: drop the .numpy() so labels stay backend tensors (DLPack zero-copy, same device as probas), moving the int-dtype guarantee elsewhere (torch .long() before the call, or the core ensuring int). Touches the recipe section AND the scripts — its own design + commit. The six call sites are now marked `# COMPAT` (grep COMPAT scripts/) — the cleanup is to drop those lines and keep labels as zero-copy tensors, verifying downstream label indexing (coverage counts, masks, get_coverage) still works with tensor labels.
+- [RESOLVED, step C] Labels passed to the *_from_proba API used to go through .numpy() in the canonical recipe and in all example scripts (e.g. flatten_batch(y).ravel().numpy().astype(int)), violating the "do not call .cpu().numpy() on values feeding the core" rule and, after the to_jax fix, forcing a host->device hop. Fixed across three commits (32a1309, 6a630e5, 0caad12): labels now stay backend tensors into calibrate_from_proba / get_uncertainty_from_proba / predict_from_proba, taking the DLPack zero-copy path. The stale claim in this entry — "the six call sites are now marked `# COMPAT`" — undercounted (nine, not six; see "Step C: the `# COMPAT` marker post-mortem" above) and is no longer true regardless: grepping `# COMPAT` in scripts/ now returns nothing. Downstream label indexing (coverage counts, masks, get_coverage) was verified against tensor labels by the commits' own equivalence runs, not by the test suite, which does not cover the scripts.
 
 - to_jax DLPack unaligned-copy: even for genuine tensors the DLPack path can emit "buffer is not aligned ... Creating a copy", so zero-copy is not guaranteed. Decide whether to make such copies VISIBLE (warn/error) rather than silent. Connects to the existing to_jax device-handling backlog item. Perf/observability task.
 
