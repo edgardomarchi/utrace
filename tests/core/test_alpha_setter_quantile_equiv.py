@@ -20,7 +20,7 @@ from utrace.utils import _masked_quantile_higher
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _make_probas(n_samples: int, n_classes: int, seed: int) -> np.ndarray:
+def _make_softmax(n_samples: int, n_classes: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     p = rng.random((n_samples, n_classes))
     return (p / p.sum(axis=1, keepdims=True)).astype(np.float64)
@@ -38,12 +38,12 @@ def _build_calibrated_uq(N: int, n_classes: int = 10, seed: int = 42,
     if tied:
         # All rows identical → all LAC scores identical (= 1 - 1/n_classes)
         row = np.ones(n_classes, dtype=np.float64) / n_classes
-        probas = np.tile(row, (N, 1))
+        softmax = np.tile(row, (N, 1))
         y = np.zeros(N, dtype=np.int32)
     else:
-        probas = _make_probas(N, n_classes, seed)
+        softmax = _make_softmax(N, n_classes, seed)
         y = _make_labels(N, n_classes, seed)
-    uq.calibrate(probas, y, batched=False)
+    uq.calibrate(softmax, y, batched=False)
     assert uq._state.N == N, f"Expected _state.N={N}, got {uq._state.N}"
     return uq
 

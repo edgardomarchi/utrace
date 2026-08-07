@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import precompute_proba, setup_example_io
+from _common import precompute_softmax, setup_example_io
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -109,15 +109,15 @@ def main(train_model=False, *, img_path: Path, num_sizes=40):
 
             cp.reset()  # Reset the conformal predictor
             for X_cal, y_cal in calibrate_loader:
-                p_cal = classifier.predict_proba(X_cal)
+                smx_cal = classifier.predict_proba(X_cal)
                 y_cal_arr = flatten_batch(y_cal).ravel()
-                cp.calibrate(p_cal, y_cal_arr, batched=True)
+                cp.calibrate(smx_cal, y_cal_arr, batched=True)
 
             # Tune: materialize the full tune set, ONE call (alphas/U are non-linear in the
             # data, so per-batch averaging is invalid)
-            tune_probs_all, tune_y_all = precompute_proba(tune_loader, classifier)
+            tune_smx_all, tune_y_all = precompute_softmax(tune_loader, classifier)
             tune_y_all = flatten_batch(tune_y_all).ravel()
-            U, alpha = cp.get_uncertainty(tune_probs_all, tune_y_all, max_iters=30)
+            U, alpha = cp.get_uncertainty(tune_smx_all, tune_y_all, max_iters=30)
             alphas[cs, ts] = U  # NOTE: 'alphas' holds U, matching the legacy naming the plots below read
 
     # Plot the results

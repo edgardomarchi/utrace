@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import derive_max_batch_size, precompute_proba, setup_example_io
+from _common import derive_max_batch_size, precompute_softmax, setup_example_io
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
@@ -220,23 +220,23 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
                 # Calibration: batch-outer / class-inner (one model forward per batch)
                 for X_cal, y_cal in calDataLoader:
-                    p_cal = classifier.predict_proba(X_cal)
+                    smx_cal = classifier.predict_proba(X_cal)
                     y_cal_arr = flatten_batch(y_cal).ravel()
                     for C in classifier.classes_:
-                        uqs[C].calibrate(p_cal, y_cal_arr, batched=True)
+                        uqs[C].calibrate(smx_cal, y_cal_arr, batched=True)
 
                 # Precompute tune set (one model forward per batch, shared across classes)
-                tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
+                tune_smx_all, tune_y_all = precompute_softmax(tuneDataLoader, classifier)
                 tune_y_all = flatten_batch(tune_y_all).ravel()
 
                 # Precompute test set (one model forward per batch, shared across classes)
-                test_probs_all, test_y_all = precompute_proba(testDataLoader, classifier)
+                test_smx_all, test_y_all = precompute_softmax(testDataLoader, classifier)
                 # test_y_all feeds mask_C / get_coverage below (non-core, numpy-typed), not the core: kept as numpy.
                 test_y_all = flatten_batch(test_y_all).ravel().numpy().astype(int)
 
                 for C in classifier.classes_:
                     # Tuning: one call over the full tune set (not batched/averaged)
-                    U, alpha = uqs[C].get_uncertainty(tune_probs_all, tune_y_all, max_iters=IT)
+                    U, alpha = uqs[C].get_uncertainty(tune_smx_all, tune_y_all, max_iters=IT)
                     alpha_std = 0.0
                     U_std = 0.0
                     uqs[C].alpha = alpha
@@ -245,7 +245,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                     logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
                     mask_C = (test_y_all == C)
                     y_n_C = test_y_all[mask_C]
-                    y_p, y_s = uqs[C].predict(test_probs_all)
+                    y_p, y_s = uqs[C].predict(test_smx_all)
                     y_s_C = y_s[mask_C]
 
                     coverage = get_coverage(y_n_C, y_s_C)

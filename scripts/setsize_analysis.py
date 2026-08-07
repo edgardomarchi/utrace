@@ -38,19 +38,19 @@ def get_beta_dist(mu, sigma, C, num_points=1000):
     return x, pdf_scaled
 
 
-def precompute_proba(loader, classifier):
-    """Run model forward on a DataLoader; return (proba, labels).
+def precompute_softmax(loader, classifier):
+    """Run model forward on a DataLoader; return (smx, labels).
 
-    Both are stacked torch tensors (DLPack-compatible for the *_from_proba API).
+    Both are stacked torch tensors (DLPack-compatible for the calibrate/predict/get_uncertainty API).
     """
-    all_proba = []
+    all_softmax = []
     all_labels = []
     for images, labels in loader:
-        all_proba.append(classifier.predict_proba(images))
+        all_softmax.append(classifier.predict_proba(images))
         all_labels.append(labels)
-    proba = torch.cat(all_proba, dim=0)
+    smx = torch.cat(all_softmax, dim=0)
     labels = torch.cat(all_labels, dim=0)
-    return proba, labels
+    return smx, labels
 
 
 def main(train_model=False, img_path=Path("img/")):
@@ -124,12 +124,12 @@ def main(train_model=False, img_path=Path("img/")):
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
         # Calibrate: one forward pass over the calibration set, then one call
-        cal_proba, cal_y = precompute_proba(calibrate_loader, classifier)
+        cal_softmax, cal_y = precompute_softmax(calibrate_loader, classifier)
         cp.reset()
-        cp.calibrate(cal_proba, cal_y)
+        cp.calibrate(cal_softmax, cal_y)
 
-        # Precompute test probabilities once per noise level; reused across all alphas
-        test_proba, _ = precompute_proba(test_loader, classifier)
+        # Precompute test softmax output once per noise level; reused across all alphas
+        test_softmax, _ = precompute_softmax(test_loader, classifier)
 
         fig, axs = plt.subplots(1, int(num_points/4), figsize=(25, 5))
         axs = axs.flatten()
@@ -139,7 +139,7 @@ def main(train_model=False, img_path=Path("img/")):
         for i, alpha in enumerate(alphas):
 
             cp.alpha = alpha
-            _, y_s = cp.predict(test_proba, force_non_empty_sets=False)
+            _, y_s = cp.predict(test_softmax, force_non_empty_sets=False)
             setsizes = y_s.sum(axis=1)
 
             if not i%4:
@@ -178,13 +178,13 @@ def main(train_model=False, img_path=Path("img/")):
         calibrate_loader = DataLoader(calibrate_dataset, batch_size=BATCH_SIZE, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-        cal_proba, cal_y = precompute_proba(calibrate_loader, classifier)
+        cal_softmax, cal_y = precompute_softmax(calibrate_loader, classifier)
         cp.reset()
-        cp.calibrate(cal_proba, cal_y)
+        cp.calibrate(cal_softmax, cal_y)
 
         cp.alpha = alpha
-        test_proba, _ = precompute_proba(test_loader, classifier)
-        _, y_s = cp.predict(test_proba)
+        test_softmax, _ = precompute_softmax(test_loader, classifier)
+        _, y_s = cp.predict(test_softmax)
         setsizes = y_s.sum(axis=1)
 
         axs[i].hist(setsizes, density=True, bins=np.linspace(0, C+1, C+2, dtype=int))
@@ -222,20 +222,20 @@ def main(train_model=False, img_path=Path("img/")):
         tune_loader = DataLoader(tune_dataset, batch_size=BATCH_SIZE, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-        cal_proba, cal_y = precompute_proba(calibrate_loader, classifier)
+        cal_softmax, cal_y = precompute_softmax(calibrate_loader, classifier)
         cp.reset()
-        cp.calibrate(cal_proba, cal_y)
+        cp.calibrate(cal_softmax, cal_y)
 
         # Find alpha that produces average set size of 1:
         # materialize the full tune set, then ONE binary search — no per-batch averaging
-        tune_proba, tune_y = precompute_proba(tune_loader, classifier)
-        U, alpha = cp.get_uncertainty(tune_proba, tune_y)
+        tune_softmax, tune_y = precompute_softmax(tune_loader, classifier)
+        U, alpha = cp.get_uncertainty(tune_softmax, tune_y)
         cp.alpha = alpha
 
         logger.info("Noise std: %f - Alpha found: %f", noise_std, alpha)
 
-        test_proba, _ = precompute_proba(test_loader, classifier)
-        _, y_s = cp.predict(test_proba)
+        test_softmax, _ = precompute_softmax(test_loader, classifier)
+        _, y_s = cp.predict(test_softmax)
         setsizes = y_s.sum(axis=1)
 
         axs[i].hist(setsizes, density=True, bins=np.linspace(0, (C+1)//2, (C+2)//2, dtype=int))

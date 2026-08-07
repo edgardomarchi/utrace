@@ -11,7 +11,7 @@ from utrace import UncertaintyQuantifier
 from utrace.scores import lac_cal
 
 
-def _make_probas(n_samples: int, n_classes: int, seed: int = 0) -> np.ndarray:
+def _make_softmax(n_samples: int, n_classes: int, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     p = rng.random((n_samples, n_classes))
     return p / p.sum(axis=1, keepdims=True)
@@ -26,7 +26,7 @@ def test_label_dtype_is_canonicalised_to_int32():
     lac_cal.clear_cache()
 
     n_samples, n_classes = 50, 5
-    probas = _make_probas(n_samples, n_classes)
+    softmax = _make_softmax(n_samples, n_classes)
     label_values = np.random.default_rng(1).integers(0, n_classes, n_samples)
 
     variants = {
@@ -38,7 +38,7 @@ def test_label_dtype_is_canonicalised_to_int32():
     scores_by_variant = {}
     for name, y in variants.items():
         uq = UncertaintyQuantifier(N=200, classes=None)
-        uq.calibrate(probas, y, batched=True)
+        uq.calibrate(softmax, y, batched=True)
         scores_by_variant[name] = np.asarray(uq.conformity_scores_)
 
     assert lac_cal._cache_size() == 1, (

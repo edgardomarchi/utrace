@@ -14,7 +14,7 @@ import numpy as np
 from utrace import UncertaintyQuantifier
 
 
-def _make_probas(n: int, k: int, seed: int) -> np.ndarray:
+def _make_softmax(n: int, k: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     p = rng.random((n, k))
     return (p / p.sum(axis=1, keepdims=True)).astype(np.float64)
@@ -43,7 +43,7 @@ def test_shape_stable_across_several_distinct_N():
     uq = UncertaintyQuantifier(N=max_N, classes=None)
 
     for i, bs in enumerate([30, 45, 20, 60]):
-        uq.calibrate(_make_probas(bs, 8, i), _make_labels(bs, 8, i), batched=True)
+        uq.calibrate(_make_softmax(bs, 8, i), _make_labels(bs, 8, i), batched=True)
         _assert_invariants(uq, max_N)
 
 
@@ -58,7 +58,7 @@ def test_N_equals_zero():
 def test_N_equals_one():
     max_N = 300
     uq = UncertaintyQuantifier(N=max_N, classes=None)
-    uq.calibrate(_make_probas(1, 5, 0), _make_labels(1, 5, 0), batched=False)
+    uq.calibrate(_make_softmax(1, 5, 0), _make_labels(1, 5, 0), batched=False)
     assert uq._state.N == 1
     _assert_invariants(uq, max_N)
 
@@ -67,6 +67,6 @@ def test_N_equals_max_N():
     """Buffer completely filled: no padding region at all."""
     max_N = 150
     uq = UncertaintyQuantifier(N=max_N, classes=None)
-    uq.calibrate(_make_probas(max_N, 6, 0), _make_labels(max_N, 6, 0), batched=False)
+    uq.calibrate(_make_softmax(max_N, 6, 0), _make_labels(max_N, 6, 0), batched=False)
     assert uq._state.N == max_N
     _assert_invariants(uq, max_N)

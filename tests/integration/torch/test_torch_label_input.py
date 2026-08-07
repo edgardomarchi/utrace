@@ -8,7 +8,7 @@ import torch
 from utrace import UncertaintyQuantifier
 
 
-def _make_probas_float64(n_samples: int, n_classes: int, seed: int = 0) -> np.ndarray:
+def _make_softmax_float64(n_samples: int, n_classes: int, seed: int = 0) -> np.ndarray:
     """float64 throughout (not torch's float32 default) so the comparison against the numpy path below can be exact equality, not allclose — this is a correctness test, not a precision test."""
     rng = np.random.default_rng(seed)
     p = rng.random((n_samples, n_classes)).astype(np.float64)
@@ -17,17 +17,17 @@ def _make_probas_float64(n_samples: int, n_classes: int, seed: int = 0) -> np.nd
 
 def test_torch_label_tensor_matches_numpy_equivalent():
     n_samples, n_classes = 200, 6
-    probas_np = _make_probas_float64(n_samples, n_classes)
+    softmax_np = _make_softmax_float64(n_samples, n_classes)
     label_values = np.random.default_rng(1).integers(0, n_classes, n_samples).astype(np.int32)
 
-    probas_torch = torch.from_numpy(probas_np.copy()).to(torch.float64)
+    softmax_torch = torch.from_numpy(softmax_np.copy()).to(torch.float64)
     y_torch = torch.from_numpy(label_values.copy())
 
     uq_torch = UncertaintyQuantifier(N=300, classes=None)
-    uq_torch.calibrate(probas_torch, y_torch, batched=True)
+    uq_torch.calibrate(softmax_torch, y_torch, batched=True)
 
     uq_numpy = UncertaintyQuantifier(N=300, classes=None)
-    uq_numpy.calibrate(probas_np, label_values, batched=True)
+    uq_numpy.calibrate(softmax_np, label_values, batched=True)
 
     np.testing.assert_array_equal(
         np.asarray(uq_torch.conformity_scores_),

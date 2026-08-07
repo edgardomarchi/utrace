@@ -43,12 +43,12 @@ def _compute_logits_for_loader(loader, classifier):
     test sets (small/bounded). Logits are N x K floats — much smaller than
     the underlying images. NOT used for calibration, which is streamed.
     """
-    probs_chunks, labels_chunks = [], []
+    smx_chunks, labels_chunks = [], []
     with torch.inference_mode():
         for X, y in loader:
-            probs_chunks.append(classifier.predict_proba(X).cpu().numpy())
+            smx_chunks.append(classifier.predict_proba(X).cpu().numpy())
             labels_chunks.append(flatten_batch(y).ravel().numpy().astype(int))
-    return np.concatenate(probs_chunks), np.concatenate(labels_chunks)
+    return np.concatenate(smx_chunks), np.concatenate(labels_chunks)
 
 
 def _compute_golden_run(seed=42):
@@ -111,26 +111,26 @@ def _compute_golden_run(seed=42):
             # once per class) is both more efficient and more memory-friendly
             # than precomputing the whole calibration set.
             for X_cal, y_cal in calDataLoader:
-                p_cal = classifier.predict_proba(X_cal).cpu().numpy()
+                smx_cal = classifier.predict_proba(X_cal).cpu().numpy()
                 y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
                 for C in classifier.classes_:
-                    uqs[C].calibrate(p_cal, y_cal_arr, batched=True)
+                    uqs[C].calibrate(smx_cal, y_cal_arr, batched=True)
 
             # ----- TUNING + TEST: materialize (small / bounded sets) -----
-            tune_probs, tune_y = _compute_logits_for_loader(tuneDataLoader, classifier)
-            test_probs, test_y = _compute_logits_for_loader(testDataLoader, classifier)
+            tune_smx, tune_y = _compute_logits_for_loader(tuneDataLoader, classifier)
+            test_smx, test_y = _compute_logits_for_loader(testDataLoader, classifier)
 
             for C in classifier.classes_:
                 # Tuning: ONE call over the entire tuning set. Pure, no mutation.
                 # Averaging per-batch alphas would be statistically incorrect.
-                U, alpha = uqs[C].get_uncertainty(tune_probs, tune_y)
+                U, alpha = uqs[C].get_uncertainty(tune_smx, tune_y)
 
                 # Caller sets alpha explicitly (get_uncertainty does not mutate)
                 uqs[C].alpha = alpha
 
                 # Test: prediction over the whole set; coverage is a GLOBAL
                 # proportion, not an average of per-batch proportions.
-                y_p, y_s = uqs[C].predict(test_probs)
+                y_p, y_s = uqs[C].predict(test_smx)
                 valid = np.isin(test_y, np.array([C]))
                 if valid.sum() > 0:
                     coverage = get_coverage(test_y[valid], y_s[valid])

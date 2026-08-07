@@ -77,24 +77,24 @@ def setup_example_io(script_path, *, transform: str | None = None,
     return img_dir, data_dir, tab_dir, log_path
 
 
-def precompute_proba(loader, classifier):
-    """Run the classifier over a DataLoader and return concatenated (probs, labels).
+def precompute_softmax(loader, classifier):
+    """Run the classifier over a DataLoader and return concatenated (smx, labels).
 
     Both are returned as raw torch tensors (no numpy conversion, no flatten_batch), so the
-    probabilities can take the zero-copy DLPack path into to_jax. Label dtype/shape handling
+    softmax output can take the zero-copy DLPack path into to_jax. Label dtype/shape handling
     is left to the caller.
 
     Returns
     -------
-    (probs, labels) : (torch.Tensor [N, K], torch.Tensor [N, ...])
-        probs = torch.cat of classifier.predict_proba(X) over all batches.
+    (smx, labels) : (torch.Tensor [N, K], torch.Tensor [N, ...])
+        smx = torch.cat of classifier.predict_proba(X) over all batches.
         labels = torch.cat of the raw DataLoader labels over all batches.
     """
-    all_proba, all_labels = [], []
+    all_softmax, all_labels = [], []
     for X, y in loader:
-        all_proba.append(classifier.predict_proba(X))
+        all_softmax.append(classifier.predict_proba(X))
         all_labels.append(y)
-    return torch.cat(all_proba, dim=0), torch.cat(all_labels, dim=0)
+    return torch.cat(all_softmax, dim=0), torch.cat(all_labels, dim=0)
 
 
 def derive_max_batch_size(tune_split: float, dataset_len: int, *, margin: int = 2) -> int:
@@ -105,7 +105,7 @@ def derive_max_batch_size(tune_split: float, dataset_len: int, *, margin: int = 
     make the real tune set exceed max_batch_size and raise ValueError.
 
     Note on per-class scripts: the FULL tune set (not the class-filtered subset) is passed to
-    get_uncertainty_from_proba — class filtering happens inside via valid_mask — so B is the
+    get_uncertainty — class filtering happens inside via valid_mask — so B is the
     full tune-set size, NOT tune/n_classes. Pass the full tune_split accordingly.
     """
     return math.ceil(tune_split * dataset_len) + margin

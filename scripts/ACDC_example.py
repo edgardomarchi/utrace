@@ -303,23 +303,23 @@ def main(img_path: Path=Path("img/ACDC_example/"),
 
             # Calibration: batch-outer / class-inner (one model forward per batch)
             for X_cal, y_cal in calDataLoader:
-                p_cal = model.predict_proba(X_cal)
+                smx_cal = model.predict_proba(X_cal)
                 y_cal_arr = flatten_batch(y_cal).ravel()
                 for C in model.classes_:
-                    uqs[C].calibrate(p_cal, y_cal_arr, batched=True)
+                    uqs[C].calibrate(smx_cal, y_cal_arr, batched=True)
 
             # Tuning: precompute full tune set, one call per class (not per-batch averaged)
-            tune_probs_list, tune_y_list = [], []
+            tune_smx_list, tune_y_list = [], []
             for X_tune, y_tune in tuneDataLoader:
-                tune_probs_list.append(model.predict_proba(X_tune))
+                tune_smx_list.append(model.predict_proba(X_tune))
                 tune_y_list.append(flatten_batch(y_tune).ravel())
-            tune_probs_all = torch.cat(tune_probs_list, dim=0)
+            tune_smx_all = torch.cat(tune_smx_list, dim=0)
             tune_y_all = torch.cat(tune_y_list, dim=0)
 
             U_per_class: dict[int, float] = {}
             alpha_per_class: dict[int, float] = {}
             for C in model.classes_:
-                U, alpha = uqs[C].get_uncertainty(tune_probs_all, tune_y_all, max_iters=30)
+                U, alpha = uqs[C].get_uncertainty(tune_smx_all, tune_y_all, max_iters=30)
                 U_per_class[C] = float(U)
                 alpha_per_class[C] = float(alpha)
                 logger.info("Class %d tuning: U=%f, alpha=%f", C, U, alpha)
@@ -331,11 +331,11 @@ def main(img_path: Path=Path("img/ACDC_example/"),
             max_setsizes_C = np.zeros(len(model.classes_), dtype=np.int64)
 
             for X_test, y_test in testDataLoader:
-                p_test = model.predict_proba(X_test)
+                smx_test = model.predict_proba(X_test)
                 # y_test_arr feeds mask_C / y_s indexing below (non-core, numpy-typed), not the core: kept as numpy.
                 y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
                 for C in model.classes_:
-                    y_p, y_s = uqs[C].predict(p_test)
+                    y_p, y_s = uqs[C].predict(smx_test)
                     mask_C = (y_test_arr == C)
                     n_C = int(mask_C.sum())
                     total_test_pix[C] += n_C

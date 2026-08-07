@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import precompute_proba, setup_example_io
+from _common import precompute_softmax, setup_example_io
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -120,13 +120,13 @@ def main(train_model=False, *, img_path: Path):
                 cp.reset()  # Reset the conformal predictor
                 logger.info("Calibrating the CP...")
                 for images, labels in calibrate_loader:
-                    p_cal = classifier.predict_proba(images)
-                    cp.calibrate(p_cal, labels, batched=True)
+                    smx_cal = classifier.predict_proba(images)
+                    cp.calibrate(smx_cal, labels, batched=True)
 
                 # Find uncertainty: materialize the full tune set, ONE call — no per-batch averaging
                 logger.info("Tuning the CP...")
-                tune_proba, tune_y = precompute_proba(tune_loader, classifier)
-                U, _ = cp.get_uncertainty(tune_proba, tune_y, max_iters=20)
+                tune_softmax, tune_y = precompute_softmax(tune_loader, classifier)
+                U, _ = cp.get_uncertainty(tune_softmax, tune_y, max_iters=20)
 
                 Us[n, cs] = U
 
