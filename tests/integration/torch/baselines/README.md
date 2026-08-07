@@ -1,6 +1,6 @@
 # Test Baselines
 
-The `.npy` files are reference outputs for the golden tests in `test_golden_mnist.py` and `test_golden_mnist_new_api.py` respectively.
+The `.npy` files are reference outputs for the golden test in `test_golden_mnist.py`.
 They are committed to the repository and treated as part of the test specification.
 
 ## Regenerating

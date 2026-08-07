@@ -1,16 +1,7 @@
 """Golden test using the *_from_proba API.
 
 This test exercises the statistically correct usage of U-TraCE and has its
-OWN baselines (tests/baselines/new_api/), distinct from the legacy golden.
-
-Why separate baselines: the legacy golden (test_golden_mnist.py) averaged
-per-batch alphas during tuning, which is incorrect — alpha is a nonlinear
-function of the tuning data, so mean(alpha_per_batch) != alpha(all_data).
-This test computes a single alpha over the entire tuning set, as the method
-requires. The numbers therefore differ from the legacy baselines by design.
-
-Equivalence between the legacy and new APIs *given identical inputs* is
-proven in test_legacy_equivalence.py (synthetic inputs, no batching).
+own baselines (tests/integration/torch/baselines/).
 
 Memory note: calibration is streamed (one batch of logits at a time, scores
 accumulated) so it scales to large calibration sets. Tuning materializes its
@@ -33,7 +24,7 @@ from utrace.utils.pytorch.example_models import ImageClassifierCNN
 from utrace.utils.pytorch.model_wrapper import Pytorch_wrapper
 from utrace.utils.pytorch.transforms import AddGaussianNoise
 
-from _baselines import NEW_API_BASELINE_DIR
+from _baselines import BASELINE_DIR
 
 def set_all_seeds(seed=42):
     import random
@@ -60,7 +51,7 @@ def _compute_logits_for_loader(loader, classifier):
     return np.concatenate(probs_chunks), np.concatenate(labels_chunks)
 
 
-def _compute_golden_run_new_api(seed=42):
+def _compute_golden_run(seed=42):
     set_all_seeds(seed)
 
     device = torch.device("cpu")
@@ -162,34 +153,34 @@ def _compute_golden_run_new_api(seed=42):
 
 
 @pytest.fixture(scope="module")
-def golden_run_new_api():
+def golden_run():
     """Run the new-API golden, asserting NO DeprecationWarning fires
     (any leftover legacy call would raise here)."""
     from utrace.uncertaintyQuantifier import _search_uncertainty
     _search_uncertainty.clear_cache()
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
-        return _compute_golden_run_new_api()
+        return _compute_golden_run()
 
 
-def test_coverages_match_baseline_new_api(golden_run_new_api):
-    expected = np.load(NEW_API_BASELINE_DIR / 'mean_coverages.npy')
-    np.testing.assert_allclose(golden_run_new_api['coverages'], expected,
+def test_coverages_match_baseline(golden_run):
+    expected = np.load(BASELINE_DIR / 'mean_coverages.npy')
+    np.testing.assert_allclose(golden_run['coverages'], expected,
                                rtol=1e-5, atol=1e-7)
 
 
-def test_alphas_match_baseline_new_api(golden_run_new_api):
-    expected = np.load(NEW_API_BASELINE_DIR / 'mean_alphas.npy')
-    np.testing.assert_allclose(golden_run_new_api['alphas'], expected,
+def test_alphas_match_baseline(golden_run):
+    expected = np.load(BASELINE_DIR / 'mean_alphas.npy')
+    np.testing.assert_allclose(golden_run['alphas'], expected,
                                rtol=1e-5, atol=1e-7)
 
 
-def test_uncertainties_match_baseline_new_api(golden_run_new_api):
-    expected = np.load(NEW_API_BASELINE_DIR / 'mean_uncertainties.npy')
-    np.testing.assert_allclose(golden_run_new_api['uncertainties'], expected,
+def test_uncertainties_match_baseline(golden_run):
+    expected = np.load(BASELINE_DIR / 'mean_uncertainties.npy')
+    np.testing.assert_allclose(golden_run['uncertainties'], expected,
                                rtol=1e-5, atol=1e-7)
     
-def test_jax_cache_does_not_grow(golden_run_new_api):
+def test_jax_cache_does_not_grow(golden_run):
     """Detect if _search_uncertainty is recompiling on every call."""
     from utrace.uncertaintyQuantifier import _search_uncertainty
     cache_size = _search_uncertainty._cache_size() # type:ignore
@@ -204,7 +195,7 @@ def test_jax_cache_does_not_grow(golden_run_new_api):
 def test_golden_run_under_threshold():
     """Smoke test: detect catastrophic performance regressions."""
     start = time.perf_counter()
-    _compute_golden_run_new_api()
+    _compute_golden_run()
     elapsed = time.perf_counter() - start
     # Arbitrary threshold based on initial tests
     assert elapsed < 120, f"Golden run took {elapsed:.1f}s, suspect regression"

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from _baselines import NEW_API_BASELINE_DIR
+from _baselines import BASELINE_DIR
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -23,9 +23,9 @@ def main():
                         help="Which golden's baselines to regenerate.")
     args = parser.parse_args()
 
-    from test_golden_mnist_new_api import _compute_golden_run_new_api
-    results = _compute_golden_run_new_api()
-    out_dir = NEW_API_BASELINE_DIR
+    from test_golden_mnist import _compute_golden_run
+    results = _compute_golden_run()
+    out_dir = BASELINE_DIR
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, arr in results.items():
