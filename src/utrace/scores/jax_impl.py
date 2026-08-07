@@ -1,6 +1,5 @@
 import jax.numpy as jnp
 from jax import jit
-from jax.debug import print as jax_print
 
 
 @jit
