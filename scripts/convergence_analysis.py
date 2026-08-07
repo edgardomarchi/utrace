@@ -121,12 +121,12 @@ def main(train_model=False, *, img_path: Path):
                 logger.info("Calibrating the CP...")
                 for images, labels in calibrate_loader:
                     p_cal = classifier.predict_proba(images)
-                    cp.calibrate_from_proba(p_cal, labels, batched=True)
+                    cp.calibrate(p_cal, labels, batched=True)
 
                 # Find uncertainty: materialize the full tune set, ONE call — no per-batch averaging
                 logger.info("Tuning the CP...")
                 tune_proba, tune_y = precompute_proba(tune_loader, classifier)
-                U, _ = cp.get_uncertainty_from_proba(tune_proba, tune_y, max_iters=20)
+                U, _ = cp.get_uncertainty(tune_proba, tune_y, max_iters=20)
 
                 Us[n, cs] = U
 

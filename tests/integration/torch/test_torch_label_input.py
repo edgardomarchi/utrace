@@ -1,4 +1,4 @@
-"""Covers the raw-torch-tensor label input path through calibrate_from_proba, which no other test exercises: the tests/core/ suite only feeds numpy/jnp arrays (it must stay torch-free by convention), and the example scripts pre-convert torch labels to numpy (`.numpy().astype(int)`) before ever calling calibrate_from_proba.
+"""Covers the raw-torch-tensor label input path through calibrate, which no other test exercises: the tests/core/ suite only feeds numpy/jnp arrays (it must stay torch-free by convention), and the example scripts pre-convert torch labels to numpy (`.numpy().astype(int)`) before ever calling calibrate.
 
 IMPORTANT — what this test does and does not prove: it verifies CORRECTNESS for torch input — that calibrating with a torch label tensor produces the same conformity_scores_ and the same q_hat as calibrating with the numpy equivalent of the same data. It does NOT verify that the conversion avoided a host round-trip (i.e. that it went through DLPack zero-copy rather than via a numpy copy). That property is not observable from a CPU backend: a host round-trip and a genuine DLPack transfer of a CPU-resident tensor land on the same device and produce identical values, so nothing here can tell them apart. A green run here is not proof of zero-copy — only proof that the torch-input path yields the right numbers.
 """
@@ -24,10 +24,10 @@ def test_torch_label_tensor_matches_numpy_equivalent():
     y_torch = torch.from_numpy(label_values.copy())
 
     uq_torch = UncertaintyQuantifier(N=300, classes=None)
-    uq_torch.calibrate_from_proba(probas_torch, y_torch, batched=True)
+    uq_torch.calibrate(probas_torch, y_torch, batched=True)
 
     uq_numpy = UncertaintyQuantifier(N=300, classes=None)
-    uq_numpy.calibrate_from_proba(probas_np, label_values, batched=True)
+    uq_numpy.calibrate(probas_np, label_values, batched=True)
 
     np.testing.assert_array_equal(
         np.asarray(uq_torch.conformity_scores_),

@@ -209,14 +209,14 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 for X_cal, y_cal in calDataLoader:
                     p_cal = classifier.predict_proba(X_cal)
                     y_cal_arr = flatten_batch(y_cal).ravel()
-                    uq.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+                    uq.calibrate(p_cal, y_cal_arr, batched=True)
 
                 # Precompute tune set (one model forward per batch)
                 tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
                 tune_y_all = flatten_batch(tune_y_all).ravel()
 
                 # Tuning: one call over the full tune set (not batched/averaged)
-                U, alpha = uq.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=IT)
+                U, alpha = uq.get_uncertainty(tune_probs_all, tune_y_all, max_iters=IT)
                 alpha_std = 0.0
                 U_std = 0.0
                 uq.alpha = alpha
@@ -227,7 +227,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 for X_test, y_test in testDataLoader:
                     p_test = classifier.predict_proba(X_test)
                     y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
-                    y_p, y_s = uq.predict_from_proba(p_test)
+                    y_p, y_s = uq.predict(p_test)
                     V = len(y_test_arr)
                     if V > 0:
                         batch_covs.append(get_coverage(y_test_arr, y_s))

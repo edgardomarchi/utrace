@@ -223,7 +223,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                     p_cal = classifier.predict_proba(X_cal)
                     y_cal_arr = flatten_batch(y_cal).ravel()
                     for C in classifier.classes_:
-                        uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+                        uqs[C].calibrate(p_cal, y_cal_arr, batched=True)
 
                 # Precompute tune set (one model forward per batch, shared across classes)
                 tune_probs_all, tune_y_all = precompute_proba(tuneDataLoader, classifier)
@@ -236,7 +236,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
 
                 for C in classifier.classes_:
                     # Tuning: one call over the full tune set (not batched/averaged)
-                    U, alpha = uqs[C].get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=IT)
+                    U, alpha = uqs[C].get_uncertainty(tune_probs_all, tune_y_all, max_iters=IT)
                     alpha_std = 0.0
                     U_std = 0.0
                     uqs[C].alpha = alpha
@@ -245,7 +245,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                     logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
                     mask_C = (test_y_all == C)
                     y_n_C = test_y_all[mask_C]
-                    y_p, y_s = uqs[C].predict_from_proba(test_probs_all)
+                    y_p, y_s = uqs[C].predict(test_probs_all)
                     y_s_C = y_s[mask_C]
 
                     coverage = get_coverage(y_n_C, y_s_C)

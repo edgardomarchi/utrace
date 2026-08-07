@@ -1,4 +1,4 @@
-"""Verifies that calibrate_from_proba canonicalises labels to the score
+"""Verifies that calibrate canonicalises labels to the score
 family's declared dtype (jnp.int32 for 'lac'), ON DEVICE, regardless of the
 caller's input dtype.
 
@@ -21,7 +21,7 @@ def test_label_dtype_is_canonicalised_to_int32():
     """
     This is verified indirectly, through lac_cal's own JIT cache: lac_cal is @jit-decorated and JAX retraces (and caches a new entry) per distinct (shape, dtype) combination of its arguments. If the caller's label dtype leaked through uncanonicalised, feeding numpy int32, numpy int64, and a    jnp array of labels would produce THREE distinct traces (one per incoming dtype) and the cache would grow to 3. If canonicalisation actually happens, every variant collapses to the same (shape, jnp.int32) trace and the cache stays at 1 — a test that cannot pass by accident if the implementation still preserved the caller's dtype instead of casting it.
 
-    The probability array and all shapes are held IDENTICAL across the three variants on purpose: lac_cal's jit cache also keys on the shape and dtype of `smx` (the probabilities), not just `y`. Varying probabilities or shapes between the three calibrate_from_proba calls would each independently justify a new trace, and the cache-size assertion would then say nothing about label-dtype canonicalisation specifically.
+    The softmax array and all shapes are held IDENTICAL across the three variants on purpose: lac_cal's jit cache also keys on the shape and dtype of `smx` (the softmax output), not just `y`. Varying the softmax values or shapes between the three calibrate calls would each independently justify a new trace, and the cache-size assertion would then say nothing about label-dtype canonicalisation specifically.
     """
     lac_cal.clear_cache()
 
@@ -38,7 +38,7 @@ def test_label_dtype_is_canonicalised_to_int32():
     scores_by_variant = {}
     for name, y in variants.items():
         uq = UncertaintyQuantifier(N=200, classes=None)
-        uq.calibrate_from_proba(probas, y, batched=True)
+        uq.calibrate(probas, y, batched=True)
         scores_by_variant[name] = np.asarray(uq.conformity_scores_)
 
     assert lac_cal._cache_size() == 1, (
@@ -74,6 +74,6 @@ def test_labels_reach_score_fn_as_canonical_dtype():
         return original(y, smx)
 
     uq.cal_score_ = spy
-    uq.calibrate_from_proba(probs, labels_int64)
+    uq.calibrate(probs, labels_int64)
 
     assert seen['dtype'] == jnp.dtype(uq.label_dtype_)

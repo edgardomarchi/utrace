@@ -1,4 +1,4 @@
-"""Golden test using the *_from_proba API.
+"""Golden test using the calibrate/predict/get_uncertainty API.
 
 This test exercises the statistically correct usage of U-TraCE and has its
 own baselines (tests/integration/torch/baselines/).
@@ -114,7 +114,7 @@ def _compute_golden_run(seed=42):
                 p_cal = classifier.predict_proba(X_cal).cpu().numpy()
                 y_cal_arr = flatten_batch(y_cal).ravel().numpy().astype(int)
                 for C in classifier.classes_:
-                    uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+                    uqs[C].calibrate(p_cal, y_cal_arr, batched=True)
 
             # ----- TUNING + TEST: materialize (small / bounded sets) -----
             tune_probs, tune_y = _compute_logits_for_loader(tuneDataLoader, classifier)
@@ -123,14 +123,14 @@ def _compute_golden_run(seed=42):
             for C in classifier.classes_:
                 # Tuning: ONE call over the entire tuning set. Pure, no mutation.
                 # Averaging per-batch alphas would be statistically incorrect.
-                U, alpha = uqs[C].get_uncertainty_from_proba(tune_probs, tune_y)
+                U, alpha = uqs[C].get_uncertainty(tune_probs, tune_y)
 
                 # Caller sets alpha explicitly (get_uncertainty does not mutate)
                 uqs[C].alpha = alpha
 
                 # Test: prediction over the whole set; coverage is a GLOBAL
                 # proportion, not an average of per-batch proportions.
-                y_p, y_s = uqs[C].predict_from_proba(test_probs)
+                y_p, y_s = uqs[C].predict(test_probs)
                 valid = np.isin(test_y, np.array([C]))
                 if valid.sum() > 0:
                     coverage = get_coverage(test_y[valid], y_s[valid])

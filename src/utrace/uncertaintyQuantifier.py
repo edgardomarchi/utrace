@@ -17,14 +17,14 @@ from .utils.tensors import to_jax
 logger = logging.getLogger(__name__)
 
 @partial(jit, static_argnames=["score_fn"])
-def _predict_sets(y_pred_proba:jnp.ndarray, q_hat: np.float64, 
+def _predict_sets(smx:jnp.ndarray, q_hat: np.float64, 
                   score_fn: Callable) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Predicts the class labels and sets of labels for the input data X.
 
     Parameters
     ----------
-    y_pred_proba : np.ndarray
-        Predicted probabilities for each class.
+    smx : np.ndarray
+        Softmax output for each class.
     q_hat : jnp.float64
         Calibrated quantile level.
     score_fn : Callable
@@ -37,8 +37,8 @@ def _predict_sets(y_pred_proba:jnp.ndarray, q_hat: np.float64,
     y_sets : jnp.ndarray
         The sets of labels as a boolean array.
     """
-    y_pred = jnp.argmax(y_pred_proba, axis=1)  # -1 for tensorflow
-    scores = score_fn(y_pred_proba)
+    y_pred = jnp.argmax(smx, axis=1)  # -1 for tensorflow
+    scores = score_fn(smx)
     y_sets = scores <= q_hat
     
     return y_pred, y_sets
@@ -55,7 +55,7 @@ def _q_hat_from_alpha(cs_padded: jnp.ndarray,
 @partial(jit, static_argnames=["score_fn", "max_iters"])
 def _search_uncertainty(
     y: jnp.ndarray,                  # (n,) filtered labels
-    y_pred_proba: jnp.ndarray,       # (n, K) probabilities
+    smx: jnp.ndarray,                # (n, K) softmax output
     valid_mask: jnp.ndarray,         # (n,) bool - True: sample from selected class(es)
     cs_padded: jnp.ndarray,          # (m,) calibration scores
     n_cs: jnp.ndarray,               # (1,) number of calibration scores
@@ -91,7 +91,7 @@ def _search_uncertainty(
 
         # Predict
         q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha_next)
-        _, prediction_sets = _predict_sets(y_pred_proba, q_hat, score_fn=score_fn)
+        _, prediction_sets = _predict_sets(smx, q_hat, score_fn=score_fn)
 
         set_sizes    = prediction_sets.sum(axis=1)
         setsize_curr = jnp.where(valid_mask, set_sizes, 0.0).sum() / jnp.maximum(n_valid, 1)
@@ -186,7 +186,7 @@ class UncertaintyQuantifier:
                 self.score_ = lac
                 # Declared by the score family, not hardcoded at the boundary: a future
                 # regression score would declare a float dtype here, and hardcoding an
-                # integer cast in calibrate_from_proba would silently truncate continuous
+                # integer cast in calibrate would silently truncate continuous
                 # targets.
                 self.label_dtype_ = jnp.int32
             case 'aps':
@@ -258,30 +258,30 @@ class UncertaintyQuantifier:
         self._state = _ensure_sorted(self._state)
         return self._state.conformity_scores
 
-    def calibrate_from_proba(self, y_pred_proba, y, batched: bool = False):
-        """Calibrate the conformal predictor with precomputed probabilities.
+    def calibrate(self, softmax, y, batched: bool = False):
+        """Calibrate the conformal predictor with precomputed softmax output.
         
         Parameters
         ----------
-        y_pred_proba : array-like, shape (n_samples, n_classes)
-            Predicted class probabilities. Accepts any array type that implements
+        softmax : array-like, shape (n_samples, n_classes)
+            Predicted class softmax output. Accepts any array type that implements
             DLPack (jax, numpy, torch, tensorflow, ...). Zero-copy when possible.
         y : array-like, shape (n_samples,)
             Integer class labels.
         batched : bool, default=False
             If True, append to existing calibration scores instead of replacing.
         """
-        y_pred_proba = to_jax(y_pred_proba)
+        softmax = to_jax(softmax)
         y_arr = to_jax(y).astype(self.label_dtype_)
-        self._calibrate_impl(y_pred_proba, y_arr, batched=batched)
+        self._calibrate_impl(softmax, y_arr, batched=batched)
 
-    def _calibrate_impl(self, y_pred_proba, y, batched: bool = False):
+    def _calibrate_impl(self, smx, y, batched: bool = False):
         """Calibrates the conformal predictor with the given data.
 
         Parameters
         ----------
-        y_pred_proba : np.ndarray
-            Predicted probabilities for calibration.
+        smx : np.ndarray
+            Softmax output for calibration.
         y : np.ndarray
             Target labels for calibration.
         batched : bool, optional
@@ -290,9 +290,9 @@ class UncertaintyQuantifier:
         if self._classes_jax is not None:
             mask = jnp.isin(y, self._classes_jax)
             y = y[mask]
-            y_pred_proba = y_pred_proba[mask]
+            smx = smx[mask]
 
-        scores = self.cal_score_(y, y_pred_proba)
+        scores = self.cal_score_(y, smx)
         num_scores = len(scores)
         old_N = self._state.N
         if batched:
@@ -333,13 +333,13 @@ class UncertaintyQuantifier:
         if self.classes is not None and new_N == 0:
             logger.warning("No calibration scores for the requested class group %s after calibration.", self.classes)
         
-    def predict_from_proba(self, y_pred_proba, force_non_empty_sets: bool = False) -> tuple[np.ndarray, np.ndarray]:
-        """Predict class labels and prediction sets from precomputed probabilities.
+    def predict(self, softmax, force_non_empty_sets: bool = False) -> tuple[np.ndarray, np.ndarray]:
+        """Predict class labels and prediction sets from precomputed softmax output.
         
         Parameters
         ----------
-        y_pred_proba : array-like, shape (n_samples, n_classes)
-            Predicted class probabilities. Accepts any DLPack-compatible array.
+        softmax : array-like, shape (n_samples, n_classes)
+            Predicted class softmax output. Accepts any DLPack-compatible array.
         force_non_empty_sets : bool, default=False
             If True, ensure the predicted class is always included in the set.
         
@@ -350,11 +350,11 @@ class UncertaintyQuantifier:
         y_sets : np.ndarray, shape (n_samples, n_classes)
             Boolean prediction sets.
         """
-        y_pred_proba = to_jax(y_pred_proba)
-        y_pred, y_sets = _predict_sets(y_pred_proba, self._state.q_hat, score_fn=self.score_)
+        softmax = to_jax(softmax)
+        y_pred, y_sets = _predict_sets(softmax, self._state.q_hat, score_fn=self.score_)
         return np.array(y_pred), np.array(y_sets)
 
-    def get_uncertainty_from_proba(self, y_pred_proba, y, max_iters: int = 30) -> tuple[np.float64, np.float64]:
+    def get_uncertainty(self, softmax, y, max_iters: int = 30) -> tuple[np.float64, np.float64]:
         """Estimate model uncertainty over a tuning set via conformal prediction.
 
         Searches for the alpha that yields the target average prediction-set size,
@@ -367,21 +367,21 @@ class UncertaintyQuantifier:
         side effects, though: it reads the conformity-score buffer through the
         same lazy-sort path as conformity_scores_, so if the buffer has not
         been read since the last calibration write, this call sorts it and
-        updates self._state accordingly (self._sorted flips to True). That
+        updates self._state accordingly (self._state.sorted flips to True). That
         mutation is idempotent and value-preserving -- it does not change the
         buffer's contents or this method's return value, only the internal
         representation used to compute it -- but callers should not assume
         this method leaves self._state completely untouched. To use the
         returned alpha for subsequent predictions, set it explicitly:
 
-            U, alpha = uq.get_uncertainty_from_proba(tune_probs, tune_y)
+            U, alpha = uq.get_uncertainty(tune_probs, tune_y)
             uq.alpha = alpha                  # explicit, caller's decision
-            y_pred, y_sets = uq.predict_from_proba(test_probs)
+            y_pred, y_sets = uq.predict(test_probs)
 
         Parameters
         ----------
-        y_pred_proba : array-like, shape (n_tuning, n_classes)
-            Predicted probabilities for the tuning set. Any DLPack-compatible array.
+        softmax : array-like, shape (n_tuning, n_classes)
+            Predicted softmax output for the tuning set. Any DLPack-compatible array.
             All samples are used; the caller controls the tuning set size by
             choosing how many samples to pass.
         y : array-like, shape (n_tuning,)
@@ -405,16 +405,16 @@ class UncertaintyQuantifier:
         """
     
         # TODO: _get_uncertainty_jit_impl espera numpy (lo convierte a jnp adentro)
-        y_pred_proba = np.asarray(to_jax(y_pred_proba))
+        softmax = np.asarray(to_jax(softmax))
         y_arr = np.asarray(y).flatten().astype(int)
-        return self._get_uncertainty_jit_impl(y_pred_proba, y_arr, max_iters=max_iters)
+        return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters)
 
-    def _get_uncertainty_jit_impl(self, y_pred_proba, y, max_iters=30):
-        """y_pred_proba: (B, K) array (jnp/np), B variable.
-           y:            (B,)   int labels.
+    def _get_uncertainty_jit_impl(self, smx, y, max_iters=30):
+        """smx: (B, K) array (jnp/np), B variable.
+           y:   (B,)   int labels.
         Internally pads to a fixed shape so the jitted search compiles once."""
         B = y.shape[0]
-        K = y_pred_proba.shape[1]
+        K = smx.shape[1]
 
         # 1. máscara de validez: muestra real (siempre True aquí, B es el real)
         #    AND pertenece a la clase de interés
@@ -442,7 +442,7 @@ class UncertaintyQuantifier:
         mask_padded = np.zeros(target_size, dtype=bool)
 
         y_padded[:B]    = y_arr
-        p_padded[:B]    = np.asarray(y_pred_proba)
+        p_padded[:B]    = np.asarray(smx)
         mask_padded[:B] = valid                       # solo válidos reales en True
 
         # 3. y_safe: índices en rango incluso en padding (clase 0)

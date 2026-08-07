@@ -306,7 +306,7 @@ def main(img_path: Path=Path("img/ACDC_example/"),
                 p_cal = model.predict_proba(X_cal)
                 y_cal_arr = flatten_batch(y_cal).ravel()
                 for C in model.classes_:
-                    uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+                    uqs[C].calibrate(p_cal, y_cal_arr, batched=True)
 
             # Tuning: precompute full tune set, one call per class (not per-batch averaged)
             tune_probs_list, tune_y_list = [], []
@@ -319,7 +319,7 @@ def main(img_path: Path=Path("img/ACDC_example/"),
             U_per_class: dict[int, float] = {}
             alpha_per_class: dict[int, float] = {}
             for C in model.classes_:
-                U, alpha = uqs[C].get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=30)
+                U, alpha = uqs[C].get_uncertainty(tune_probs_all, tune_y_all, max_iters=30)
                 U_per_class[C] = float(U)
                 alpha_per_class[C] = float(alpha)
                 logger.info("Class %d tuning: U=%f, alpha=%f", C, U, alpha)
@@ -335,7 +335,7 @@ def main(img_path: Path=Path("img/ACDC_example/"),
                 # y_test_arr feeds mask_C / y_s indexing below (non-core, numpy-typed), not the core: kept as numpy.
                 y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
                 for C in model.classes_:
-                    y_p, y_s = uqs[C].predict_from_proba(p_test)
+                    y_p, y_s = uqs[C].predict(p_test)
                     mask_C = (y_test_arr == C)
                     n_C = int(mask_C.sum())
                     total_test_pix[C] += n_C

@@ -126,7 +126,7 @@ def main(train_model=False, img_path=Path("img/")):
         # Calibrate: one forward pass over the calibration set, then one call
         cal_proba, cal_y = precompute_proba(calibrate_loader, classifier)
         cp.reset()
-        cp.calibrate_from_proba(cal_proba, cal_y)
+        cp.calibrate(cal_proba, cal_y)
 
         # Precompute test probabilities once per noise level; reused across all alphas
         test_proba, _ = precompute_proba(test_loader, classifier)
@@ -139,7 +139,7 @@ def main(train_model=False, img_path=Path("img/")):
         for i, alpha in enumerate(alphas):
 
             cp.alpha = alpha
-            _, y_s = cp.predict_from_proba(test_proba, force_non_empty_sets=False)
+            _, y_s = cp.predict(test_proba, force_non_empty_sets=False)
             setsizes = y_s.sum(axis=1)
 
             if not i%4:
@@ -180,11 +180,11 @@ def main(train_model=False, img_path=Path("img/")):
 
         cal_proba, cal_y = precompute_proba(calibrate_loader, classifier)
         cp.reset()
-        cp.calibrate_from_proba(cal_proba, cal_y)
+        cp.calibrate(cal_proba, cal_y)
 
         cp.alpha = alpha
         test_proba, _ = precompute_proba(test_loader, classifier)
-        _, y_s = cp.predict_from_proba(test_proba)
+        _, y_s = cp.predict(test_proba)
         setsizes = y_s.sum(axis=1)
 
         axs[i].hist(setsizes, density=True, bins=np.linspace(0, C+1, C+2, dtype=int))
@@ -224,18 +224,18 @@ def main(train_model=False, img_path=Path("img/")):
 
         cal_proba, cal_y = precompute_proba(calibrate_loader, classifier)
         cp.reset()
-        cp.calibrate_from_proba(cal_proba, cal_y)
+        cp.calibrate(cal_proba, cal_y)
 
         # Find alpha that produces average set size of 1:
         # materialize the full tune set, then ONE binary search — no per-batch averaging
         tune_proba, tune_y = precompute_proba(tune_loader, classifier)
-        U, alpha = cp.get_uncertainty_from_proba(tune_proba, tune_y)
+        U, alpha = cp.get_uncertainty(tune_proba, tune_y)
         cp.alpha = alpha
 
         logger.info("Noise std: %f - Alpha found: %f", noise_std, alpha)
 
         test_proba, _ = precompute_proba(test_loader, classifier)
-        _, y_s = cp.predict_from_proba(test_proba)
+        _, y_s = cp.predict(test_proba)
         setsizes = y_s.sum(axis=1)
 
         axs[i].hist(setsizes, density=True, bins=np.linspace(0, (C+1)//2, (C+2)//2, dtype=int))

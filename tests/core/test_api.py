@@ -1,4 +1,4 @@
-"""Tests for the *_from_proba public API of UncertaintyQuantifier.
+"""Tests for the calibrate/predict/get_uncertainty public API of UncertaintyQuantifier.
 
 These tests verify the contract of each method against itself, using
 numpy/jnp inputs only. The equivalence between this API and the legacy
@@ -16,7 +16,7 @@ from utrace import UncertaintyQuantifier
 # ----- helpers ---------------------------------------------------------
 
 def _make_probas(n_samples: int, n_classes: int, seed: int = 0) -> np.ndarray:
-    """Random probability matrix, each row summing to 1."""
+    """Random softmax-output matrix, each row summing to 1."""
     rng = np.random.default_rng(seed)
     p = rng.random((n_samples, n_classes))
     return p / p.sum(axis=1, keepdims=True)
@@ -27,7 +27,7 @@ def _make_labels(n_samples: int, n_classes: int, seed: int = 1) -> np.ndarray:
     return rng.integers(0, n_classes, n_samples).astype(np.int32)
 
 
-# ----- calibrate_from_proba --------------------------------------------
+# ----- calibrate --------------------------------------------
 
 class TestCalibrateFromProba:
 
@@ -36,7 +36,7 @@ class TestCalibrateFromProba:
         probas = _make_probas(500, 10)
         y = _make_labels(500, 10)
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq.calibrate_from_proba(probas, y, batched=True)
+        uq.calibrate(probas, y, batched=True)
         assert uq._state.N > 0
 
     def test_accepts_jnp_input(self):
@@ -44,7 +44,7 @@ class TestCalibrateFromProba:
         probas = jnp.asarray(_make_probas(500, 10))
         y = jnp.asarray(_make_labels(500, 10))
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq.calibrate_from_proba(probas, y, batched=True)
+        uq.calibrate(probas, y, batched=True)
         assert uq._state.N > 0
 
     def test_numpy_and_jnp_inputs_give_identical_state(self):
@@ -53,10 +53,10 @@ class TestCalibrateFromProba:
         y_np = _make_labels(500, 10)
 
         uq_np = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq_np.calibrate_from_proba(probas_np, y_np, batched=True)
+        uq_np.calibrate(probas_np, y_np, batched=True)
 
         uq_jnp = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq_jnp.calibrate_from_proba(jnp.asarray(probas_np), jnp.asarray(y_np),
+        uq_jnp.calibrate(jnp.asarray(probas_np), jnp.asarray(y_np),
                                     batched=True)
 
         np.testing.assert_array_equal(np.asarray(uq_np.conformity_scores_),
@@ -71,9 +71,9 @@ class TestCalibrateFromProba:
         y2 = _make_labels(300, 10, seed=11)
 
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq.calibrate_from_proba(probas1, y1, batched=True)
+        uq.calibrate(probas1, y1, batched=True)
         n_after_first = uq._state.N
-        uq.calibrate_from_proba(probas2, y2, batched=True)
+        uq.calibrate(probas2, y2, batched=True)
 
         assert uq._state.N > n_after_first
         # _state.N should be sum of class-3 occurrences across both batches
@@ -84,7 +84,7 @@ class TestCalibrateFromProba:
         probas = _make_probas(500, 10)
         y = _make_labels(500, 10)
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq.calibrate_from_proba(probas, y, batched=True)
+        uq.calibrate(probas, y, batched=True)
         assert uq._state.N > 0
 
         uq.reset()
@@ -97,7 +97,7 @@ class TestCalibrateFromProba:
         probas = _make_probas(500, 10)
         y = _make_labels(500, 10)
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq.calibrate_from_proba(probas, y, batched=True)
+        uq.calibrate(probas, y, batched=True)
 
         cs = np.asarray(uq.conformity_scores_)
         valid = cs[:uq._state.N]
@@ -106,7 +106,7 @@ class TestCalibrateFromProba:
         assert np.all(np.isinf(padding)), "padding must be +inf"
 
 
-# ----- predict_from_proba ----------------------------------------------
+# ----- predict ----------------------------------------------
 
 class TestPredictFromProba:
 
@@ -115,42 +115,42 @@ class TestPredictFromProba:
         probas = _make_probas(500, 10, seed=0)
         y = _make_labels(500, 10, seed=10)
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq.calibrate_from_proba(probas, y, batched=True)
+        uq.calibrate(probas, y, batched=True)
         uq.alpha = np.float64(0.1)  # set alpha to fix q_hat
         return uq
 
     def test_returns_pair_of_arrays(self, calibrated_uq):
         probas = _make_probas(100, 10, seed=2)
-        y_pred, y_sets = calibrated_uq.predict_from_proba(probas)
+        y_pred, y_sets = calibrated_uq.predict(probas)
         assert isinstance(y_pred, np.ndarray)
         assert isinstance(y_sets, np.ndarray)
 
     def test_shapes_match_input(self, calibrated_uq):
         probas = _make_probas(100, 10, seed=2)
-        y_pred, y_sets = calibrated_uq.predict_from_proba(probas)
+        y_pred, y_sets = calibrated_uq.predict(probas)
         assert y_pred.shape == (100,)
         assert y_sets.shape == (100, 10)
 
     def test_sets_are_boolean(self, calibrated_uq):
         probas = _make_probas(100, 10, seed=2)
-        _, y_sets = calibrated_uq.predict_from_proba(probas)
+        _, y_sets = calibrated_uq.predict(probas)
         assert y_sets.dtype == bool
 
     def test_y_pred_is_argmax(self, calibrated_uq):
-        """The predicted class should be the argmax of the input probabilities."""
+        """The predicted class should be the argmax of the input softmax output."""
         probas = _make_probas(100, 10, seed=2)
-        y_pred, _ = calibrated_uq.predict_from_proba(probas)
+        y_pred, _ = calibrated_uq.predict(probas)
         np.testing.assert_array_equal(y_pred, probas.argmax(axis=1))
 
     def test_numpy_and_jnp_give_same_sets(self, calibrated_uq):
         probas_np = _make_probas(100, 10, seed=2)
-        y_pred_n, y_sets_n = calibrated_uq.predict_from_proba(probas_np)
-        y_pred_j, y_sets_j = calibrated_uq.predict_from_proba(jnp.asarray(probas_np))
+        y_pred_n, y_sets_n = calibrated_uq.predict(probas_np)
+        y_pred_j, y_sets_j = calibrated_uq.predict(jnp.asarray(probas_np))
         np.testing.assert_array_equal(y_pred_n, y_pred_j)
         np.testing.assert_array_equal(y_sets_n, y_sets_j)
 
 
-# ----- get_uncertainty_from_proba --------------------------------------
+# ----- get_uncertainty --------------------------------------
 
 class TestGetUncertaintyFromProba:
 
@@ -159,20 +159,20 @@ class TestGetUncertaintyFromProba:
         probas = _make_probas(500, 10, seed=0)
         y = _make_labels(500, 10, seed=10)
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
-        uq.calibrate_from_proba(probas, y, batched=True)
+        uq.calibrate(probas, y, batched=True)
         return uq
 
     def test_returns_pair_of_floats(self, calibrated_uq):
         probas = _make_probas(300, 10, seed=2)
         y = _make_labels(300, 10, seed=12)
-        U, alpha = calibrated_uq.get_uncertainty_from_proba(probas, y)
+        U, alpha = calibrated_uq.get_uncertainty(probas, y)
         assert isinstance(U, float)
         assert isinstance(alpha, float)
 
     def test_alpha_in_unit_interval(self, calibrated_uq):
         probas = _make_probas(300, 10, seed=2)
         y = _make_labels(300, 10, seed=12)
-        _, alpha = calibrated_uq.get_uncertainty_from_proba(probas, y)
+        _, alpha = calibrated_uq.get_uncertainty(probas, y)
         assert 0.0 <= alpha <= 1.0
 
     def test_no_valid_samples_returns_nan(self, calibrated_uq):
@@ -181,14 +181,14 @@ class TestGetUncertaintyFromProba:
         # construct y with no class-3 samples
         y = np.array([c for c in range(10) if c != 3] * 6, dtype=np.int32)[:50]
         assert (y == 3).sum() == 0
-        U, alpha = calibrated_uq.get_uncertainty_from_proba(probas, y)
+        U, alpha = calibrated_uq.get_uncertainty(probas, y)
         assert np.isnan(U) and np.isnan(alpha)
 
     def test_numpy_and_jnp_give_same_result(self, calibrated_uq):
         probas_np = _make_probas(300, 10, seed=2)
         y_np = _make_labels(300, 10, seed=12)
-        U_n, a_n = calibrated_uq.get_uncertainty_from_proba(probas_np, y_np)
-        U_j, a_j = calibrated_uq.get_uncertainty_from_proba(
+        U_n, a_n = calibrated_uq.get_uncertainty(probas_np, y_np)
+        U_j, a_j = calibrated_uq.get_uncertainty(
             jnp.asarray(probas_np), jnp.asarray(y_np))
         np.testing.assert_allclose(U_n, U_j, rtol=1e-12, atol=1e-12)
         np.testing.assert_allclose(a_n, a_j, rtol=1e-12, atol=1e-12)

@@ -128,13 +128,13 @@ def main(train_model: bool=False,
             for X_cal, y_cal in calibrate_loader:
                 p_cal = model.predict_proba(X_cal)
                 y_cal_arr = flatten_batch(y_cal).ravel()
-                cp.calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+                cp.calibrate(p_cal, y_cal_arr, batched=True)
 
             # Find Uncertainty: materialize the full tune set, ONE call (alpha/U are
             # non-linear in the data, so per-batch averaging is invalid)
             tune_probs_all, tune_y_all = precompute_proba(tune_loader, model)
             tune_y_all = flatten_batch(tune_y_all).ravel()
-            U, alpha = cp.get_uncertainty_from_proba(tune_probs_all, tune_y_all, max_iters=30)
+            U, alpha = cp.get_uncertainty(tune_probs_all, tune_y_all, max_iters=30)
             iter_alphas[iteration] = alpha
             iter_Us[iteration] = U
 
@@ -144,7 +144,7 @@ def main(train_model: bool=False,
             cp.alpha = U  # aligned to the sibling: threshold parameterized by U, not the tuned alpha
             for X_n, y_n in test_loader:
                 p_test = model.predict_proba(X_n)
-                y_p, y_s = cp.predict_from_proba(p_test)
+                y_p, y_s = cp.predict(p_test)
                 # Filter out the ouputs that are not in the classes
                 y_n = flatten_batch(y_n).ravel().numpy().astype(int)
 

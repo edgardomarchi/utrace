@@ -1,11 +1,11 @@
 """Pins the shape-stability and correctness invariants of the full-buffer
 sort in conformity_scores_ (Step B1): the property now sorts the WHOLE
-fixed-size buffer, not the variable-length prefix [:self._N], so its output
-shape is always (_max_N,) regardless of _N.
+fixed-size buffer, not the variable-length prefix [:self._state.N], so its output
+shape is always (_max_N,) regardless of _state.N.
 
 Honest scope: this test pins the padding invariant, the sortedness of the
-valid prefix, and the fixed output shape across several different _N
-values, including the _N==0, _N==1, and _N==_max_N edges. It does NOT by
+valid prefix, and the fixed output shape across several different _state.N
+values, including the _state.N==0, _state.N==1, and _state.N==_max_N edges. It does NOT by
 itself prove a compilation-count improvement — that is measured once and
 reported in the commit, not asserted per-run.
 """
@@ -32,23 +32,23 @@ def _assert_invariants(uq: UncertaintyQuantifier, max_N: int):
     padding = cs[N:]
     if N > 1:
         assert np.all(np.diff(valid) >= 0), "valid prefix must be sorted ascending"
-    assert np.all(np.isinf(padding)), "region beyond _N must be all +inf"
+    assert np.all(np.isinf(padding)), "region beyond _state.N must be all +inf"
 
 
 def test_shape_stable_across_several_distinct_N():
-    """Same instance, several batched calibrations reaching different _N
+    """Same instance, several batched calibrations reaching different _state.N
     values: the buffer's shape never changes, and each read is correctly
     sorted/padded."""
     max_N = 500
     uq = UncertaintyQuantifier(N=max_N, classes=None)
 
     for i, bs in enumerate([30, 45, 20, 60]):
-        uq.calibrate_from_proba(_make_probas(bs, 8, i), _make_labels(bs, 8, i), batched=True)
+        uq.calibrate(_make_probas(bs, 8, i), _make_labels(bs, 8, i), batched=True)
         _assert_invariants(uq, max_N)
 
 
 def test_N_equals_zero():
-    """Freshly constructed instance, never calibrated: _N == 0."""
+    """Freshly constructed instance, never calibrated: _state.N == 0."""
     max_N = 300
     uq = UncertaintyQuantifier(N=max_N, classes=None)
     assert uq._state.N == 0
@@ -58,7 +58,7 @@ def test_N_equals_zero():
 def test_N_equals_one():
     max_N = 300
     uq = UncertaintyQuantifier(N=max_N, classes=None)
-    uq.calibrate_from_proba(_make_probas(1, 5, 0), _make_labels(1, 5, 0), batched=False)
+    uq.calibrate(_make_probas(1, 5, 0), _make_labels(1, 5, 0), batched=False)
     assert uq._state.N == 1
     _assert_invariants(uq, max_N)
 
@@ -67,6 +67,6 @@ def test_N_equals_max_N():
     """Buffer completely filled: no padding region at all."""
     max_N = 150
     uq = UncertaintyQuantifier(N=max_N, classes=None)
-    uq.calibrate_from_proba(_make_probas(max_N, 6, 0), _make_labels(max_N, 6, 0), batched=False)
+    uq.calibrate(_make_probas(max_N, 6, 0), _make_labels(max_N, 6, 0), batched=False)
     assert uq._state.N == max_N
     _assert_invariants(uq, max_N)
