@@ -26,7 +26,7 @@ def _make_labels(n: int, k: int, seed: int) -> np.ndarray:
 
 def _assert_invariants(uq: UncertaintyQuantifier, max_N: int):
     cs = np.asarray(uq.conformity_scores_)
-    N = uq._N
+    N = uq._state.N
     assert cs.shape == (max_N,), f"buffer shape must always be (_max_N,)={(max_N,)}, got {cs.shape}"
     valid = cs[:N]
     padding = cs[N:]
@@ -51,7 +51,7 @@ def test_N_equals_zero():
     """Freshly constructed instance, never calibrated: _N == 0."""
     max_N = 300
     uq = UncertaintyQuantifier(N=max_N, classes=None)
-    assert uq._N == 0
+    assert uq._state.N == 0
     _assert_invariants(uq, max_N)
 
 
@@ -59,7 +59,7 @@ def test_N_equals_one():
     max_N = 300
     uq = UncertaintyQuantifier(N=max_N, classes=None)
     uq.calibrate_from_proba(_make_probas(1, 5, 0), _make_labels(1, 5, 0), batched=False)
-    assert uq._N == 1
+    assert uq._state.N == 1
     _assert_invariants(uq, max_N)
 
 
@@ -68,5 +68,5 @@ def test_N_equals_max_N():
     max_N = 150
     uq = UncertaintyQuantifier(N=max_N, classes=None)
     uq.calibrate_from_proba(_make_probas(max_N, 6, 0), _make_labels(max_N, 6, 0), batched=False)
-    assert uq._N == max_N
+    assert uq._state.N == max_N
     _assert_invariants(uq, max_N)

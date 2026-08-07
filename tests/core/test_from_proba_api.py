@@ -37,7 +37,7 @@ class TestCalibrateFromProba:
         y = _make_labels(500, 10)
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
         uq.calibrate_from_proba(probas, y, batched=True)
-        assert uq._N > 0
+        assert uq._state.N > 0
 
     def test_accepts_jnp_input(self):
         """Calibration should equally accept jax.numpy arrays."""
@@ -45,7 +45,7 @@ class TestCalibrateFromProba:
         y = jnp.asarray(_make_labels(500, 10))
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
         uq.calibrate_from_proba(probas, y, batched=True)
-        assert uq._N > 0
+        assert uq._state.N > 0
 
     def test_numpy_and_jnp_inputs_give_identical_state(self):
         """Same data via numpy or jnp produces identical conformity_scores_."""
@@ -61,7 +61,7 @@ class TestCalibrateFromProba:
 
         np.testing.assert_array_equal(np.asarray(uq_np.conformity_scores_),
                                       np.asarray(uq_jnp.conformity_scores_))
-        assert uq_np._N == uq_jnp._N
+        assert uq_np._state.N == uq_jnp._state.N
 
     def test_batched_accumulates_scores(self):
         """Two batched calls should accumulate (final _N = sum of both)."""
@@ -72,23 +72,23 @@ class TestCalibrateFromProba:
 
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
         uq.calibrate_from_proba(probas1, y1, batched=True)
-        n_after_first = uq._N
+        n_after_first = uq._state.N
         uq.calibrate_from_proba(probas2, y2, batched=True)
 
-        assert uq._N > n_after_first
-        # _N should be sum of class-3 occurrences across both batches
+        assert uq._state.N > n_after_first
+        # _state.N should be sum of class-3 occurrences across both batches
         expected_n = int((y1 == 3).sum() + (y2 == 3).sum())
-        assert uq._N == expected_n
+        assert uq._state.N == expected_n
 
     def test_reset_clears_state(self):
         probas = _make_probas(500, 10)
         y = _make_labels(500, 10)
         uq = UncertaintyQuantifier(N=1000, classes=[3], max_batch_size=512)
         uq.calibrate_from_proba(probas, y, batched=True)
-        assert uq._N > 0
+        assert uq._state.N > 0
 
         uq.reset()
-        assert uq._N == 0
+        assert uq._state.N == 0
         # padding invariant after reset
         assert jnp.all(jnp.isinf(uq.conformity_scores_))
 
@@ -100,8 +100,8 @@ class TestCalibrateFromProba:
         uq.calibrate_from_proba(probas, y, batched=True)
 
         cs = np.asarray(uq.conformity_scores_)
-        valid = cs[:uq._N]
-        padding = cs[uq._N:]
+        valid = cs[:uq._state.N]
+        padding = cs[uq._state.N:]
         assert np.all(valid[:-1] <= valid[1:]), "valid scores must be sorted ascending"
         assert np.all(np.isinf(padding)), "padding must be +inf"
 

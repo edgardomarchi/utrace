@@ -37,6 +37,6 @@ def test_torch_label_tensor_matches_numpy_equivalent():
     uq_torch.alpha = np.float64(0.1)
     uq_numpy.alpha = np.float64(0.1)
 
-    # No public accessor for q_hat; reached via its name-mangled attribute,
+    # No public accessor for q_hat; reached via the internal _state field,
     # matching the existing precedent in tests/core/test_max_n_overflow.py.
-    assert uq_torch._UncertaintyQuantifier__q_hat == uq_numpy._UncertaintyQuantifier__q_hat
+    assert uq_torch._state.q_hat == uq_numpy._state.q_hat

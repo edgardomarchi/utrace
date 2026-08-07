@@ -20,7 +20,7 @@ def test_overflow_batched_write_past_full_buffer():
     uq = UncertaintyQuantifier(N=max_N)
     probs, labels = _make_dummy_data(max_N)
     uq.calibrate_from_proba(probs, labels, batched=True)
-    assert uq._N == max_N
+    assert uq._state.N == max_N
 
     # Next batched write when buffer is already full
     extra_probs, extra_labels = _make_dummy_data(10)
@@ -32,7 +32,7 @@ def test_overflow_batched_write_past_full_buffer():
     assert "100" in msg
     assert "10" in msg
     # Check that state remains uncorrupted
-    assert uq._N == max_N
+    assert uq._state.N == max_N
 
 
 def test_overflow_batched_write_straddling_boundary():
@@ -41,7 +41,7 @@ def test_overflow_batched_write_straddling_boundary():
     uq = UncertaintyQuantifier(N=max_N)
     probs, labels = _make_dummy_data(80)
     uq.calibrate_from_proba(probs, labels, batched=True)
-    assert uq._N == 80
+    assert uq._state.N == 80
 
     # Incoming batch of 30 straddles 80 + 30 = 110 > 100
     straddle_probs, straddle_labels = _make_dummy_data(30)
@@ -53,7 +53,7 @@ def test_overflow_batched_write_straddling_boundary():
     assert "30" in msg
     assert "100" in msg
     # Verify state remains uncorrupted at N=80
-    assert uq._N == 80
+    assert uq._state.N == 80
 
 
 def test_overflow_non_batched_write_larger_than_max_n():
@@ -69,7 +69,7 @@ def test_overflow_non_batched_write_larger_than_max_n():
     assert "60" in msg
     assert "50" in msg
     # Verify state remains 0
-    assert uq._N == 0
+    assert uq._state.N == 0
 
 
 def test_negative_batched_exact_capacity_fill_succeeds():
@@ -79,12 +79,12 @@ def test_negative_batched_exact_capacity_fill_succeeds():
 
     p1, l1 = _make_dummy_data(60)
     uq.calibrate_from_proba(p1, l1, batched=True)
-    assert uq._N == 60
+    assert uq._state.N == 60
 
     p2, l2 = _make_dummy_data(40)
     uq.calibrate_from_proba(p2, l2, batched=True)
-    assert uq._N == max_N
+    assert uq._state.N == max_N
 
     # Setting alpha should succeed without error
     uq.alpha = 0.1
-    assert not np.isnan(uq._UncertaintyQuantifier__q_hat)
+    assert not np.isnan(uq._state.q_hat)

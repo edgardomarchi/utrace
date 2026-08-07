@@ -218,58 +218,30 @@ class UncertaintyQuantifier:
 
         logger.debug("UQ reset.")
 
-    # ── Forwarding accessors (temporary scaffolding for Step B.5) ────────────
-    # self._state (a _UQState NamedTuple) is the single source of truth for
-    # calibration state. These read-only properties keep _N, _sorted,
-    # _conformity_scores_ and the name-mangled __alpha/__q_hat resolving to
-    # the same values external readers (tests) already expect, so that
-    # extracting the state into an explicit PyTree requires zero test edits.
-    @property
-    def _N(self):
-        return self._state.N
-
-    @property
-    def _sorted(self):
-        return self._state.sorted
-
-    @property
-    def _conformity_scores_(self):
-        """Raw (possibly unsorted) backing buffer. Distinct from the public
-        conformity_scores_ property below, which lazy-sorts on read."""
-        return self._state.conformity_scores
-
-    @property
-    def __alpha(self):
-        return self._state.alpha
-
-    @property
-    def __q_hat(self):
-        return self._state.q_hat
-
     @property
     def alpha(self) -> np.float64:
         """The alpha value used for the conformal prediction stage."""
-        return self.__alpha
+        return self._state.alpha
 
     @alpha.setter
     def alpha(self, alpha: np.float64):
         """Sets the alpha value and calculates the q_hat level based on the current conformity scores."""
         # n = self.conformity_scores_.shape[0]
-        if self._N == 0:
+        if self._state.N == 0:
             raise ValueError("The model must be calibrated before setting alpha.")
 
-        q_level = np.divide(np.ceil((self._N + 1) * (1 - alpha)), self._N, dtype=np.float64)
+        q_level = np.divide(np.ceil((self._state.N + 1) * (1 - alpha)), self._state.N, dtype=np.float64)
         if q_level > 1.0:
-            logger.warning("'q_level' > 1.0, setting to 1.0 - Scores size: %d (< 1/alpha???) - alpha %f", self._N, alpha)
+            logger.warning("'q_level' > 1.0, setting to 1.0 - Scores size: %d (< 1/alpha???) - alpha %f", self._state.N, alpha)
             q_level = np.float64(1.0)
         new_alpha = np.float64(alpha)
-        logger.debug("'q_level' set to %f for alpha %f and N %d", q_level, new_alpha, self._N)
+        logger.debug("'q_level' set to %f for alpha %f and N %d", q_level, new_alpha, self._state.N)
         self._state = _ensure_sorted(self._state)
-        logger.debug("Conformity scores: %s", self._state.conformity_scores[:self._N])
+        logger.debug("Conformity scores: %s", self._state.conformity_scores[:self._state.N])
         # Cap preserved: _masked_quantile_higher clips silently, but we keep
         # explicit q_level <= 1.0 to match historical semantics and warning.
         new_q_hat = np.float64(
-            _masked_quantile_higher(self._state.conformity_scores, jnp.int32(self._N), q_level)
+            _masked_quantile_higher(self._state.conformity_scores, jnp.int32(self._state.N), q_level)
         )
         self._state = self._state._replace(alpha=new_alpha, q_hat=new_q_hat)
         logger.debug("'q_hat' set to %f for alpha %f", new_q_hat, new_alpha)
@@ -379,7 +351,7 @@ class UncertaintyQuantifier:
             Boolean prediction sets.
         """
         y_pred_proba = to_jax(y_pred_proba)
-        y_pred, y_sets = _predict_sets(y_pred_proba, self.__q_hat, score_fn=self.score_)
+        y_pred, y_sets = _predict_sets(y_pred_proba, self._state.q_hat, score_fn=self.score_)
         return np.array(y_pred), np.array(y_sets)
 
     def get_uncertainty_from_proba(self, y_pred_proba, y, max_iters: int = 30) -> tuple[np.float64, np.float64]:
@@ -483,7 +455,7 @@ class UncertaintyQuantifier:
 
         self._state = _ensure_sorted(self._state)
         cs_padded = self._state.conformity_scores
-        n_cs = jnp.int32(self._N)
+        n_cs = jnp.int32(self._state.N)
 
         alpha, U = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs, max_iters, self.score_)
         return np.float64(U), np.float64(alpha)

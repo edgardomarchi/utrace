@@ -33,20 +33,20 @@ def test_property_sorts_on_read():
     uq = UncertaintyQuantifier(N=200, classes=None)
     uq.calibrate_from_proba(_make_probas(100, 10, 1), _make_labels(100, 10, 1), batched=False)
 
-    assert uq._sorted is False, "_sorted must be False right after calibrate write"
+    assert uq._state.sorted is False, "_state.sorted must be False right after calibrate write"
     _ = uq.conformity_scores_
-    assert uq._sorted is True, "getter must set _sorted = True"
-    cs = np.asarray(uq.conformity_scores_[:uq._N])
+    assert uq._state.sorted is True, "getter must set _state.sorted = True"
+    cs = np.asarray(uq.conformity_scores_[:uq._state.N])
     assert np.all(np.diff(cs) >= 0), "valid prefix must be sorted ascending after getter"
 
     # Batched multi-call path
     uq2 = UncertaintyQuantifier(N=500, classes=None)
     for i in range(3):
         uq2.calibrate_from_proba(_make_probas(50, 10, i), _make_labels(50, 10, i), batched=True)
-        assert uq2._sorted is False, f"_sorted must remain False between batches (batch {i})"
+        assert uq2._state.sorted is False, f"_state.sorted must remain False between batches (batch {i})"
     _ = uq2.conformity_scores_
-    assert uq2._sorted is True
-    cs2 = np.asarray(uq2.conformity_scores_[:uq2._N])
+    assert uq2._state.sorted is True
+    cs2 = np.asarray(uq2.conformity_scores_[:uq2._state.N])
     assert np.all(np.diff(cs2) >= 0), "valid prefix must be sorted ascending after getter (batched)"
 
 
@@ -58,9 +58,9 @@ def test_deferred_equals_eager_sort():
     for s in range(N_BATCHES):
         uq.calibrate_from_proba(_make_probas(BATCH_N, K, s), _make_labels(BATCH_N, K, s), batched=True)
 
-    N = uq._N
+    N = uq._state.N
     # Snapshot the raw (unsorted) backing store before the getter touches it.
-    raw_before_sort = np.asarray(uq._conformity_scores_[:N]).copy()
+    raw_before_sort = np.asarray(uq._state.conformity_scores[:N]).copy()
 
     cs = np.asarray(uq.conformity_scores_)  # triggers lazy sort
 
@@ -75,14 +75,14 @@ def test_reset_flag():
     """After reset(), _sorted is True; a conformity_scores_ read does not error and leaves _N=0."""
     uq = UncertaintyQuantifier(N=100, classes=None)
     uq.calibrate_from_proba(_make_probas(50, 10, 5), _make_labels(50, 10, 5), batched=False)
-    assert uq._sorted is False  # sanity: dirty after calibrate
+    assert uq._state.sorted is False  # sanity: dirty after calibrate
 
     uq.reset()
-    assert uq._sorted is True, "reset() must initialise _sorted = True"
-    assert uq._N == 0
+    assert uq._state.sorted is True, "reset() must initialise _state.sorted = True"
+    assert uq._state.N == 0
 
     buf = uq.conformity_scores_  # must not error on empty buffer
-    assert uq._N == 0, "reading the property on empty buffer must not change _N"
+    assert uq._state.N == 0, "reading the property on empty buffer must not change _state.N"
     assert jnp.all(jnp.isinf(buf)), "empty buffer must be all +inf"
 
 
@@ -92,12 +92,12 @@ def test_no_sort_between_batches():
     N_BATCHES = 4
     for i in range(N_BATCHES):
         uq.calibrate_from_proba(_make_probas(40, 10, i), _make_labels(40, 10, i), batched=True)
-        assert uq._sorted is False, f"no sort should occur during calibration (batch {i})"
+        assert uq._state.sorted is False, f"no sort should occur during calibration (batch {i})"
 
     # First read triggers the lazy sort
     _ = uq.conformity_scores_
-    assert uq._sorted is True, "_sorted must flip to True on first post-calibration read"
+    assert uq._state.sorted is True, "_state.sorted must flip to True on first post-calibration read"
 
     # Subsequent reads do not re-sort (flag stays clean)
     _ = uq.conformity_scores_
-    assert uq._sorted is True, "_sorted must remain True on subsequent reads (no spurious re-sort)"
+    assert uq._state.sorted is True, "_state.sorted must remain True on subsequent reads (no spurious re-sort)"

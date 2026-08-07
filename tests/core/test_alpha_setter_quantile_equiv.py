@@ -44,7 +44,7 @@ def _build_calibrated_uq(N: int, n_classes: int = 10, seed: int = 42,
         probas = _make_probas(N, n_classes, seed)
         y = _make_labels(N, n_classes, seed)
     uq.calibrate_from_proba(probas, y, batched=False)
-    assert uq._N == N, f"Expected _N={N}, got {uq._N}"
+    assert uq._state.N == N, f"Expected _state.N={N}, got {uq._state.N}"
     return uq
 
 
