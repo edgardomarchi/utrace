@@ -12,3 +12,9 @@ def test_core_does_not_import_torch():
     )
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_x64_is_enabled():
+    import utrace  # noqa: F401
+    import jax.numpy as jnp
+    assert jnp.zeros(1, dtype=jnp.float64).dtype == jnp.float64
