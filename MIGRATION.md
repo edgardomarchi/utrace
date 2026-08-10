@@ -12,9 +12,10 @@ by those reports and cite them by filename; their absence from this repo is by d
 ## Refactor goal
 
 Make the `UncertaintyQuantifier` core independent of the tensor backend (PyTorch, JAX,
-etc.). Core methods operate on precomputed probability arrays (via `to_jax`, zero-copy
+etc.). Core methods operate on precomputed softmax arrays (via `to_jax`, zero-copy
 through DLPack), not on an embedded model. The model is removed from the class: the user
-computes probabilities externally and passes them to the `*_from_proba` API.
+computes softmax output externally and passes it to the `calibrate`/`predict`/`get_uncertainty`
+API (renamed from `*_from_proba` by the rename batch; see "Rename batch" below).
 
 ## Phase status
 
@@ -105,8 +106,9 @@ computes probabilities externally and passes them to the `*_from_proba` API.
         package works in an environment where torch is not installed at all. That still needs
         a clean, torch-free environment to confirm, and remains open.
       - `flatten_batch` itself was NOT removed and was never at risk: it survives with its
-        callers intact in `tests/integration/torch/test_golden_mnist_new_api.py` and in
-        several `scripts/`. Only the core's own module-level import of it
+        callers intact in `tests/integration/torch/test_golden_mnist.py` (renamed from
+        `test_golden_mnist_new_api.py` by the rename batch's first commit; see "Rename batch"
+        below) and in several `scripts/`. Only the core's own module-level import of it
         (`uncertaintyQuantifier.py`) was removed in step 5.
       - `regenerate_baselines.py`'s `--api` flag now has a single remaining choice (`'new'`).
         It was deliberately left in place with `choices=['new']` rather than collapsed to no
@@ -115,12 +117,10 @@ computes probabilities externally and passes them to the `*_from_proba` API.
 
       **Remaining for Phase 6:** steps 7 (labels host-copy) and 8 (`flatten_batch` ->
       `flatten_to_pixels` unification, real work per the diagnostic under step 8 above — not
-      a swap), plus the step 3c packaging block (see below). Separately, the `_new_api`
-      suffixes and `NEW_API_BASELINE_DIR` naming in `tests/integration/torch/` are now
-      redundant — there is no old API left to contrast against — and are a rename candidate.
-      That rename should NOT be done while collected test IDs are still being used as an
-      acceptance criterion for other Phase 6 steps (a rename changes every affected test ID),
-      per the pattern used throughout steps 4-6 above.
+      a swap), plus the step 3c packaging block (see below). The `_new_api` suffixes and
+      `NEW_API_BASELINE_DIR` naming, once flagged here as redundant and a rename candidate, were
+      renamed by the rename batch's first commit (`NEW_API_BASELINE_DIR` -> `BASELINE_DIR`,
+      `test_golden_mnist_new_api.py` -> `test_golden_mnist.py`); see "Rename batch" below.
 
 ## Architecture / design direction (not started — Phase 6 scope unchanged)
 
@@ -164,7 +164,7 @@ cycle, no major version bump.
 
 [INTENT] The ONE thing that changes for users is the meaning of `N` under class-conditional
 calibration. Today the class filter compacts before writing (`_calibrate_impl`'s
-`y = y[mask]; y_pred_proba = y_pred_proba[mask]`, see Step 0(f) call sites), so `N=1000` with
+`y = y[mask]; smx = smx[mask]`, see Step 0(f) call sites), so `N=1000` with
 `classes=[3]` means 1000 scores of class 3. Under a constant-size-mask design the buffer
 receives all B entries with invalid ones marked, so `N=1000` becomes "1000 samples seen, of
 which some fraction is mine." The same `N` that suffices today would overflow sooner — via the
@@ -250,11 +250,11 @@ rely on):
 
 ### Step ladder
 
-[ESTABLISHED] A, B1, B.5 and C are DONE. B2 was removed as a standalone step after a measured
-negative result (see "Measured negative result: jnp-native padding (B2, reverted)" above); its
-content was absorbed into D. D and E remain, alongside the step 3c packaging block (see "Phase
-6 step 3c — packaging cleanup [BLOCKED]" below) and the rename batch (see "Forwarding
-accessors: temporary scaffolding" below).
+[ESTABLISHED] A, B1, B.5, C, and the rename batch are DONE (see "Rename batch" below). B2 was
+removed as a standalone step after a measured negative result (see "Measured negative result:
+jnp-native padding (B2, reverted)" above); its content was absorbed into D. D and E remain,
+alongside the step 3c packaging block (see "Phase 6 step 3c — packaging cleanup [BLOCKED]"
+below).
 
 - [ESTABLISHED] **A. The boundary.** DONE. `to_jax(y)` once on entry, no numpy in the core,
   `jnp.isin` for the class mask, eager boolean indexing left as-is. Plus tests for the
@@ -296,7 +296,7 @@ accessors: temporary scaffolding" below).
   they are coupled (see "User-visible consequence" above). Now also carries what was B2: the
   `_get_uncertainty_jit_impl` padding, the class mask leftover in `_get_uncertainty_jit_impl`
   (its own `np.asarray(self.classes)`), and the `np.asarray(to_jax(...))` on entry to
-  `get_uncertainty_from_proba` — because all of them must land inside the jit boundary or not
+  `get_uncertainty` — because all of them must land inside the jit boundary or not
   at all.
 - [INTENT] **E. Device coherence in the script layer.** Not started. Make probabilities and
   labels reach the core committed to the same device (see "Step C: device-commitment risk"
@@ -311,6 +311,122 @@ accessors: temporary scaffolding" below).
     passing test suite would demonstrate nothing.
   Sequenced after D deliberately: D restructures the core with jit and vmap, and the wrapper
   contract should not move at the same time.
+
+## Rename batch
+
+[ESTABLISHED] Five commits, landed in sequence: dropping the `_new_api` suffixes from the
+golden test (`2574c41`); removing the forwarding accessors left by the B.5 state extraction
+(`cfba206`); dropping `proba` from the library's public API (`70fa11e`); dropping `proba` from
+the callers — scripts and tests (`b23cef2`); and removing two pieces of dead code the batch's
+diagnostics surfaced (`372defd`). The rename mappings themselves live in the commit messages and
+in `.reports/2026-08-06_rename2_forwarding_accessors.md`, `2026-08-07_rename3_drop_proba.md`,
+`2026-08-07_rename4_caller_locals.md`, and `2026-08-07_rename5_dead_code.md`; this section is
+the index, not a duplicate.
+
+**Why the `proba` rename happened.** Not tidiness. The paper this package accompanies argues
+that treating a model's scaled logits as an approximation to a probability distribution is a
+conceptual error. A public API whose method names said `proba` — `calibrate_from_proba`,
+`predict_from_proba`, `get_uncertainty_from_proba` — contradicted the package's own central
+claim, at exactly the place (the API surface) where a reader who has just followed that argument
+would look next. That is the reason for the rename. The fact that the `_from_proba` suffix had
+also stopped distinguishing anything — the model-taking variant it originally contrasted with
+was removed in Phase 6 steps 5-6 — is secondary; renaming it because it was redundant, alone,
+would not have been worth a five-commit batch.
+
+**Naming convention now in force.** Method names are task-agnostic — `calibrate`, `predict`,
+`get_uncertainty` — so they generalise to a future regression class without another rename; the
+task-specific meaning (that the input is a classifier's softmax output today) lives in the
+parameter name, not the method name. At the parameter boundary: `softmax` where the name is read
+as documentation (public method signatures, e.g. `calibrate(self, softmax, y, ...)`); `smx` for
+short-lived internal locals in dense expressions, extending the convention `scores/jax_impl.py`
+already used (`lac(smx)`, `lac_cal(y, smx)`). Prose describing the argument says "softmax
+output," or "scaled logits" where a generic term is wanted — not "probabilities."
+
+**`calibrate`, `predict`, and `get_uncertainty` are reused names.** These three names were
+removed from `UncertaintyQuantifier` in Phase 6 — bare `get_uncertainty` in step 2 (dead/broken:
+it called `self._predict_sets`, never defined as a method), `calibrate` and `predict` in steps
+5-6 (legitimate legacy deprecation, alongside `get_uncertainty_jit`) — and the rename batch has
+now reintroduced `calibrate`, `predict`, and `get_uncertainty` as the current public API, with
+unrelated implementations that expect softmax-output input rather than a raw model/raw data.
+`get_uncertainty_jit` was NOT reused; the new binary-search method is named `get_uncertainty`,
+a distinct string. Consequence, accepted at version 0.0.1: old code written against the
+pre-Phase-6 legacy API and calling `uq.calibrate(X, y)` or `uq.predict(X)` with raw inputs no
+longer raises `AttributeError` — it now runs, silently, against the wrong implementation, and
+passes raw data where softmax output is expected. This is a materially different failure mode
+than "does not run," and any part of this document written before the rename batch that claims
+`calibrate`/`predict`/`get_uncertainty` are "fully absent" from the current class is describing
+the pre-rename-batch state, not the current one — see the corrections in "Legacy method state"
+and "Example script inventory" below.
+
+**`Pytorch_wrapper.predict_proba` was deliberately NOT renamed.** It is a scikit-learn
+convention (`predict_proba` as a model-wrapper method name), lives outside the core in
+`utils/pytorch/model_wrapper.py`, and was the single largest remaining source of `proba` hits
+after the library and caller renames — left untouched on purpose, not missed.
+
+### Criterion change: renames and collected test IDs
+
+[ESTABLISHED] Every Phase 6 removal step (steps 4-6 above) was held to a zero-test-edit
+property: the collected test-ID diff before/after had to be empty. The forwarding-accessor
+commit retired that property deliberately — its declared purpose was exactly to edit tests, the
+one case where the rule and the task are incompatible — not by accident or erosion. What
+replaced it, since a rename necessarily moves the test IDs that name the renamed thing:
+
+- Declare the old→new mapping BEFORE editing (both the derived mapping and, where a diagnostic
+  had proposed one already, an independent re-derivation reported before touching anything).
+- After editing, walk the collected-ID diff line by line against the declared mapping: every
+  disappeared ID must be explained by an entry in the mapping, every appeared ID likewise, and
+  the COUNT of disappeared IDs must equal the count of appeared ones. An unexplained change, or
+  an unequal count, is a stop condition, not something to reconcile after the fact.
+- Where a commit renames bindings but no test file or test name — the forwarding-accessor commit
+  (test bodies changed, but no test was added, removed, or renamed) and the dead-code commit (no
+  test touched at all) — the empty-diff property still applies, and both in fact produced
+  byte-identical `--collect-only` output before and after.
+- For `scripts/`, which no test covers, a rename that misses a use site fails silently at
+  runtime, not at collection time — nothing about a passing test suite would catch it. The
+  batch's answer: execute at least two scripts per script-touching commit (one exercising every
+  renamed method, one as a cheap sanity check) with output redirected outside the repo, import
+  every other touched script (catches `ImportError`/syntax errors, not runtime misses), and diff
+  a `pyflakes` run against the previous commit's saved output — an `undefined name` finding is
+  exactly the signature a missed rename site leaves, and nothing else in that workflow would
+  surface it.
+
+### Accidental public surface
+
+[ESTABLISHED] `src/utrace/scores/__init__.py` does `from .jax_impl import *`, and
+`scores/jax_impl.py` defines no `__all__`, so every public (non-underscore) module-level name
+bound in `jax_impl.py` is re-exported through `utrace.scores`. Before the dead-code commit this
+included `jax_print` (`utrace.scores.jax_print`, reachable with zero consumers anywhere in the
+repo); it still includes `jnp` and `jit` — `utrace.scores.jnp` and `utrace.scores.jit` are
+reachable today, without anyone having decided that as an API surface. Verified by execution
+during the batch (`from utrace import scores; 'jax_print' in dir(scores)` returned `True` before
+the dead-code commit), not inferred from reading the wildcard import.
+
+[INTENT] An explicit `__all__` on `scores/jax_impl.py` (or replacing the wildcard import in
+`scores/__init__.py` with named imports) would close this. Not done — added to the Backlog
+below.
+
+### Discrepancies found against earlier counts
+
+[ESTABLISHED] Two of the batch's execution passes disagreed with the rename diagnostic's counts
+and were right to report the disagreement rather than silently reconcile it:
+
+- The diagnostic counted 75 occurrences of the three method names (`calibrate_from_proba`,
+  `predict_from_proba`, `get_uncertainty_from_proba`) across 18 files. The execution pass
+  independently counted 84 across the same 18 files. Ten of the 84 were docstring/comment prose
+  mentioning a method name rather than a `def`/call site; subtracting those gives 74 — one short
+  of the diagnostic's 75, with no further split found to close that last occurrence. Scope was
+  unaffected either way — all 84 were individually enumerated and either updated or explicitly
+  deferred with a reason, so nothing depended on which count was authoritative.
+- The diagnostic's signature count of 7 (functions/methods taking the old `y_pred_proba`
+  parameter) was numerically correct but its composition was not fully verified until execution:
+  it missed `_search_uncertainty`, whose `y_pred_proba` parameter sits on its own line inside a
+  multi-line `def`, matching no single-line `grep 'def .*y_pred_proba'` pattern. It was found by
+  reading the function, not by any grep tried.
+
+Lesson: a grep-derived count is a lower bound, not an exact count, and multi-line signatures —
+one parameter per line, common in this codebase's jit-decorated functions — are exactly where a
+single-line pattern under-reports. Re-derive counts independently before trusting a prior
+diagnostic's number, and report disagreement rather than silently adopting either figure.
 
 ### Step C: the `# COMPAT` marker post-mortem
 
@@ -433,23 +549,30 @@ rejects a torch CUDA tensor, whether the jnp padding pays inside a jit trace, an
 device-commitment risk from step C — require an RTX 3070 on a third machine. This is a
 constraint on where, not only on when.
 
-### Forwarding accessors: temporary scaffolding
+### Forwarding accessors: temporary scaffolding (removed)
 
-[INTENT] The forwarding properties for `_N`, `_sorted`, `_conformity_scores_` and the
-name-mangled `__alpha`/`__q_hat` exist so that roughly 45 external read sites across the test
-suite keep resolving unchanged, which is what made a ~200-line restructuring (the module-level
-`_UQState` and `_ensure_sorted`, plus the rewritten `_calibrate_impl`, `alpha` setter and
-`_get_uncertainty_jit_impl`) verifiable by a zero-test-edit criterion rather than merely
-plausible. They are temporary: nothing about the design requires `_N` etc. to keep resolving
-under those exact names forever, only that they did not need to change AT THIS STEP.
+[ESTABLISHED] The forwarding properties for `_N`, `_sorted`, `_conformity_scores_` and the
+name-mangled `__alpha`/`__q_hat` existed so that roughly 45 external read sites across the test
+suite kept resolving unchanged, which is what made the ~200-line B.5 restructuring (the
+module-level `_UQState` and `_ensure_sorted`, plus the rewritten `_calibrate_impl`, `alpha`
+setter and `_get_uncertainty_jit_impl`) verifiable by a zero-test-edit criterion rather than
+merely plausible. They were always temporary — nothing about the design required `_N` etc. to
+keep resolving under those exact names forever, only that they did not need to change AT THAT
+STEP — and were removed by the rename batch's second commit (`cfba206`; see "Rename batch"
+above): all five properties are gone from `uncertaintyQuantifier.py`, and every read that used
+to go through them now reads `self._state.<field>` directly (`_N` -> `_state.N`, `_sorted` ->
+`_state.sorted`, `_conformity_scores_` -> `_state.conformity_scores`, `__q_hat` ->
+`_state.q_hat`, `__alpha` -> `_state.alpha`).
 
-Removing them is a candidate for the rename batch, alongside the `_new_api` suffixes and
-`NEW_API_BASELINE_DIR` naming already flagged as a rename candidate (see Phase 6, "Remaining for
-Phase 6" above), and the consolidation of the two import-property tests
+The `_new_api` suffixes and `NEW_API_BASELINE_DIR` naming, flagged alongside these as rename
+candidates, were also renamed by the batch (see "Rename batch" above). The third item flagged
+alongside them — consolidating the two import-property tests
 (`tests/core/test_x64_is_enabled.py` and `tests/core/test_import_properties.py`, currently
-separate files grouped by subject — see "Test conventions" below). All three change collected
-test IDs and so, per the pattern already established for the `_new_api` rename, must wait until
-collected test IDs stop being used as an acceptance criterion for other steps.
+separate files grouped by subject — see "Test conventions" below) — was NOT done by the rename
+batch; the two files remain separate. It stays open, no longer blocked on the collected-test-ID
+constraint that held back the other two (that constraint applied while Phase 6 steps were still
+using an empty-diff acceptance criterion; the rename batch's own criterion, recorded above,
+tolerates a declared, walked ID diff, so a future consolidation could use the same pattern).
 
 ### What the state PyTree revealed for step D
 
@@ -482,7 +605,7 @@ precision to `np.float64`; the float64 guarantee comes from `jax_enable_x64` ups
 the return type.
 
 [INTENT] Arrays are returned on device, with a conversion helper for callers who want them
-elsewhere. `predict_from_proba` returns arrays and currently returns numpy; changing it is a
+elsewhere. `predict` returns arrays and currently returns numpy; changing it is a
 real API decision, not yet taken. Open questions to record: the helper's signature, whether it
 lives in `utils.tensors` next to `to_jax`, and whether it supports only torch and numpy or
 anything with `__dlpack__`.
@@ -502,7 +625,7 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   device→host→device versus device→device, which is a DIFFERENT ratio and has not been
   measured on any GPU backend. Do not read a CPU ~175x figure as applying to GPU hardware.
 - [UNVERIFIED] Whether `np.asarray()` on a torch CUDA tensor raises, and therefore whether the
-  current `calibrate_from_proba` rejects GPU-resident labels outright rather than merely
+  current `calibrate` rejects GPU-resident labels outright rather than merely
   copying them inefficiently. This is the strongest single argument for step A if true, and it
   is an inference from known torch behaviour that nobody has run. No CUDA device was available
   in this (or any prior) diagnostic environment.
@@ -513,7 +636,7 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
 - [UNVERIFIED] Whether jitting `_calibrate_impl` pays at all, independent of vmap. `lac_cal` is
   already jitted and the rest of the method is buffer bookkeeping.
 - [UNVERIFIED] Whether returning jnp scalars instead of numpy scalars from
-  `get_uncertainty_from_proba` breaks any script. `float()`, `np.isnan()` and pandas all accept
+  `get_uncertainty` breaks any script. `float()`, `np.isnan()` and pandas all accept
   jnp scalars, so this is expected to be soft, but it must be checked against the scripts
   rather than assumed.
 
@@ -524,6 +647,7 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
 - Golden test with a trained model (current ones use an untrained model: reproducible but in a degenerate regime, unstable alphas).
 - Packaging cleanup (post-Phase 6): see "Phase 6 step 3c — packaging cleanup [BLOCKED]" below. Note that torch is already absent from `[project].dependencies` - it only appears in the optional-dependency groups. What used to keep torch mandatory was that the core imported `flatten_batch` at module level; Phase 6 step 5 removed that import, and `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards the property.
 - Performance benchmark per phase.
+- Accidental public surface: `scores/__init__.py`'s `from .jax_impl import *` re-exports every public module-level name in `jax_impl.py` (no `__all__` there), so `jnp` and `jit` are reachable as `utrace.scores.jnp` / `utrace.scores.jit` without that being a decided API surface. Discovered when removing the unused `jax_print` import — see "Rename batch" > "Accidental public surface" above. Add an explicit `__all__` to `jax_impl.py` (or switch `scores/__init__.py` to named imports) to close it. Not done.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
 - [DONE] `_max_N` overflow guard (Phase 6 step 1): `_calibrate_impl` now checks capacity before writing, in both branches, raising `ValueError` instead of allowing an out-of-bounds write. The pre-fix diagnostic found the failure was not one mode but three distinct behaviours, empirically reproduced:
   1. Batched write whose start index (`_N`) is already `>= _max_N`: JAX's `.at[].set()` silently dropped the update; `_N` still incremented regardless; neither reading `conformity_scores_` afterward nor setting `alpha` raised anything — the only fully silent failure of the three, and the one a caller relying on repeated `batched=True` streaming calibration would hit first.
@@ -531,7 +655,7 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   3. Non-batched write with `num_scores > _max_N` in a single call: same `ValueError` as (2).
   Both branches of `_calibrate_impl` now check `_N + num_scores <= _max_N` (batched) / `num_scores <= _max_N` (non-batched) before any state mutation, so all three cases now raise consistently instead of only two of three doing so. Cross-references the manual buffer-sizing item above — a design that scales sizing automatically would still need this guard as a backstop.
 
-- force_non_empty_sets is silently ignored in the new prediction path. The jit _predict_sets does not implement it, and predict_from_proba accepts the parameter but does not pass it through. The legacy _predict_sets (initial commit) honored it (y_sets[arange, y_pred] = True). This is behavior lost in the jit migration. Harmless for callers passing False, but a latent bug for any script relying on force_non_empty_sets=True.
+- force_non_empty_sets is silently ignored in the new prediction path. The jit _predict_sets does not implement it, and predict (renamed from predict_from_proba by the rename batch) accepts the parameter but does not pass it through. The legacy _predict_sets (initial commit) honored it (y_sets[arange, y_pred] = True). This is behavior lost in the jit migration. Harmless for callers passing False, but a latent bug for any script relying on force_non_empty_sets=True.
 
 - [RESOLVED] The global batched branch of _calibrate_impl concatenated conformity scores into the buffer without re-sorting (.at[_N:_N+num].set with no np.sort), while the non-batched and per-class batched branches do sort. _masked_quantile_higher assumes an ascending-sorted buffer, so the tuning quantile (q_hat) became non-monotonic in alpha when calibrating global+batched, breaking the binary search for U (it failed to converge; U  collapsed to 0 or oscillated). Fix: sort the concatenation, matching the per-class branch.
   - The _masked_quantile_higher unit test did not catch this because it is fed an already-sorted array: the bug was in the integration (calibration violating the sort precondition), not in the function itself.
@@ -559,11 +683,11 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 
 - [RESOLVED]/[DONE] Performance: _calibrate_impl sorts the full buffer on every batch (O(N log N) per batch). For large datasets (ACDC) it would be better to sort once when calibration is finalized, not per batch. Implemented as defer-sort (commit 4852c3b): new scores are written into the fixed buffer at `_conformity_scores_[_N:_N+num_scores]` without per-batch sorting; a single `jnp.sort` runs lazily on first read of `conformity_scores_`, gated by the `_sorted` flag. MEASURED on RTX 3070 (CPU-unmeasured): streaming calibration ~357x faster than the prior sort-per-batch design at ~2M-score ACDC scale (7.2s → 20ms).
 
-- [Phase 6] Zero-copy in tuning: `get_uncertainty_from_proba`'s body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate_from_proba` / `predict_from_proba` keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:435-436` as of HEAD `53b1e8d`, but re-verify by symbol/grep rather than trusting that number after further commits — it has now moved twice, from `417-418` as of `ebc5ddb`, to `355-356` as of `a0ea8f6`, to `435-436` as of `53b1e8d` (the B.5 state-extraction commit added ~150 lines earlier in the file), each time purely from unrelated line-count changes, never from this call site itself being touched. Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark above measured the calibration path, not the tuning/uncertainty path).
+- [Phase 6] Zero-copy in tuning: `get_uncertainty`'s (renamed from `get_uncertainty_from_proba`) body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate` / `predict` (renamed from `calibrate_from_proba` / `predict_from_proba`) keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:435-436` as of HEAD `53b1e8d`, but re-verify by symbol/grep rather than trusting that number after further commits — it has now moved twice, from `417-418` as of `ebc5ddb`, to `355-356` as of `a0ea8f6`, to `435-436` as of `53b1e8d` (the B.5 state-extraction commit added ~150 lines earlier in the file), each time purely from unrelated line-count changes, never from this call site itself being touched. Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark above measured the calibration path, not the tuning/uncertainty path).
 
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
-- [RESOLVED, step C] Labels passed to the *_from_proba API used to go through .numpy() in the canonical recipe and in all example scripts (e.g. flatten_batch(y).ravel().numpy().astype(int)), violating the "do not call .cpu().numpy() on values feeding the core" rule and, after the to_jax fix, forcing a host->device hop. Fixed across three commits (32a1309, 6a630e5, 0caad12): labels now stay backend tensors into calibrate_from_proba / get_uncertainty_from_proba / predict_from_proba, taking the DLPack zero-copy path. The stale claim in this entry — "the six call sites are now marked `# COMPAT`" — undercounted (nine, not six; see "Step C: the `# COMPAT` marker post-mortem" above) and is no longer true regardless: grepping `# COMPAT` in scripts/ now returns nothing. Downstream label indexing (coverage counts, masks, get_coverage) was verified against tensor labels by the commits' own equivalence runs, not by the test suite, which does not cover the scripts.
+- [RESOLVED, step C] Labels passed to what was then the *_from_proba API used to go through .numpy() in the canonical recipe and in all example scripts (e.g. flatten_batch(y).ravel().numpy().astype(int)), violating the "do not call .cpu().numpy() on values feeding the core" rule and, after the to_jax fix, forcing a host->device hop. Fixed across three commits (32a1309, 6a630e5, 0caad12): labels now stay backend tensors into calibrate / get_uncertainty / predict (renamed from calibrate_from_proba / get_uncertainty_from_proba / predict_from_proba by the rename batch), taking the DLPack zero-copy path. The stale claim in this entry — "the six call sites are now marked `# COMPAT`" — undercounted (nine, not six; see "Step C: the `# COMPAT` marker post-mortem" above) and is no longer true regardless: grepping `# COMPAT` in scripts/ now returns nothing. Downstream label indexing (coverage counts, masks, get_coverage) was verified against tensor labels by the commits' own equivalence runs, not by the test suite, which does not cover the scripts.
 
 - to_jax DLPack unaligned-copy: even for genuine tensors the DLPack path can emit "buffer is not aligned ... Creating a copy", so zero-copy is not guaranteed. Decide whether to make such copies VISIBLE (warn/error) rather than silent. Connects to the existing to_jax device-handling backlog item. Perf/observability task.
 
@@ -573,8 +697,9 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 
 ### GPU / scalability (example scripts)
 
-- [DONE] precompute_proba helper consolidated. scripts/_common.py now provides precompute_proba(loader, classifier) returning raw torch tensors (torch.cat of probs and labels, no conversion) so probabilities take the zero-copy DLPack path into to_jax. Adopted in the six MNIST-like scripts (MNIST_example, MNIST_class_conditional, MNIST_test_coverage, MNIST_test_convergence, convergence_analysis, data_size_analysis). ACDC_example (pixel-scale segmentation) and setsize_analysis (non-batched calibration use) intentionally keep their own logic. Faithful dedup: in the five scripts whose labels were numpy, a temporary compatibility line `flatten_batch(y).ravel().numpy().astype(int)` tagged `# COMPAT` preserves current behavior; convergence_analysis already consumed tensor labels and has no COMPAT line.
-- Forward-pass batch vs jit padding are SEPARATE knobs; do not tie them. The DataLoader batch size only chunks the model forward (no effect on results — the tune set is re-concatenated and passed whole to get_uncertainty_from_proba). max_batch_size is the jit padding and must be >= the materialized tune set. On an 8GB GPU the OOMs were ALWAYS in the model forward (predict_proba), never in the utrace core/tuning. Scripts pin max_batch_size to a hardcoded constant (e.g. 12000) tied to the 0.2 tune split of 60k MNIST; prefer deriving it (ceil(tune_split * len(dataset)) + margin) instead of a magic number.
+- [DONE] precompute_proba helper consolidated (since renamed to precompute_softmax by the rename batch; still duplicated between scripts/_common.py and scripts/setsize_analysis.py — see "Rename batch" above and the deduplication item below). scripts/_common.py provides precompute_softmax(loader, classifier) returning raw torch tensors (torch.cat of softmax output and labels, no conversion) so the softmax output takes the zero-copy DLPack path into to_jax. Adopted in the six MNIST-like scripts (MNIST_example, MNIST_class_conditional, MNIST_test_coverage, MNIST_test_convergence, convergence_analysis, data_size_analysis). ACDC_example (pixel-scale segmentation) and setsize_analysis (non-batched calibration use) intentionally keep their own logic — setsize_analysis defines its own precompute_softmax rather than importing the shared one. Faithful dedup: in the five scripts whose labels were numpy, a temporary compatibility line `flatten_batch(y).ravel().numpy().astype(int)` tagged `# COMPAT` preserves current behavior; convergence_analysis already consumed tensor labels and has no COMPAT line.
+- Forward-pass batch vs jit padding are SEPARATE knobs; do not tie them. The DataLoader batch size only chunks the model forward (no effect on results — the tune set is re-concatenated and passed whole to get_uncertainty). max_batch_size is the jit padding and must be >= the materialized tune set. On an 8GB GPU the OOMs were ALWAYS in the model forward (predict_proba), never in the utrace core/tuning. Scripts pin max_batch_size to a hardcoded constant (e.g. 12000) tied to the 0.2 tune split of 60k MNIST; prefer deriving it (ceil(tune_split * len(dataset)) + margin) instead of a magic number.
+- Whether to deduplicate precompute_softmax, still independently defined in both scripts/_common.py and scripts/setsize_analysis.py (functionally identical since step C). The rename batch's caller-locals commit renamed both definitions independently and deliberately did NOT deduplicate them — that remains a separate, undecided decision.
 - [DONE for now] DataLoader num_workers set to 0 in MNIST_class_conditional_example (the only script that used workers; ACDC already used 0, the rest default to 0). Reason: num_workers>0 forks, and forking after JAX has initialized its threads can deadlock (generic fork-with-multithreading hazard, not a JAX bug). Resolved at the root by disabling workers. Deferred alternatives if workers are wanted back (e.g. if data loading becomes the bottleneck rather than the GPU forward pass): (a) spawn start method — robust but pays interpreter startup cost, requires picklable transforms (already satisfied: lambda->AddGaussianNoise) and the __main__ guard (already present); (b) lazy JAX initialization so all worker forks happen before XLA threads start — fragile/non-deterministic, NOT recommended. Decide by measuring workers=4 vs 0 wall-time on GPU first (the per-class script is likely GPU-forward-bound, so workers may add little). A permanent user-facing note belongs in docs/ (future), since this affects anyone using torch DataLoaders alongside the package — MIGRATION.md is process log only.
 - 8GB VRAM is a hard constraint, not a bug: the per-class script (10 CPs) runs but only just fits with small forward batches. Not something to "fix"; scripts should scale by config.
 
@@ -603,7 +728,9 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 
 ## Canonical migration recipe (new API)
 
-Apply to each script. The canonical alpha-search method is the **binary** one (`get_uncertainty_from_proba`), which accepts `max_iters` to adjust precision.
+Apply to each script. The canonical alpha-search method is the **binary** one (`get_uncertainty`,
+renamed from `get_uncertainty_from_proba` by the rename batch — see "Rename batch" above), which
+accepts `max_iters` to adjust precision.
 
 1. **Construction**: `UncertaintyQuantifier(N=..., classes=[C], max_batch_size=...)`.
    There is no `model` parameter to pass — it was removed in Phase 6 step 6;
@@ -616,30 +743,30 @@ Apply to each script. The canonical alpha-search method is the **binary** one (`
    class inside, accumulating with `batched=True`:
 ```python
    for X_cal, y_cal in calDataLoader:
-       p_cal = model.predict_proba(X_cal)        # tensor; to_jax handles DLPack conversion
+       smx_cal = model.predict_proba(X_cal)      # tensor; to_jax handles DLPack conversion
        y_cal_arr = flatten_batch(y_cal).ravel()  # flatten batch/spatial dims (labels)
        for C in classes:
-           uqs[C].calibrate_from_proba(p_cal, y_cal_arr, batched=True)
+           uqs[C].calibrate(smx_cal, y_cal_arr, batched=True)
 ```
    This keeps only one batch of logits in memory at a time (important when "samples" are pixels, e.g. segmentation).
 
 3. **Tuning (NOT batched-and-averaged)**: materialize the tune set (it is small by CP design) and make ONE call per class over the full set:
 ```python
-   tune_probs, tune_y = precompute_logits(tuneDataLoader, model)
-   U, alpha = uqs[C].get_uncertainty_from_proba(tune_probs, tune_y, max_iters=30)
+   tune_smx, tune_y = precompute_logits(tuneDataLoader, model)
+   U, alpha = uqs[C].get_uncertainty(tune_smx, tune_y, max_iters=30)
 ```
    FORBIDDEN: `alpha = np.nanmean([alpha_per_batch...])`. This is statistically incorrect:
    alpha is a non-linear function of the data. Averaging over L distinct splits (full experimental repetition) IS valid and is a different thing.
 
-4. **Apply alpha (explicit, non-mutating)**: `get_uncertainty_from_proba` is pure and
-   does not touch state. The caller sets:
+4. **Apply alpha (explicit, non-mutating)**: `get_uncertainty` does not mutate `self.alpha` or
+   `self.q_hat`; the caller sets:
 ```python
    uqs[C].alpha = alpha
 ```
 
 5. **Test**: predict and compute coverage as a GLOBAL proportion, not an average of per-batch proportions:
 ```python
-   y_p, y_s = uqs[C].predict_from_proba(test_probs)
+   y_p, y_s = uqs[C].predict(test_smx)
    # coverage over the full set for class C
 ```
 
@@ -647,9 +774,14 @@ Apply to each script. The canonical alpha-search method is the **binary** one (`
 
 ### Passing tensors to the core
 
-Pass backend tensors directly to the `*_from_proba` methods. `to_jax()` (in `utils/tensors.py`) handles conversion via DLPack: a CPU PyTorch tensor is consumed zero-copy. Do NOT call `.cpu().numpy()` manually on values that feed `calibrate_from_proba` / `predict_from_proba` / `get_uncertainty_from_proba` — that conversion is the library's job, and writing it by hand defeats the zero-copy path and clutters the example.
+Pass backend tensors directly to the `calibrate`/`predict`/`get_uncertainty` methods (renamed
+from `calibrate_from_proba`/`predict_from_proba`/`get_uncertainty_from_proba` by the rename
+batch). `to_jax()` (in `utils/tensors.py`) handles conversion via DLPack: a CPU PyTorch tensor is
+consumed zero-copy. Do NOT call `.cpu().numpy()` manually on values that feed `calibrate` /
+`predict` / `get_uncertainty` — that conversion is the library's job, and writing it by hand
+defeats the zero-copy path and clutters the example.
 
-Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the core (e.g. computing accuracy, building arrays for matplotlib). Only remove the conversions on the path to `*_from_proba`.
+Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the core (e.g. computing accuracy, building arrays for matplotlib). Only remove the conversions on the path to `calibrate`/`predict`/`get_uncertainty`.
 
 ## Test conventions
 
@@ -673,15 +805,28 @@ Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the co
 
 ## Legacy method state (discovered during ACDC migration)
 
-The legacy subset exercised by the former legacy golden — `calibrate`, `get_uncertainty_jit`, `predict` — plus the `model=` constructor parameter, have all been **removed** (Phase 6 steps 5-6; confirmed absent from `src/utrace/uncertaintyQuantifier.py` as of current HEAD — grepping any of the four in `src/` returns nothing, and `UncertaintyQuantifier(model=x)` now raises `TypeError` from Python itself, with no compatibility shim).
+**Update (rename batch): `calibrate`, `predict`, and bare `get_uncertainty` are no longer absent
+names.** This whole section predates the rename batch and describes their state as of Phase 6.
+The rename batch's third commit (`70fa11e`) reintroduced `calibrate` and `predict` as the
+current public API (renamed from `calibrate_from_proba`/`predict_from_proba`), and bare
+`get_uncertainty` as the current public alpha-search method (renamed from
+`get_uncertainty_from_proba` — a different symbol from the `get_uncertainty` removed below,
+which no longer exists under any name). Where this section says a script "does NOT run" because
+it calls one of these three names, that is now **wrong in the dangerous direction**: such a
+script DOES run, against the new implementation, silently passing raw model/data input where
+softmax output is expected. See "Rename batch" above for the full explanation and the accepted
+risk. `get_uncertainty_jit` and the `model=` parameter remain genuinely, permanently absent —
+nothing reused those.
 
-Two further legacy methods were found broken/orphaned during the ACDC migration and were **removed** earlier (Phase 6 step 2; confirmed absent from `src/utrace/uncertaintyQuantifier.py` as of current HEAD — grepping either name in `src/` returns nothing):
-- `get_uncertainty` (no suffix) called `self._predict_sets`, which was never defined as a method anywhere in the class (only as a same-named module-level function taking no `self`) → raised `AttributeError` at runtime on every call. Removed.
-- `get_uncertainty_opt` was model-bound (called `self.model.predict_proba`, had no `*_from_proba` counterpart) and raised `AttributeError` if the UQ was constructed without `model=`, making it unusable under the no-model migration. Removed, together with its sole helper `get_U` — which had exactly one call site in the entire repo (inside `get_uncertainty_opt` itself) and so had no other consumer to preserve.
+The legacy subset exercised by the former legacy golden — `calibrate`, `get_uncertainty_jit`, `predict` — plus the `model=` constructor parameter, were all **removed** (Phase 6 steps 5-6; confirmed absent from `src/utrace/uncertaintyQuantifier.py` as of that time — grepping any of the four in `src/` returned nothing then, and `UncertaintyQuantifier(model=x)` still raises `TypeError` from Python itself today, with no compatibility shim). As of the rename batch, `calibrate` and `predict` exist again as unrelated methods (see update above); `get_uncertainty_jit` remains absent.
+
+Two further legacy methods were found broken/orphaned during the ACDC migration and were **removed** earlier (Phase 6 step 2; confirmed absent from `src/utrace/uncertaintyQuantifier.py` as of that time):
+- `get_uncertainty` (no suffix) called `self._predict_sets`, which was never defined as a method anywhere in the class (only as a same-named module-level function taking no `self`) → raised `AttributeError` at runtime on every call. Removed. As of the rename batch, `get_uncertainty` exists again as the renamed `get_uncertainty_from_proba` — an unrelated, working implementation; the removal above describes the pre-Phase-6 broken method, not the current one.
+- `get_uncertainty_opt` was model-bound (called `self.model.predict_proba`, had no `*_from_proba` counterpart) and raised `AttributeError` if the UQ was constructed without `model=`, making it unusable under the no-model migration. Removed, together with its sole helper `get_U` — which had exactly one call site in the entire repo (inside `get_uncertainty_opt` itself) and so had no other consumer to preserve. Both remain absent; neither name was reused.
 
 `fit_opt`, `predict_opt`, `fit` remain absent entirely — unrelated to this pass; they were never part of the current `UncertaintyQuantifier` and were never something Phase 6 needed to remove.
 
-Consequence: any script relying on any of the six now-removed methods (`get_uncertainty`, `get_uncertainty_opt`, `get_U`, `calibrate`, `predict`, `get_uncertainty_jit`), on the removed `model=` parameter, or on `fit`/`fit_opt`/`predict_opt`, does NOT run against the current package and cannot produce a local reference. Such scripts (convergence_analysis, data_size_analysis, setsize_analysis, MNIST_test_coverage, MNIST_test_convergence) are full rewrites — validate them against the paper, not a prior local run. Tests passing does NOT imply these scripts are correct against the current API; the test suite covers the core, not the scripts.
+Consequence, corrected for the rename batch: a script relying on `get_uncertainty_opt`, `get_U`, `get_uncertainty_jit`, the removed `model=` parameter, or `fit`/`fit_opt`/`predict_opt` still does NOT run against the current package — those names and that parameter remain genuinely absent, and calling them still raises `AttributeError`/`TypeError`. A script relying on `calibrate`, `predict`, or bare `get_uncertainty` (with raw model/data input, the pre-Phase-6 calling convention) now DOES run, but against the current softmax-input implementation — it will not raise, and its output should not be trusted without checking the arguments actually being passed. Such scripts (convergence_analysis, data_size_analysis, setsize_analysis, MNIST_test_coverage, MNIST_test_convergence) are full rewrites — validate them against the paper, not a prior local run, and confirm they are calling the current API with softmax-output arguments, not merely that they run without error. Tests passing does NOT imply these scripts are correct against the current API; the test suite covers the core, not the scripts.
 
 ## Example script inventory
 
@@ -700,7 +845,7 @@ Mapping to paper figures (Marchi & Liebl 2026, Mach. Learn.: Sci. Technol. 7 015
 | `btorch_MNIST_test.py` | Appendix C | (none — bayesian-torch) | DO NOT TOUCH |
 
 Notes:
-- `fit` was the former name of `calibrate`. `*_opt` were "optimized" variants; part of their logic was folded into the main methods. These scripts are written against a previous API and do NOT run as-is against the current package: migrating them means rewriting them against the new API. Note: `fit`, `fit_opt`, and `predict_opt` are fully absent from the current `UncertaintyQuantifier` (not merely deprecated). `get_uncertainty_opt`, bare `get_uncertainty`, and their helper `get_U` (also named in this table's "Legacy methods used" column) are likewise fully absent (removed, Phase 6 step 2) — and, as of Phase 6 steps 5-6, so are `get_uncertainty_jit`, `calibrate`, and `predict` (and the `model=` parameter). Every name in this table's "Legacy methods used" column is now fully absent from the current `UncertaintyQuantifier`. This column is a historical record of what each script called before its Phase 4 rewrite; it is not a claim about what still exists in the current class.
+- `fit` was the former name of `calibrate` in the pre-Phase-6 legacy API — note that, as of the rename batch, `calibrate` is ALSO the current public method name, an unrelated implementation reintroduced by renaming `calibrate_from_proba` (see "Rename batch" above and the correction in "Legacy method state" above). `*_opt` were "optimized" variants; part of their logic was folded into the main methods. These scripts, in their pre-Phase-4 form, were written against the legacy API and did NOT run as-is against the post-Phase-6 package: migrating them meant rewriting them against the `*_from_proba` API of the time (since further renamed by the rename batch). Note: `fit`, `fit_opt`, and `predict_opt` are fully absent from the current `UncertaintyQuantifier` (not merely deprecated) and always have been — nothing reused these three. `get_uncertainty_opt` and its helper `get_U` are likewise fully absent (removed, Phase 6 step 2) and were never reused. `get_uncertainty_jit` (removed, Phase 6 steps 5-6) is also still fully absent. By contrast, `calibrate`, `predict`, and bare `get_uncertainty` — all three named in this table's "Legacy methods used" column — are NOT fully absent from the current `UncertaintyQuantifier`: the rename batch reintroduced all three, with unrelated softmax-input implementations. This column remains a historical record of what each script called before its Phase 4 rewrite, and is still not a claim about what exists in the current class — but as of the rename batch, three of its names now collide with current, working method names rather than resolving to nothing.
 - `ACDC_example.py`: cardiac model loaded via MONAI bundle (do not touch the loading); CP "samples" are pixels (high volume → calibration streaming matters); generates LaTeX tables (preserve).
 
 ## Validation notes (analysis scripts)
@@ -721,7 +866,7 @@ What the figure asserts is that the prediction-set size distribution follows the
 
 ### Dependency rule
 
-- **Core** (`uncertaintyQuantifier`, alpha-search functions, masked quantile): imports ONLY numpy + jax. NEVER imports torch, onnx, or any backend, and NEVER imports from the backend subpackages below. Data flow is always: user code → backend wrapper → probabilities → core (`*_from_proba`).
+- **Core** (`uncertaintyQuantifier`, alpha-search functions, masked quantile): imports ONLY numpy + jax. NEVER imports torch, onnx, or any backend, and NEVER imports from the backend subpackages below. Data flow is always: user code → backend wrapper → softmax output → core (`calibrate`/`predict`/`get_uncertainty`).
 - **`utrace.utils.pytorch.*`**: everything that touches torch — `Pytorch_wrapper`, example models, dataset loaders, transforms, and any helper that needs torch (e.g. `flatten_batch` / `unflatten` if they operate on torch tensors).
 - **`utrace.utils.onnx.*`**: analogous, for the ONNX backend.
 - **`utrace.utils`** (root): only truly backend-agnostic helpers (pure numpy).
