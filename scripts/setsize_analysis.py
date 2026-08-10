@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from _common import setup_example_io
+from _common import precompute_softmax, setup_example_io
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -36,21 +36,6 @@ def get_beta_dist(mu, sigma, C, num_points=1000):
     pdf_scaled = dist.pdf(x_n) / C
 
     return x, pdf_scaled
-
-
-def precompute_softmax(loader, classifier):
-    """Run model forward on a DataLoader; return (smx, labels).
-
-    Both are stacked torch tensors (DLPack-compatible for the calibrate/predict/get_uncertainty API).
-    """
-    all_softmax = []
-    all_labels = []
-    for images, labels in loader:
-        all_softmax.append(classifier.predict_proba(images))
-        all_labels.append(labels)
-    smx = torch.cat(all_softmax, dim=0)
-    labels = torch.cat(all_labels, dim=0)
-    return smx, labels
 
 
 def main(train_model=False, img_path=Path("img/")):
