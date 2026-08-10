@@ -1,6 +1,8 @@
 import jax.numpy as jnp
 from jax import jit
 
+__all__ = ["lac", "lac_cal"]
+
 
 @jit
 def lac_cal(y: jnp.ndarray, smx: jnp.ndarray,
