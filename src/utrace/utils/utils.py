@@ -1,7 +1,5 @@
 import logging
 import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +44,7 @@ def plot_scores(
     scores: np.ndarray,
     quantiles: np.ndarray,
     method: str,
-    ax: plt.Axes,
+    ax: "plt.Axes",
 ) -> None:
     """
     Plots the distribution of scores and overlays quantile lines.
@@ -62,6 +60,7 @@ def plot_scores(
     Returns:
     None
     """
+    import matplotlib.pyplot as plt
     colors = {0: "#1f77b4", 1: "#ff7f0e", 2: "#2ca02c"}
     n, _, _ = ax.hist(scores, bins="auto")
     for quantile in quantiles:
@@ -92,6 +91,7 @@ def class_wise_performance(y_new, y_set, classes):
     Returns:
     pd.DataFrame: A dataframe containing the coverage and average set size for each class.
     """
+    import pandas as pd
     df = pd.DataFrame()
     # Loop through the classes
     for i,C in enumerate(classes):
