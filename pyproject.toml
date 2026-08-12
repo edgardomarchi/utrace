@@ -25,47 +25,29 @@ classifiers = [
 requires-python = ">=3.11,<3.15"
 
 dependencies = [
-    "monai",
-    "scikit-learn",
-    "scikit-image",
-    "matplotlib",
-    "nibabel",
-    "pillow",
-    "pandas",
-    "tqdm",
-    "flax",
-    "python-dotenv",
-]
-
-default-optional-dependency-keys = [
-    "cpu",
+    "jax",
+    "numpy",
 ]
 
 [project.optional-dependencies]
-cuda = [
-    "jax[cuda12]", 
-    "torchvision",
-    "torch",
+viz = [
+    "matplotlib",
+    "pandas",
 ]
-cuda124 = [
-    "jax[cuda12]", 
-    "torchvision",
+torch = [
     "torch",
+    "torchvision",
 ]
-rocm = [
-    "jax[rocm]",
-    "torchvision",
+cuda13 = [
+    "jax[cuda13]",
     "torch",
+    "torchvision",
 ]
-rocm5 = [
-    "jax",  # jax does not support rocm5 on legacy AMD APUs.
-    "torchvision",
+rocm7-local = [
+    "jax[rocm7-local]",
     "torch",
-]
-cpu = [
-    "jax",
     "torchvision",
-    "torch",
+    "triton-rocm",
 ]
 
 [project.urls]
@@ -76,11 +58,9 @@ repository = "https://github.com/edgardomarchi/utrace"
 [tool.uv]
 conflicts = [
     [
-        { extra = "cpu" },
-        { extra = "cuda" },
-        { extra = "cuda124" },
-        { extra = "rocm" },
-        { extra = "rocm5" }
+        { extra = "torch" },
+        { extra = "cuda13" },
+        { extra = "rocm7-local" }
     ]
 ]
 
@@ -94,45 +74,29 @@ default-groups = ["dev"]
 
 [tool.uv.sources]
 torch = [
-    { index = "torch-cuda", extra = "cuda" },
-    { index = "torch-cuda124", extra = "cuda124" },
-    { index = "torch-rocm", extra = "rocm" },
-    { index = "torch-rocm5", extra = "rocm5" },
-    { index = "torch-cpu",  extra = "cpu"}
+    { index = "torch-cu130", extra = "cuda13" },
+    { index = "torch-rocm72", extra = "rocm7-local" },
+    { index = "torch-cpu", extra = "torch" }
 ]
 
 torchvision = [
-    { index = "torch-cuda", extra = "cuda" },
-    { index = "torch-cuda124", extra = "cuda124" },
-    { index = "torch-rocm", extra = "rocm" },
-    { index = "torch-rocm5", extra = "rocm5" },
-    { index = "torch-cpu", extra = "cpu"}
+    { index = "torch-cu130", extra = "cuda13" },
+    { index = "torch-rocm72", extra = "rocm7-local" },
+    { index = "torch-cpu", extra = "torch" }
+]
+
+triton-rocm = [
+    { index = "torch-rocm72", extra = "rocm7-local" }
 ]
 
 [[tool.uv.index]]
-name = "torch-cuda"
-url = "https://download.pytorch.org/whl/cu128"
+name = "torch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [[tool.uv.index]]
-name = "torch-cuda124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true
-
-[[tool.uv.index]]
-name = "torch-rocm"
-url = "https://download.pytorch.org/whl/rocm6.4"
-# NOTE: this index was previously misspelled as `eexplicit`, which left it as a
-# general-purpose index serving transitive deps (numpy, pillow, fsspec,
-# pytorch-triton-rocm) to every variant. Fixing it exposes that the rocm/rocm5
-# extras do not resolve: pytorch-triton-rocm is not on any explicit index, and
-# rocm5 pins torch 2.3.x, which has no cp314 wheels under requires-python <3.15.
-# Do not re-introduce the typo to make `uv lock` pass. See MIGRATION.md.
-explicit = true
-
-[[tool.uv.index]]
-name = "torch-rocm5"
-url = "https://download.pytorch.org/whl/rocm5.7"
+name = "torch-rocm72"
+url = "https://download.pytorch.org/whl/rocm7.2"
 explicit = true
 
 [[tool.uv.index]]
@@ -180,6 +144,11 @@ dev = [
     "MacFSEvents; sys_platform == 'darwin'",
     "pync; sys_platform == 'darwin'",
     "ipython",
+
+    # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
+    "monai",
+    "nibabel",
+    "scikit-learn",
 ]
 
 

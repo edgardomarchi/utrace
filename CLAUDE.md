@@ -3,7 +3,7 @@
 Backend-agnostic uncertainty quantification (conformal prediction) for black-box models.
 
 ## Build & test
-- Run tests: `uv run --extra=cpu pytest tests/ -v`
+- Run tests: `uv run --extra=torch --extra=viz pytest tests/ -q --no-cov`
 - Core tests (`tests/core/`) must NOT import torch.
 - Integration tests live in `tests/integration/torch/`.
 
