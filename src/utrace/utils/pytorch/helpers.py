@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 def flatten_batch(tensor_batch):
@@ -123,6 +122,7 @@ def view_classify(img, ps, version="MNIST"):
     Returns:
     None
     """
+    import matplotlib.pyplot as plt
     ps = ps.data.numpy().squeeze()
 
     fig, (ax1, ax2) = plt.subplots(figsize=(6,9), ncols=2)
