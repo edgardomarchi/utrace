@@ -56,8 +56,12 @@ API (renamed from `*_from_proba` by the rename batch; see "Rename batch" below).
           (SHA-256) before and after, which is what confirmed the USE_JAX=false branch
           really was unreachable: the change was behaviour-preserving by construction, not
           merely by luck.
-      3c. BLOCKED, not done — removing the now-unused `python-dotenv` dependency from
-          `pyproject.toml`. See "Phase 6 step 3c — packaging cleanup [BLOCKED]" below.
+      3c. DONE — packaging cleanup: `jax` and `numpy` moved into base
+          `[project].dependencies`; `matplotlib`, `pandas`, `torch` and `torchvision` moved to
+          extras (`viz`, `torch`, `cuda13`, `rocm7-local`); `python-dotenv`, `flax`,
+          `scikit-image` and `tqdm` removed outright; `monai`, `nibabel` and `scikit-learn`
+          moved to the `dev` group; the CUDA/ROCm indexes corrected. See "Phase 6 step 3c —
+          packaging cleanup [RESOLVED]" below.
       4. DONE — removed the legacy tests (`test_golden_mnist.py`,
          `test_legacy_equivalence.py`), `baselines/legacy/`, the `--api legacy` branch of
          `regenerate_baselines.py` (the flag now has a single choice, `'new'`; narrowing
@@ -252,9 +256,9 @@ rely on):
 
 [ESTABLISHED] A, B1, B.5, C, and the rename batch are DONE (see "Rename batch" below). B2 was
 removed as a standalone step after a measured negative result (see "Measured negative result:
-jnp-native padding (B2, reverted)" above); its content was absorbed into D. D and E remain,
-alongside the step 3c packaging block (see "Phase 6 step 3c — packaging cleanup [BLOCKED]"
-below).
+jnp-native padding (B2, reverted)" above); its content was absorbed into D. The step 3c
+packaging block is now resolved (see "Phase 6 step 3c — packaging cleanup [RESOLVED]" below).
+D and E remain.
 
 - [ESTABLISHED] **A. The boundary.** DONE. `to_jax(y)` once on entry, no numpy in the core,
   `jnp.isin` for the class mask, eager boolean indexing left as-is. Plus tests for the
@@ -645,7 +649,13 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
 - `get_uncertainty_grid_from_proba`: alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
 - `tuning_stability(probs, y, n_splits)`: diagnostic for tuning-set size adequacy (runs the search on disjoint subsets and reports spread). This is the formalization of the "L random splits" scheme from the paper.
 - Golden test with a trained model (current ones use an untrained model: reproducible but in a degenerate regime, unstable alphas).
-- Packaging cleanup (post-Phase 6): see "Phase 6 step 3c — packaging cleanup [BLOCKED]" below. Note that torch is already absent from `[project].dependencies` - it only appears in the optional-dependency groups. What used to keep torch mandatory was that the core imported `flatten_batch` at module level; Phase 6 step 5 removed that import, and `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards the property.
+- [DONE] Packaging cleanup (post-Phase 6): see "Phase 6 step 3c — packaging cleanup [RESOLVED]" below. Note that torch was already absent from `[project].dependencies` before this cleanup - it only appeared in the optional-dependency groups. What used to keep torch mandatory was that the core imported `flatten_batch` at module level; Phase 6 step 5 removed that import, and `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards the property.
+- monai is in the `dev` group and depends on `torch` unconditionally — it is a PyTorch-based
+  library, not a version-pinning slip — so every development environment gets `torch` whether or
+  not an extra asked for it. Confirmed directly: `uv sync --extra=viz --dry-run` installs an
+  unrouted `torch==2.11.0` alongside matplotlib/pandas, even though `viz` names neither `torch`
+  nor any GPU extra. Only `scripts/ACDC_example.py` uses monai anywhere in the repo. Candidate
+  for its own extra so a plotting-only dev environment doesn't pay for it. Not acted on.
 - Performance benchmark per phase.
 - Accidental public surface: `scores/__init__.py`'s `from .jax_impl import *` re-exports every public module-level name in `jax_impl.py` (no `__all__` there), so `jnp` and `jit` are reachable as `utrace.scores.jnp` / `utrace.scores.jit` without that being a decided API surface. Discovered when removing the unused `jax_print` import — see "Rename batch" > "Accidental public surface" above. Add an explicit `__all__` to `jax_impl.py` (or switch `scores/__init__.py` to named imports) to close it. Not done.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
@@ -719,12 +729,96 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 - [RESOLVED, step 3b — moot] `scores/numpy_impl.py`'s `lac_cal` was not actually numpy-typed despite the module name (it called `.cpu().numpy()` on the indexed result, which only works on a torch tensor). This was unreachable code even before removal, so it never bit in practice; the file was deleted outright.
 - [RESOLVED, step 3b] x64 precision's ordering concern — `src/utrace/__init__.py` imports `.uncertaintyQuantifier` BEFORE calling `jax.config.update("jax_enable_x64", True)`, which worked only because nothing at import time of `uncertaintyQuantifier.py` computes a float64 array before the flag is set — was preserved when the call became unconditional (the `if USE_JAX:` guard was removed, not the ordering). Now directly guarded by `tests/core/test_x64_is_enabled.py::test_x64_is_enabled`.
 
-### Phase 6 step 3c — packaging cleanup [BLOCKED]
+### Phase 6 step 3c — packaging cleanup [RESOLVED]
 
-- `python-dotenv` remains in `pyproject.toml`'s `dependencies` even though its only consumer, `config.py`, was deleted in step 3b. It is inert (nothing imports it). Removing it forces a `uv.lock` re-resolve, and the re-resolve fails (see below) — that failure is what blocks this item, not the removal edit itself.
-- The `torch-rocm` index in `pyproject.toml` declared `eexplicit = true`, a typo. Unrecognised by `uv`, the key left that index general-purpose instead of restricted to the wheels mapped to it, so it was silently serving ordinary packages and transitive dependencies to every variant: regenerating the lock while investigating this reassigned `numpy`, `pillow`, and `fsspec` from `pypi.org/simple` to `download.pytorch.org/whl/rocm6.4` — same versions, same content hashes, different attributed origin. The typo is now fixed in `pyproject.toml`, but the committed `uv.lock` was resolved while the typo was still in effect, so the lock is not currently derivable from the pyproject as it stands. That gap is deliberate — do not "fix" it by reverting the pyproject typo-fix.
-- With the spelling fixed, `uv lock` FAILS for the `rocm5` extra: `pytorch-triton-rocm` is a transitive dependency of torch, is not mapped in `[tool.uv.sources]`, and is not on any explicit index; and `rocm5` pins torch 2.3.x, which has no cp314 wheels under `requires-python = ">=3.11,<3.15"`. Separately, `jax[rocm]` does not exist (`uv lock` warns: the package `jax==0.9.2` does not have an extra named `rocm`). `uv` stops at the first unsatisfiable split, so there may be more failures behind it that haven't surfaced yet.
-- Deferred to a packaging cleanup after Phase 6, deliberately kept out of the phase so that a moving golden in step 5 would have had one candidate cause rather than two. Its success criterion is that every declared extra resolves, not merely that `uv lock` exits zero — it should decide, per extra, whether that extra is actually supported (`rocm`/`rocm5` look aspirational rather than tested).
+Resolved across three commits after Phase 6. `jax` and `numpy` moved into base
+`[project].dependencies` (the previous shape declared `jax` only inside the
+`cpu`/`cuda`/`cuda124`/`rocm`/`rocm5` extras, so a plain `pip install utrace` produced a package
+that raised on `import utrace` — a package-level version of the same "reached unconditionally
+vs. reached only when asked for" problem described for matplotlib/pandas under "Import
+structure" below). `matplotlib`, `pandas`, `torch` and `torchvision` moved to extras; the
+`cpu`/`cuda`/`cuda124`/`rocm`/`rocm5` extra names were retired in favour of
+`viz`/`torch`/`cuda13`/`rocm7-local`.
+
+What the blocking investigation found, corrected against what was recorded at the time:
+
+- [ESTABLISHED] `python-dotenv` was inert, exactly as recorded — `config.py`, its only
+  consumer, was deleted in step 3b. It is now removed from `[project].dependencies` outright.
+  The `uv.lock` re-resolve that used to fail (see below) now succeeds, so the blocker is gone,
+  not worked around.
+- [ESTABLISHED] Three more dependencies had zero import sites anywhere in `src/`, `tests/` or
+  `scripts/` and are now removed too: `scikit-image`, `tqdm`, `flax`. Worth recording the irony
+  on `flax`: its only mention anywhere in the repo was the comment in `_UQState`'s docstring
+  explaining that step B.5 used a plain `NamedTuple` *instead of* it — the dependency stayed
+  declared for a design that had already been explicitly rejected. Dropping it also removed
+  roughly twenty packages that existed only to support it (`optax`, the `orbax-*` ecosystem,
+  `etils`, `msgpack`, `humanize`, `treescope`, and others transitive to those).
+- [ESTABLISHED] The typo'd `torch-rocm` index (`eexplicit = true`) is gone — the rocm6.4 index
+  it pointed at was retired outright, superseded by a ROCm 7.2 index, so the postmortem note
+  about it is now purely historical, not a description of the current file. `uv.lock` is
+  derivable from `pyproject.toml` again: a plain `uv lock` against the corrected file succeeds
+  cleanly with no hand-patching. The deliberate desync recorded above is over.
+- [ESTABLISHED] `jax[rocm]` never existed as an extra, exactly as the original diagnostic found
+  (`uv lock` warned at the time: "the package `jax==0.9.2` does not have an extra named
+  `rocm`"). The correct name, confirmed by resolving it directly, is `jax[rocm7-local]` — and
+  per JAX's own installation docs, it requires ROCm already present on the host or container;
+  JAX ships no extra that installs ROCm itself.
+- [ESTABLISHED] The transitive triton package under ROCm 7.2 is named `triton-rocm`, not
+  `pytorch-triton-rocm`. The old name was correct for the rocm6.4-era wheels this repo used to
+  target, which is exactly why the original blocked note recorded it — but current torch under
+  ROCm 7.2 renamed it. Confirmed by resolving against the real index: the resolver's own
+  dependency line named `triton-rocm` directly, and omitting it from the extra reproduced the
+  exact failure this note predicted — the resolver backing off through successive torch
+  versions, downloading full wheels for metadata, before giving up on a years-old release.
+- [ESTABLISHED] Routing `triton-rocm` in `[tool.uv.sources]` was not enough on its own to fix
+  that failure. `uv` requires an extra-scoped source to point at a package the extra declares
+  DIRECTLY — `triton-rocm` had to be added to the `rocm7-local` extra's own dependency list, not
+  merely given an index route, before it would resolve.
+- [ESTABLISHED, corrected] The CUDA index was independently stale, but not quite in the way
+  first assumed: cu128 wheels have **not** disappeared — `torch==2.11.0+cu128` still resolves —
+  but cu128 is not maintained past that release, and the current stable torch (2.13.0, matching
+  what the `cuda13` extra's cu130 index carries) has no cu128 build. So cu128 was stale as an
+  index *choice* (it would silently cap the resolved torch version well below current), not
+  stale as in "gone." The repo now targets cu130 under the renamed `cuda13` extra instead.
+
+### uv finding: dependency-groups and extra-scoped index routing don't mix
+
+[ESTABLISHED] An unmarked (plain) requirement on a package inside a `[dependency-groups]`
+member conflicts with extra-scoped `[tool.uv.sources]` routing for that same package name,
+because `uv` treats dependency-group members as active in every resolution fork simultaneously
+— including forks where an extra-scoped route also claims the same package. Reproduced
+directly: declaring `torch` as a plain `dev`-group member, with `[tool.uv.sources]` routing
+`torch` per-extra plus an unconditional fallback route for everything else, makes `uv lock` fail
+with "Requirements contain conflicting indexes for package `torch` in all marker environments."
+This is why `torch`/`torchvision` are NOT listed in the `dev` group despite
+`tests/integration/torch/` needing them, and why running the test suite requires
+`uv run --extra=torch --extra=viz pytest ...` rather than a bare `uv run pytest ...` — the
+extras supply what the `dev` group structurally cannot. Recorded here because it looks like an
+oversight to anyone who later notices `torch` is absent from `dev` while being a hard test
+dependency; it is not one.
+
+### Import structure: matplotlib and pandas deferred out of `import utrace`
+
+[ESTABLISHED] `import utrace` used to reach `matplotlib` and `pandas` through `utils/utils.py`'s
+module-level imports (`utils/__init__.py`'s `from .utils import *` pulls in the whole module
+for `_bucket_size`, which `uncertaintyQuantifier.py` imports), and reached `matplotlib` a second
+time, independently, through `utils/pytorch/helpers.py`'s own module-level import — reached
+whenever a caller imports `flatten_batch`, e.g. `tests/integration/torch/test_golden_mnist.py`.
+Both matplotlib imports and the one pandas import are now deferred into the bodies of the
+specific functions that use them (`plot_scores` and `class_wise_performance` in
+`utils/utils.py`; `view_classify` in `utils/pytorch/helpers.py`) instead of sitting at module
+scope. `tests/core/test_import_properties.py` guards both properties by subprocess, matching
+its existing pattern for torch-absence.
+
+[ESTABLISHED] The annotation trap: Python evaluates a function's annotations when the `def`
+statement executes, not when the function is called, so moving an import into a function body
+does not help if a signature in the same module annotates a parameter with the now-deferred
+name. `plot_scores`'s `ax` parameter was annotated `ax: plt.Axes`; quoting it as a string
+forward reference (`ax: "plt.Axes"`) resolved it, chosen deliberately over
+`from __future__ import annotations`, which would have changed evaluation semantics for every
+annotation in the module rather than just the one that needed it. `utils/pytorch/helpers.py`
+was checked for the same pattern and does not have it — none of its functions carry type
+annotations at all, so no annotation-handling decision was needed there.
 
 ## Canonical migration recipe (new API)
 
@@ -870,7 +964,7 @@ What the figure asserts is that the prediction-set size distribution follows the
 - **`utrace.utils.pytorch.*`**: everything that touches torch — `Pytorch_wrapper`, example models, dataset loaders, transforms, and any helper that needs torch (e.g. `flatten_batch` / `unflatten` if they operate on torch tensors).
 - **`utrace.utils.onnx.*`**: analogous, for the ONNX backend.
 - **`utrace.utils`** (root): only truly backend-agnostic helpers (pure numpy).
-- Backends are **optional extras** in `pyproject.toml` (e.g. `[cpu]`, `[cuda]`). The core must be installable and importable WITHOUT torch.
+- Backends are **optional extras** in `pyproject.toml` (`torch`, `cuda13`, `rocm7-local`). The core must be installable and importable WITHOUT torch.
 
 ### Placement test for each symbol
 

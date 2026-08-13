@@ -4,6 +4,11 @@ Backend-agnostic uncertainty quantification (conformal prediction) for black-box
 
 ## Build & test
 - Run tests: `uv run --extra=torch --extra=viz pytest tests/ -q --no-cov`
+  Both extras must go on the `uv run` that executes pytest, not on a preceding `uv sync` — a
+  bare `uv run pytest` re-syncs the environment down to base plus dev and silently discards a
+  prior `uv sync --extra=...`. Both extras are needed: `tests/integration/torch/` needs torch,
+  and one test in `tests/core/` exercises the plotting helpers and needs matplotlib genuinely
+  installed to pass (it skips cleanly via `pytest.importorskip` when matplotlib is absent).
 - Core tests (`tests/core/`) must NOT import torch.
 - Integration tests live in `tests/integration/torch/`.
 
