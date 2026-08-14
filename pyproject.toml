@@ -30,24 +30,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cuda13 = [
+    "jax[cuda13]",
+]
+rocm7-local = [
+    "jax[rocm7-local]",
+]
 viz = [
     "matplotlib",
     "pandas",
 ]
-torch = [
+examples = [
     "torch",
     "torchvision",
-]
-cuda13 = [
-    "jax[cuda13]",
-    "torch",
-    "torchvision",
-]
-rocm7-local = [
-    "jax[rocm7-local]",
-    "torch",
-    "torchvision",
-    "triton-rocm",
+    "monai",
+    "nibabel",
 ]
 
 [project.urls]
@@ -58,9 +55,17 @@ repository = "https://github.com/edgardomarchi/utrace"
 [tool.uv]
 conflicts = [
     [
-        { extra = "torch" },
-        { extra = "cuda13" },
-        { extra = "rocm7-local" }
+        { group = "dev" },
+        { group = "dev-cuda13" },
+        { group = "dev-rocm7" }
+    ],
+    [
+        { extra = "examples" },
+        { group = "dev-cuda13" }
+    ],
+    [
+        { extra = "examples" },
+        { group = "dev-rocm7" }
     ]
 ]
 
@@ -68,25 +73,25 @@ required-environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
-index-strategy = "unsafe-best-match"
-
 default-groups = ["dev"]
 
 [tool.uv.sources]
 torch = [
-    { index = "torch-cu130", extra = "cuda13" },
-    { index = "torch-rocm72", extra = "rocm7-local" },
-    { index = "torch-cpu", extra = "torch" }
+    { index = "torch-cpu", group = "dev" },
+    { index = "torch-cu130", group = "dev-cuda13" },
+    { index = "torch-rocm72", group = "dev-rocm7" },
+    { index = "torch-cpu", extra = "examples" }
 ]
 
 torchvision = [
-    { index = "torch-cu130", extra = "cuda13" },
-    { index = "torch-rocm72", extra = "rocm7-local" },
-    { index = "torch-cpu", extra = "torch" }
+    { index = "torch-cpu", group = "dev" },
+    { index = "torch-cu130", group = "dev-cuda13" },
+    { index = "torch-rocm72", group = "dev-rocm7" },
+    { index = "torch-cpu", extra = "examples" }
 ]
 
 triton-rocm = [
-    { index = "torch-rocm72", extra = "rocm7-local" }
+    { index = "torch-rocm72", group = "dev-rocm7" }
 ]
 
 [[tool.uv.index]]
@@ -106,6 +111,106 @@ explicit = true
 
 [dependency-groups]
 dev = [
+    "torch",
+    "torchvision",
+
+    "ipykernel",
+    "jupytext",
+
+    # Formatters
+    "black",
+    "tomli",
+    "isort",
+
+    # Linters
+    "mypy",
+    "pydocstyle",
+    "pylint",
+    "pylint-pytest",
+    "wrapt",
+
+    # Testing
+    "pytest",
+    "pytest-describe",
+    "pytest-expecter",
+    "pytest-random",
+    "pytest-cov",
+    "freezegun",
+
+    # Reports
+    "coveragespace",
+
+    # Documentation
+    "mkdocs",
+    "pygments",
+
+    # Tooling
+    "pre-commit",
+    "bump2version",
+    "pyinstaller",
+    "sniffer",
+    "MacFSEvents; sys_platform == 'darwin'",
+    "pync; sys_platform == 'darwin'",
+    "ipython",
+
+    # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
+    "monai",
+    "nibabel",
+    "scikit-learn",
+]
+dev-cuda13 = [
+    "torch",
+    "torchvision",
+
+    "ipykernel",
+    "jupytext",
+
+    # Formatters
+    "black",
+    "tomli",
+    "isort",
+
+    # Linters
+    "mypy",
+    "pydocstyle",
+    "pylint",
+    "pylint-pytest",
+    "wrapt",
+
+    # Testing
+    "pytest",
+    "pytest-describe",
+    "pytest-expecter",
+    "pytest-random",
+    "pytest-cov",
+    "freezegun",
+
+    # Reports
+    "coveragespace",
+
+    # Documentation
+    "mkdocs",
+    "pygments",
+
+    # Tooling
+    "pre-commit",
+    "bump2version",
+    "pyinstaller",
+    "sniffer",
+    "MacFSEvents; sys_platform == 'darwin'",
+    "pync; sys_platform == 'darwin'",
+    "ipython",
+
+    # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
+    "monai",
+    "nibabel",
+    "scikit-learn",
+]
+dev-rocm7 = [
+    "torch",
+    "torchvision",
+    "triton-rocm",
+
     "ipykernel",
     "jupytext",
 
