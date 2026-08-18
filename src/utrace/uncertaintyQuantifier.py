@@ -114,6 +114,42 @@ def _search_uncertainty(
     U = 1.0 - EC_yt_f * (1.0 - alpha_f)
     return alpha_f, U
 
+@jit
+def _calibrate_write_jit(buffer: jnp.ndarray, start, scores: jnp.ndarray) -> jnp.ndarray:
+    """Writes precomputed conformity `scores` into `buffer` at offset `start` under
+    jit, replacing the marginal (classes=None) write path's eager `.at[].set()`.
+
+    Deliberately takes already-computed `scores` rather than `y`/`smx` and the
+    score function: fusing the score computation into this same trace was tried
+    first and reverted, because `self.cal_score_` (e.g. `lac_cal`) is itself a
+    standalone `@jit` function whose OWN `_cache_size()` is asserted directly by
+    tests/core/test_label_dtype_canonicalisation.py -- calling it from inside
+    another jit trace inlines its body without incrementing that counter (JAX
+    does not go through a nested function's normal dispatch/cache path when
+    already tracing), which silently broke that test's assertion. Keeping
+    `cal_score_` as a separate, top-level call preserves its existing cache
+    semantics unchanged; this function then only replaces the write, which the
+    diagnostic and execution measurements found to be the dominant separate-
+    dispatch cost (an isolated eager `.at[].set()` cost ~40ms on first use,
+    against ~30ms for `lac_cal` alone) -- so most of the win survives un-fused.
+
+    `start` must be passed as a concrete Python int (or a scalar built from one)
+    at every call site, never as a value read back from a device array inside a
+    hot loop -- JAX's jit cache keys on abstract shape/dtype, not on the concrete
+    value of a non-static argument, so distinct `start` values reuse the same
+    compiled trace (verified: cache stays at 1 across 45 distinct offsets in a
+    streaming sequence; see the diagnostic and execution reports). The write
+    itself uses `lax.dynamic_update_slice_in_dim` rather than the `buffer.at[
+    start:start+size].set(...)` slice syntax used elsewhere in this file: the
+    slice form fails outright when `start` is traced (`IndexError: Slice entries
+    must be static integers`), while `dynamic_update_slice_in_dim` traces
+    correctly because the update size is static even though the offset is not.
+    """
+    return lax.dynamic_update_slice_in_dim(
+        buffer, jnp.asarray(scores, dtype=jnp.float64), start, axis=0
+    )
+
+
 class _UQState(NamedTuple):
     """Mutable calibration state for UncertaintyQuantifier, threaded explicitly
     through the methods below instead of being mutated on `self` in place.
@@ -287,36 +323,68 @@ class UncertaintyQuantifier:
         batched : bool, optional
             For batched calibration; appends new scores to the buffer. By default False
         """
-        if self._classes_jax is not None:
+        old_N = self._state.N
+        if self._classes_jax is None:
+            # Marginal path: jitted buffer write (_calibrate_write_jit) in place
+            # of the eager `.at[].set()` below. cal_score_ stays a standalone,
+            # top-level call -- see _calibrate_write_jit's docstring for why it
+            # is not fused into the same trace. Deliberately NOT shared with the
+            # class-conditional branch below -- see the step-D diagnostic and
+            # execution reports: sharing would make the class-conditional path
+            # retrace on every distinct filtered batch size, which it pays
+            # nothing for today.
+            scores = self.cal_score_(y, smx)
+            num_scores = len(scores)
+            if batched:
+                if old_N + num_scores > self._max_N:
+                    raise ValueError(
+                        f"Batched calibration buffer overflow: current _N={old_N} + "
+                        f"num_scores={num_scores} exceeds _max_N={self._max_N}. "
+                        f"N is set at construction time."
+                    )
+                # Append new scores at offset _N without sorting (lazy sort deferred to property getter).
+                new_conformity_scores = _calibrate_write_jit(
+                    self._state.conformity_scores, old_N, scores
+                )
+            else:
+                if num_scores > self._max_N:
+                    raise ValueError(
+                        f"Non-batched calibration buffer overflow: num_scores={num_scores} "
+                        f"exceeds _max_N={self._max_N} (current _N={old_N}). "
+                        f"N is set at construction time."
+                    )
+                # Non-batched: reset buffer to +inf and write scores at offset 0 without sorting.
+                fresh_buffer = jnp.full((self._max_N,), jnp.inf, dtype=jnp.float64)
+                new_conformity_scores = _calibrate_write_jit(fresh_buffer, 0, scores)
+        else:
             mask = jnp.isin(y, self._classes_jax)
             y = y[mask]
             smx = smx[mask]
 
-        scores = self.cal_score_(y, smx)
-        num_scores = len(scores)
-        old_N = self._state.N
-        if batched:
-            if old_N + num_scores > self._max_N:
-                raise ValueError(
-                    f"Batched calibration buffer overflow: current _N={old_N} + "
-                    f"num_scores={num_scores} exceeds _max_N={self._max_N}. "
-                    f"N is set at construction time."
-                )
-            # Append new scores at offset _N without sorting (lazy sort deferred to property getter).
-            new_conformity_scores = self._state.conformity_scores.at[
-                old_N:old_N + num_scores
-            ].set(jnp.asarray(scores, dtype=jnp.float64))
-        else:
-            if num_scores > self._max_N:
-                raise ValueError(
-                    f"Non-batched calibration buffer overflow: num_scores={num_scores} "
-                    f"exceeds _max_N={self._max_N} (current _N={old_N}). "
-                    f"N is set at construction time."
-                )
-            # Non-batched: reset buffer to +inf and write scores at offset 0 without sorting.
-            new_conformity_scores = jnp.full(
-                (self._max_N,), jnp.inf, dtype=jnp.float64
-            ).at[:num_scores].set(jnp.asarray(scores, dtype=jnp.float64))
+            scores = self.cal_score_(y, smx)
+            num_scores = len(scores)
+            if batched:
+                if old_N + num_scores > self._max_N:
+                    raise ValueError(
+                        f"Batched calibration buffer overflow: current _N={old_N} + "
+                        f"num_scores={num_scores} exceeds _max_N={self._max_N}. "
+                        f"N is set at construction time."
+                    )
+                # Append new scores at offset _N without sorting (lazy sort deferred to property getter).
+                new_conformity_scores = self._state.conformity_scores.at[
+                    old_N:old_N + num_scores
+                ].set(jnp.asarray(scores, dtype=jnp.float64))
+            else:
+                if num_scores > self._max_N:
+                    raise ValueError(
+                        f"Non-batched calibration buffer overflow: num_scores={num_scores} "
+                        f"exceeds _max_N={self._max_N} (current _N={old_N}). "
+                        f"N is set at construction time."
+                    )
+                # Non-batched: reset buffer to +inf and write scores at offset 0 without sorting.
+                new_conformity_scores = jnp.full(
+                    (self._max_N,), jnp.inf, dtype=jnp.float64
+                ).at[:num_scores].set(jnp.asarray(scores, dtype=jnp.float64))
 
         # valid prefix is unsorted after any write; getter will sort on next read
         new_sorted = False if num_scores > 0 else self._state.sorted
