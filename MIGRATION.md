@@ -838,7 +838,9 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   whether `torch` is installed, only that it's one more package alongside it. Only
   `scripts/ACDC_example.py` uses monai anywhere in the repo. Giving monai its own extra (so a
   contributor not running ACDC doesn't pay for it specifically) remains a live, smaller idea; not
-  acted on.
+  acted on. **[RESOLVED]** monai removed from the dev group entirely rather than given its own extra; it
+lives only in the `examples` extra now. Verified in a clean venv: syncing dev plus viz gives
+120 passing tests with monai absent from the installed set.
 - **sklearn as a test dependency, reported not acted on.** `scikit-learn` is declared in all
   three dependency groups (`dev`, `dev-cuda13`, `dev-rocm7`), and its only reachable use anywhere
   in `src/`, `tests/` or `scripts/` is
@@ -849,6 +851,13 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   a test dependency (and could drop out of the three groups entirely, pending confirmation
   nothing else picks it up). Flagged per instruction, not acted on — the comment's author should
   confirm the "not needed anymore" claim before the import is actually removed.
+  [ESTABLISHED] Not removable, and the comment is wrong. `BaseEstimator` is used as a base class
+— `class Pytorch_wrapper(nn.Module, BaseEstimator)` — so removing the import raises NameError
+at class-definition time. It is paired with `__sklearn_is_fitted__`, the special method
+sklearn's check_is_fitted looks for, so the inheritance is deliberate scikit-learn
+compatibility. scikit-learn therefore stays a test dependency. The `# TODO: not needed
+anymore` comment on that import is stale and actively misleading — it produced one wrong
+backlog item already. Removing the comment, not the import, is the correct follow-up.
 - Performance benchmark per phase.
 - Accidental public surface: `scores/__init__.py`'s `from .jax_impl import *` re-exports every public module-level name in `jax_impl.py` (no `__all__` there), so `jnp` and `jit` are reachable as `utrace.scores.jnp` / `utrace.scores.jit` without that being a decided API surface. Discovered when removing the unused `jax_print` import — see "Rename batch" > "Accidental public surface" above. Add an explicit `__all__` to `jax_impl.py` (or switch `scores/__init__.py` to named imports) to close it. Not done.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
@@ -867,6 +876,11 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
 - [RESOLVED] Per-class calibration double-counted _N: the trailing _N update ran unconditionally and overwrote the correct `_N = total` set inside the per-class branch, adding the last class's num_scores on top (e.g. N=66 for a 60-sample calibration). Fix: move the _N update into the global branch only. Also switched per-class accounting to a per-class count (_class_N) and fixed _class_scores initialization (was np.empty(_max_N), garbage). classes=[full list] now matches classes=None (commit 1a2c8a).
 
 - [RESOLVED] to_jax device mismatch on GPU backends. to_jax routed any object with __dlpack__ through jax.dlpack.from_dlpack; numpy arrays implement __dlpack__, so numpy label arrays landed on CPU (DLPack preserves host origin) while CUDA torch probability tensors landed on GPU. The jitted score (lac_cal) then received its two arguments on different devices and raised "Received incompatible devices for jitted computation". The numpy DLPack path also emitted a "buffer is not aligned, creating a copy" warning (neither zero-copy nor correct-device). Invisible on the CPU backend; only reproduces with a GPU JAX backend. Fix: check isinstance(np.ndarray) BEFORE the __dlpack__ branch, route numpy via jnp.asarray (lands on JAX default compute device); DLPack kept only for genuine framework tensors. Device contract documented in the to_jax docstring: preserve device for tensors, normalize host arrays to the default compute device, do not reconcile mismatches between two genuine tensors. Validated on CUDA (to_jax(numpy)->GPU, to_jax(cuda tensor)->GPU, MNIST_example --extra=cuda matches CPU results). NOTE: the test suite runs on CPU and does NOT exercise this path; it only guards against regression.
+
+- [ESTABLISHED] `index-strategy = "unsafe-best-match"` no longer exists: it was removed as an
+incidental part of the extras reshape (fe21f31), not as a verified decision. Every extra and
+group resolves without it against the three explicit indexes, so its removal is confirmed
+correct after the fact.
 
 ### TODO: make device handling in to_jax() explicit (deferred)
 
