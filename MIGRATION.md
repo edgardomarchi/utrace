@@ -5,9 +5,11 @@ status, the canonical migration pattern, and agreed conventions. This is the sou
 truth for the refactor: when in doubt about "how something is done here," this document
 and the tests are authoritative.
 
-Supporting diagnostic and execution reports live outside this repository, in a private
-companion repo checked out at `.reports/` (gitignored). Findings and figures here are backed
-by those reports and cite them by filename; their absence from this repo is by design.
+Diagnostic and execution reports produced during this refactor are kept in a private
+companion repository, checked out at `.reports/` (gitignored).
+Filenames are cited here for internal traceability; the reports are not publicly
+available. Every claim in this document is written to stand on its own — the figures and
+findings are transcribed here, not merely referenced.
 
 ## Refactor goal
 
@@ -239,10 +241,18 @@ construction is memory-movement work, which eager jnp does worse; this is the op
 class mask, where `jnp.isin`'s compiled kernel beats `np.isin` at the same sizes. An isolated
 benchmark of the mask alone therefore pointed the wrong way about the change as a whole.
 
-[UNVERIFIED] The expectation for step D: inside a single jit trace, XLA should fuse the
-`.at[].set()` chain and eliminate the intermediates, so the same construction that costs ~2.4
-ms per call eagerly may cost nothing. This is the hypothesis D has to validate, and it has not
-been tested.
+[ESTABLISHED] The expectation recorded here — that inside a single jit trace XLA should fuse the
+`.at[].set()` chain and eliminate the intermediates, so the same construction that costs ~2.4 ms
+per call eagerly may cost nothing — has now been tested for the marginal (`classes=None`) slice
+of step D, and was directionally right and mechanically wrong. It is right that the jit boundary
+makes the write cheaper, measured directly. It is wrong that the mechanism is "fusion eliminates
+the intermediates": the mechanism is dispatch-overhead amortisation, and the shipped design does
+not even fuse the score computation and the write into one trace — an earlier attempt at that
+exact fusion was reverted for reasons unrelated to performance (see "Step D, marginal slice"
+below). Full result, numbers, and the two design findings this pass produced are recorded in the
+new section immediately following "Measurement conditions" below; this paragraph is left in place,
+relabelled, so the historical prediction stays visible next to what actually happened rather than
+being silently deleted.
 
 **Measurement conditions** (recorded because these numbers are now in a document people will
 rely on):
@@ -258,6 +268,134 @@ rely on):
   limitation of the measurement, not as a reason to distrust the conclusion.
 - All measurements are CPU backend. GPU is unmeasured and the balance could differ, since
   dispatch overhead and memory-movement costs have different relative weights there.
+
+### Step D, marginal slice — jitting the write for classes=None [RESOLVED for this slice only]
+
+[ESTABLISHED] Shipped in commit `c7617d2` ("Jit the marginal calibration write"): a new
+module-level `@jit` function, `_calibrate_write_jit`, replaces `_calibrate_impl`'s eager
+`.at[].set()` write, but **only** when `self._classes_jax is None` (the marginal path).
+`_calibrate_impl` now branches explicitly — `if self._classes_jax is None: <jitted write> else:
+<eager write, byte-identical to before>` — rather than sharing one implementation between the two
+cases. Confirmed directly in the source (`_calibrate_write_jit` at module level before `_UQState`,
+alongside the file's other module-level jit functions `_predict_sets`/`_q_hat_from_alpha`/
+`_search_uncertainty`; the class-conditional branch of `_calibrate_impl` still ends in `.at[
+old_N:old_N + num_scores].set(...)` and `.at[:num_scores].set(...)`, unchanged).
+
+**The fusion that was tried and reverted.** The diagnostic that motivated this work (and the
+`[UNVERIFIED]` paragraph above) tested a prototype that fused the score computation
+(`cal_score_`/`lac_cal`) and the buffer write into a single trace. That is **not** what shipped.
+During implementation, the fused design broke an existing test —
+`tests/core/test_label_dtype_canonicalisation.py` asserts `lac_cal._cache_size() == 1` directly,
+and calling `lac_cal` from inside another jit trace inlines its body without going through its
+own dispatch/cache path, so the assertion silently failed (cache stayed at 0 even though `lac_cal`
+was, in effect, being traced). The shipped `_calibrate_write_jit` therefore takes
+**already-computed** `scores` as an argument, not `y`/`smx` plus the score function;
+`self.cal_score_(y, smx)` remains a separate, standalone, already-jitted top-level call, exactly
+as it was before this change, in both the marginal and class-conditional branches.
+
+[ESTABLISHED] **The mechanism, corrected.** The jit boundary does make the write cheaper,
+measured — but not by "fusing a `.at[].set()` chain and eliminating intermediates," since there
+is no chain and nothing is fused: the shipped design replaces one eager dispatch (the write) with
+one jit dispatch, while the score computation was, and remains, its own separate jitted call on
+both sides of the change. JAX's eager mode still compiles each primitive separately on first use,
+so an eager `.at[].set()` pays a real first-use compile cost (isolated measurement: ~40 ms) close
+in magnitude to what `lac_cal` alone pays (~30 ms) — replacing just the write's eager dispatch
+with a cached jit dispatch removes that cost on every call after the first, and most of it even on
+the first, without needing to fuse anything with the score computation.
+
+[ESTABLISHED] **Break-even is zero calls.** The jitted write's cold first call was cheaper than
+the eager write's cold first call at every tested size — the reverse of the naive "compilation is
+pure overhead" framing, and the reverse of B2, where more calls widened the gap in favour of the
+eager/numpy side. Here, more calls widen the gap in favour of jit (steady-state timings below
+confirm the gap does not close with repetition).
+
+[ESTABLISHED] **This does not contradict the B2 finding above.** B2 compared eager-jnp against
+eager-numpy, both un-jitted. This compares eager-jnp against a jitted dispatch of the same
+operation. Different pairs, same underlying fact — JAX eager pays real per-call/per-first-use
+costs — read from the other side: B2 showed eager-jnp loses to eager-numpy; this shows eager-jnp
+loses to jitted-jnp. Neither overturns the other.
+
+**Numbers, each with its machine.** All figures in this subsection were measured on a **Ryzen AI 7
+PRO 350 laptop, CPU backend** (`jax.default_backend() == 'cpu'`) — not comparable to the 5700G
+figures elsewhere in this document.
+
+- Diagnostic prototype (fused design, `.reports/2026-08-18_stepD_jit_marginal_diagnostic.md`),
+  streaming (repeated batched calibration into one buffer, warm): **~13.5x at B=500**, **~2.3x at
+  B=12000**, **~1.08x at ACDC pixel scale (B=65000)** — the win shrinks sharply as B grows, because
+  at large B the operations' own compute time dominates over the dispatch overhead the jit
+  boundary is amortising.
+- Shipped implementation (write-only jit, `.reports/2026-08-18_stepD_jit_marginal_execution.md`),
+  measured end-to-end through the public `calibrate()` — which includes `to_jax()` conversion and
+  method-call overhead, identical on both sides of the comparison and therefore diluting the
+  *relative* size of the win without changing its direction: **~2-3x at B=500 and at B=12000**
+  (two independent run-sets: 2.2x/3.1x at B=500, 3.0x/3.2x at B=12000). The smaller multiplier
+  against the diagnostic's figures is a different, more inclusive measurement target, not a
+  failed reproduction — the diagnostic isolated the write; this measures the whole public call.
+- A batch-size change (a dataloader remainder) forces a retrace: **~30 ms** for the jitted write.
+  This is not a new cost `_calibrate_write_jit` introduces — `lac_cal` is already `@jit`-decorated
+  and already pays a retrace on exactly the same event, measured at **~54 ms**, both before and
+  after this change. The jitted write's retrace is smaller than the pre-existing one, not an
+  addition to it.
+
+[ESTABLISHED] **Design finding 1 — `N` stays a host Python int; no sync, no per-N retrace.** The
+prediction under "What the state PyTree revealed for step D" below assumed `N` would need to
+become a traced value living inside `_UQState`, forcing either a device-to-host sync per batch (to
+check the overflow guard) or moving the guard somewhere untraceable. Neither was needed. JAX's jit
+cache keys on the *abstract* shape and dtype of a non-static argument, not its *concrete* value —
+so passing the buffer offset as a plain Python `int` at the call site (never read back from a
+device array, never round-tripped through the state) is lifted to a traced scalar once and reused
+for every subsequent value. Verified directly: 45 distinct offsets in a streaming sequence produced
+a `_calibrate_write_jit._cache_size()` of 1. `_UQState.N` is untouched by this change — still a
+plain Python `int`, confirmed in the source — and the overflow guard is untouched too: still a
+Python `if` in `_calibrate_impl`, before the write, never traced.
+
+[ESTABLISHED] **Design finding 2 — the literal slice syntax fails outright, not "needs
+adjustment."** `buffer.at[start:start+size].set(...)` (the syntax used everywhere else in this
+file, including the still-eager class-conditional branch) does not merely need adjusting for a
+traced `start` — it raises `IndexError: Slice entries must be static integers` immediately.
+`jax.lax.dynamic_update_slice_in_dim(buffer, scores, start, axis=0)` is the form that actually
+traces, because the *update size* is static (shape-derived) even though the *offset* is not. This
+is a sharper finding than this document's earlier hedge ("needs a dynamic-slice update with a
+statically known size") — the existing syntax is not adjustable, it is a different function.
+
+[ESTABLISHED] **Both named predictions under "What the state PyTree revealed for step D" held,
+confirmed by direct reproduction, not by reading:** `if state.sorted` inside `_ensure_sorted`
+raises `TracerBoolConversionError` when `sorted` is a traced value, and the overflow guard's
+Python `if` on a traced offset raises the same error — both cannot be traced and must stay at the
+untraced wrapper level. `_ensure_sorted` itself, the `sorted` dirty flag, and the whole read path
+(`conformity_scores_`, the `alpha` setter, `_get_uncertainty_jit_impl`) are **unchanged** by this
+commit — confirmed by diff: no line outside `_calibrate_impl` and the one new function changed.
+
+[ESTABLISHED] **Why the branch is explicit, not shared.** Sharing `_calibrate_write_jit` between
+the marginal and class-conditional paths was the natural single-implementation choice and was
+deliberately rejected: the class-conditional path's filtered batch size is data-dependent per
+batch and per class, so a shared jitted write would retrace on every distinct filtered size, a
+cost the class-conditional path pays nothing for today (it is fully eager). A test,
+`tests/core/test_calibrate_jit_marginal.py::test_class_conditional_never_hits_jit_write`, asserts
+directly that class-conditional calibration never reaches `_calibrate_write_jit`
+(`_cache_size() == 0` after class-conditional-only calibration, with a non-vacuousness check that
+a marginal call *does* reach it). Whether sharing would in fact be a net win for the
+class-conditional path is unmeasured — this pass did not attempt it, and answering it would need
+its own diagnostic with realistic per-class batch-size distributions, not an assumption either way.
+
+[UNVERIFIED] **What this slice does NOT resolve — the pixel-scale regime, which is the case that
+motivated step D in the first place** (see "User-visible consequence" above: high-volume,
+per-pixel calibration is exactly where the fixed-size buffer and the class-filter redesign matter
+most). At ACDC pixel scale, the realistic per-batch jitted design — one jitted call per incoming
+batch from an ordinary Python loop, the direct drop-in for today's streaming pattern — measured
+**~1.08x on CPU**, barely distinguishable from noise. A substantially larger win (**~5.7x**) was
+measured only for a design that pre-stacks an entire stream of batches into one
+`lax.fori_loop` trace, dispatched once — but that conflicts with this package's explicit
+bounded-memory streaming goal (see the canonical migration recipe: "This keeps only one batch of
+logits in memory at a time"). That tension is not resolved by anything measurable on a CPU
+backend. Whether the shrink-to-near-parity pattern holds on GPU is also unknown — the mechanism
+identified (dispatch-overhead amortisation shrinking as compute time grows) is exactly the kind of
+effect whose balance could differ where kernel-launch and host/device synchronisation costs have a
+different shape than CPU dispatch overhead. This joins the existing list of open questions waiting
+on the RTX 3070 (see "What is unverified" below). **The marginal slice is justified on the
+moderate-N regime alone** (MNIST-family scripts, N in the low tens of thousands); the pixel-scale
+case that motivates step D as a whole still needs GPU measurement before a performance case can be
+made for it there.
 
 ### Step ladder
 
@@ -304,12 +442,20 @@ below). What remains after this pass is D and E, plus the Backlog.
   being forced through the host via `.numpy()`. Conversions that feed a script's own numpy math
   (accuracy tallies, coverage indexing, plotting) are untouched by design — see "Passing tensors
   to the core" above and "Step C: the `# COMPAT` marker post-mortem" below.
-- [INTENT] **D. jit + vmap over classes + the `N` semantics change**, all together because
-  they are coupled (see "User-visible consequence" above). Now also carries what was B2: the
-  `_get_uncertainty_jit_impl` padding, the class mask leftover in `_get_uncertainty_jit_impl`
-  (its own `np.asarray(self.classes)`), and the `np.asarray(to_jax(...))` on entry to
-  `get_uncertainty` — because all of them must land inside the jit boundary or not
-  at all.
+- **D. jit + vmap over classes + the `N` semantics change**, all together because they are
+  coupled (see "User-visible consequence" above). [ESTABLISHED] A first, narrow slice is DONE
+  (commit `c7617d2`, see "Step D, marginal slice" above): the marginal (`classes=None`) buffer
+  write is jitted via `_calibrate_write_jit`, behind an explicit branch, leaving the
+  class-conditional path byte-identical. [INTENT] What remains of D, still fully coupled and not
+  started, is unchanged by the marginal slice: the class filter under jit (see "Two obstacles"
+  above), vmap over classes, and the `N` semantics change these two require together (see
+  "User-visible consequence" above). The marginal slice deliberately did not touch any of the
+  three, and does not commit the project to a particular resolution for them — it answered only
+  whether jitting pays off at all, for the narrowest slice that could test it in isolation. D also
+  still carries what was B2: the `_get_uncertainty_jit_impl` padding, the class mask leftover in
+  `_get_uncertainty_jit_impl` (its own `np.asarray(self.classes)`), and the
+  `np.asarray(to_jax(...))` on entry to `get_uncertainty` — because all of them must land inside
+  the jit boundary or not at all.
 - [INTENT] **E. Device coherence in the script layer.** Not started. Make probabilities and
   labels reach the core committed to the same device (see "Step C: device-commitment risk"
   below). Open questions to record, none of them decided:
@@ -594,20 +740,37 @@ a Python `int`, the conformity-score buffer as a jax array, `sorted` as a Python
 configuration value appears among the leaves — `_max_N`, `label_dtype_`, etc. are not fields of
 `_UQState` and never reach `tree_flatten`.
 
-[UNVERIFIED] The consequences for D, none of them tested:
-- Under jit every leaf becomes a traced value. `sorted` as a traced bool breaks the Python `if`
-  inside `_ensure_sorted` (`if state.sorted: return state`) — a data-dependent Python
-  conditional cannot be traced. That flag will have to leave the state, become static, or be
-  eliminated in favour of sorting on write once inside a jit boundary. This confirms, from a
-  second direction, the observation already recorded under "Two obstacles" above.
-- `N` as a traced value means the buffer write needs a dynamic-slice update with a statically
-  known size, and the overflow guard's Python comparison (`if old_N + num_scores >
-  self._max_N: raise ValueError(...)`) cannot be traced either — it has to stay at the untraced
-  wrapper level, where it already is (`_calibrate_impl` is a plain method, not jitted).
-- `alpha` and `q_hat` are host scalars sitting in the same structure as a device array. D has to
-  decide whether they convert at the jit boundary or leave the state entirely (living instead as
-  plain wrapper attributes, the way configuration already does). This interacts with the
-  output-types rule recorded below: scalars are returned as host floats.
+The consequences for D, recorded here before any of it was tested. The first two bullets have
+since been tested, for the marginal write slice specifically (see "Step D, marginal slice" above)
+— confirmed by direct reproduction where marked, and one of them turned out more favorable than
+predicted. The third remains exactly as open as when this was written.
+
+- [ESTABLISHED] Under jit every leaf becomes a traced value if it is part of the jitted function's
+  arguments. `sorted` as a traced bool breaks the Python `if` inside `_ensure_sorted` (`if
+  state.sorted: return state`) — a data-dependent Python conditional cannot be traced. **Confirmed
+  by direct reproduction**, not just reasoned about: jitting a function with this exact body and a
+  traced `sorted` argument raises `TracerBoolConversionError`. That flag has NOT left the state,
+  become static, or been eliminated — `_ensure_sorted` and `_UQState.sorted` are byte-identical to
+  before this pass, because the marginal slice touches only the write path, not the read path this
+  bullet is about. The observation from "Two obstacles" above still stands, now doubly confirmed,
+  and the fix it names is still not implemented.
+- [ESTABLISHED, corrected] The prediction was: "`N` as a traced value means the buffer write needs
+  a dynamic-slice update with a statically known size." The dynamic-slice-update part is confirmed
+  exactly (`lax.dynamic_update_slice_in_dim`, not the `.at[start:start+size].set(...)` syntax used
+  elsewhere in this file, which raises `IndexError: Slice entries must be static integers` under a
+  traced start). The "`N` as a traced value" premise turned out to be avoidable, not necessary:
+  the shipped design keeps `N` a plain Python `int` — never placed inside `_UQState` as a device
+  value, never synced from device — and passes it directly as the jitted function's offset
+  argument; JAX lifts a concrete Python int to a traced scalar automatically and caches by
+  abstract shape/dtype, not by the int's value, so this costs nothing per distinct `N` (45 distinct
+  offsets, one compiled trace). The overflow guard's Python comparison is confirmed untraceable
+  (`TracerBoolConversionError`, reproduced directly) and stays exactly where this prediction said
+  it would: the untraced wrapper level, in `_calibrate_impl`, unchanged in placement or behaviour.
+- [UNVERIFIED] `alpha` and `q_hat` are host scalars sitting in the same structure as a device
+  array. D has to decide whether they convert at the jit boundary or leave the state entirely
+  (living instead as plain wrapper attributes, the way configuration already does). This interacts
+  with the output-types rule recorded below: scalars are returned as host floats. Untouched by the
+  marginal slice — still exactly as open as when this was written.
 
 ### Output types
 
@@ -645,8 +808,15 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   that `np.asarray()` on a jax array forces. In the ACDC streaming pattern this would be a sync
   barrier per batch, which an isolated microbenchmark cannot see because it calls
   `block_until_ready` anyway.
-- [UNVERIFIED] Whether jitting `_calibrate_impl` pays at all, independent of vmap. `lac_cal` is
-  already jitted and the rest of the method is buffer bookkeeping.
+- [ESTABLISHED, was UNVERIFIED] Whether jitting `_calibrate_impl` pays at all, independent of
+  vmap, is answered on CPU for the marginal (`classes=None`) slice only — see "Step D, marginal
+  slice" above for the full numbers, machine, and design findings. Short version: yes, it pays,
+  from the very first call, at the batch sizes MNIST-family scripts use (~2-3x end-to-end through
+  the public `calibrate()`, more in isolation); the win shrinks to near-parity (~1.08x) at ACDC
+  pixel scale, where it remains genuinely open pending GPU measurement. The class-conditional path
+  (with vmap not yet in the picture) is untested and untouched — this item's "independent of
+  vmap" framing is answered only for the branch that has no class filter to interact with vmap in
+  the first place.
 - [UNVERIFIED] Whether returning jnp scalars instead of numpy scalars from
   `get_uncertainty` breaks any script. `float()`, `np.isnan()` and pandas all accept
   jnp scalars, so this is expected to be soft, but it must be checked against the scripts
