@@ -478,9 +478,35 @@ class UncertaintyQuantifier:
         return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters)
 
     def _get_uncertainty_jit_impl(self, smx, y, max_iters=30):
-        """smx: (B, K) array (jnp/np), B variable.
-           y:   (B,)   int labels.
-        Internally pads to a fixed shape so the jitted search compiles once."""
+        """Builds a fixed-size, class-masked, zero-padded batch from variable-size
+        input, then calls the jitted `_search_uncertainty` on it.
+
+        Despite the name, this method itself is NOT `@jit`-decorated -- "jit" in
+        the name describes what it feeds, not what it is. `_search_uncertainty`
+        IS jitted and would recompile on every distinct input shape it saw
+        directly (the root cause Phase 2 eliminated for the calibration path);
+        padding `smx`/`y` to a shape-stable size here means `_search_uncertainty`
+        compiles once per shape it actually sees: always the same shape if
+        `max_batch_size` was set at construction, otherwise once per bucket
+        produced by `_bucket_size` (nearest multiple of 256 at or above the batch
+        size) -- fewer distinct shapes than raw batch sizes would produce, but
+        not literally "once" unless `max_batch_size` is set.
+
+        Also reads (and, if not already sorted, sorts) the conformity-score
+        buffer via `_ensure_sorted` -- the same lazy-sort mutation
+        `conformity_scores_` and `get_uncertainty` perform; see
+        `get_uncertainty`'s docstring for why this isn't fully side-effect-free.
+
+        Parameters
+        ----------
+        smx : array-like, shape (B, K)
+            Softmax output; B varies from call to call.
+        y : array-like, shape (B,)
+            Integer class labels.
+        max_iters : int, default=30
+            Maximum iterations for the binary search over alpha, forwarded to
+            `_search_uncertainty`.
+        """
         B = y.shape[0]
         K = smx.shape[1]
 
