@@ -56,12 +56,18 @@ API (renamed from `*_from_proba` by the rename batch; see "Rename batch" below).
           (SHA-256) before and after, which is what confirmed the USE_JAX=false branch
           really was unreachable: the change was behaviour-preserving by construction, not
           merely by luck.
-      3c. DONE — packaging cleanup: `jax` and `numpy` moved into base
-          `[project].dependencies`; `matplotlib`, `pandas`, `torch` and `torchvision` moved to
-          extras (`viz`, `torch`, `cuda13`, `rocm7-local`); `python-dotenv`, `flax`,
+      3c. DONE — packaging cleanup, across two passes. First pass: `jax` and `numpy` moved into
+          base `[project].dependencies`; `matplotlib`, `pandas`, `torch` and `torchvision` moved
+          to extras (`viz`, `torch`, `cuda13`, `rocm7-local`); `python-dotenv`, `flax`,
           `scikit-image` and `tqdm` removed outright; `monai`, `nibabel` and `scikit-learn`
-          moved to the `dev` group; the CUDA/ROCm indexes corrected. See "Phase 6 step 3c —
-          packaging cleanup [RESOLVED]" below.
+          moved to the `dev` group; the CUDA/ROCm indexes corrected. Second pass, superseding
+          the first pass's extras shape: the `torch` extra was deleted outright — the GPU
+          extras (`cuda13`, `rocm7-local`) no longer declare torch at all, torch instead comes
+          from an `examples` extra or from the `dev`/`dev-cuda13`/`dev-rocm7` contributor
+          groups, and torch/torchvision are upgraded to 2.13.0/0.28.0 uniformly across all
+          routes. Current extras: `cuda13`, `rocm7-local`, `viz`, `examples`. See "Phase 6 step
+          3c — packaging cleanup [RESOLVED]" and "Phase 6 step 3c, second pass — reshaping
+          extras around usage [RESOLVED]" below.
       4. DONE — removed the legacy tests (`test_golden_mnist.py`,
          `test_legacy_equivalence.py`), `baselines/legacy/`, the `--api legacy` branch of
          `regenerate_baselines.py` (the flag now has a single choice, `'new'`; narrowing
@@ -121,7 +127,8 @@ API (renamed from `*_from_proba` by the rename batch; see "Rename batch" below).
 
       **Remaining for Phase 6:** steps 7 (labels host-copy) and 8 (`flatten_batch` ->
       `flatten_to_pixels` unification, real work per the diagnostic under step 8 above — not
-      a swap), plus the step 3c packaging block (see below). The `_new_api` suffixes and
+      a swap). The step 3c packaging block (see below) is resolved, across two passes — it is
+      no longer part of what remains. The `_new_api` suffixes and
       `NEW_API_BASELINE_DIR` naming, once flagged here as redundant and a rename candidate, were
       renamed by the rename batch's first commit (`NEW_API_BASELINE_DIR` -> `BASELINE_DIR`,
       `test_golden_mnist_new_api.py` -> `test_golden_mnist.py`); see "Rename batch" below.
@@ -257,8 +264,9 @@ rely on):
 [ESTABLISHED] A, B1, B.5, C, and the rename batch are DONE (see "Rename batch" below). B2 was
 removed as a standalone step after a measured negative result (see "Measured negative result:
 jnp-native padding (B2, reverted)" above); its content was absorbed into D. The step 3c
-packaging block is now resolved (see "Phase 6 step 3c — packaging cleanup [RESOLVED]" below).
-D and E remain.
+packaging block is now resolved, across two passes (see "Phase 6 step 3c — packaging cleanup
+[RESOLVED]" and "Phase 6 step 3c, second pass — reshaping extras around usage [RESOLVED]"
+below). What remains after this pass is D and E, plus the Backlog.
 
 - [ESTABLISHED] **A. The boundary.** DONE. `to_jax(y)` once on entry, no numpy in the core,
   `jnp.isin` for the class mask, eager boolean indexing left as-is. Plus tests for the
@@ -649,13 +657,28 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
 - `get_uncertainty_grid_from_proba`: alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
 - `tuning_stability(probs, y, n_splits)`: diagnostic for tuning-set size adequacy (runs the search on disjoint subsets and reports spread). This is the formalization of the "L random splits" scheme from the paper.
 - Golden test with a trained model (current ones use an untrained model: reproducible but in a degenerate regime, unstable alphas).
-- [DONE] Packaging cleanup (post-Phase 6): see "Phase 6 step 3c — packaging cleanup [RESOLVED]" below. Note that torch was already absent from `[project].dependencies` before this cleanup - it only appeared in the optional-dependency groups. What used to keep torch mandatory was that the core imported `flatten_batch` at module level; Phase 6 step 5 removed that import, and `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards the property.
-- monai is in the `dev` group and depends on `torch` unconditionally — it is a PyTorch-based
-  library, not a version-pinning slip — so every development environment gets `torch` whether or
-  not an extra asked for it. Confirmed directly: `uv sync --extra=viz --dry-run` installs an
-  unrouted `torch==2.11.0` alongside matplotlib/pandas, even though `viz` names neither `torch`
-  nor any GPU extra. Only `scripts/ACDC_example.py` uses monai anywhere in the repo. Candidate
-  for its own extra so a plotting-only dev environment doesn't pay for it. Not acted on.
+- [DONE] Packaging cleanup (post-Phase 6): see "Phase 6 step 3c — packaging cleanup [RESOLVED]" and its second pass, "Phase 6 step 3c, second pass — reshaping extras around usage [RESOLVED]", both below. Note that torch was already absent from `[project].dependencies` before either cleanup - it only appeared in the optional-dependency groups (first pass) / dependency groups (current). What used to keep torch mandatory was that the core imported `flatten_batch` at module level; Phase 6 step 5 removed that import, and `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards the property.
+- **[SUPERSEDED]** monai is in the `dev` group and depends on `torch` unconditionally — recorded
+  at the time as an unwanted side effect, since `torch` was NOT otherwise a `dev`-group member,
+  so a plotting-only dev environment paid for `torch` (then pinned to `2.11.0`, per the dry-run
+  that established this) purely as monai's transitive dependency. The second packaging pass (see
+  "Phase 6 step 3c, second pass" above) made `torch` a direct, intentional `dev`-group member —
+  every contributor environment needs it for `tests/integration/torch/` regardless of monai — so
+  the "pays for torch it didn't ask for" framing no longer applies; monai no longer changes
+  whether `torch` is installed, only that it's one more package alongside it. Only
+  `scripts/ACDC_example.py` uses monai anywhere in the repo. Giving monai its own extra (so a
+  contributor not running ACDC doesn't pay for it specifically) remains a live, smaller idea; not
+  acted on.
+- **sklearn as a test dependency, reported not acted on.** `scikit-learn` is declared in all
+  three dependency groups (`dev`, `dev-cuda13`, `dev-rocm7`), and its only reachable use anywhere
+  in `src/`, `tests/` or `scripts/` is
+  `src/utrace/utils/pytorch/model_wrapper.py:4`'s `from sklearn.base import BaseEstimator` —
+  which carries its own `# TODO: not needed anymore` comment from the author. That import is
+  exercised by the test suite only because `tests/integration/torch/test_golden_mnist.py` imports
+  `Pytorch_wrapper` from `model_wrapper.py`. If the import is removed, `scikit-learn` stops being
+  a test dependency (and could drop out of the three groups entirely, pending confirmation
+  nothing else picks it up). Flagged per instruction, not acted on — the comment's author should
+  confirm the "not needed anymore" claim before the import is actually removed.
 - Performance benchmark per phase.
 - Accidental public surface: `scores/__init__.py`'s `from .jax_impl import *` re-exports every public module-level name in `jax_impl.py` (no `__all__` there), so `jnp` and `jit` are reachable as `utrace.scores.jnp` / `utrace.scores.jit` without that being a decided API surface. Discovered when removing the unused `jax_print` import — see "Rename batch" > "Accidental public surface" above. Add an explicit `__all__` to `jax_impl.py` (or switch `scores/__init__.py` to named imports) to close it. Not done.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
@@ -781,6 +804,85 @@ What the blocking investigation found, corrected against what was recorded at th
   index *choice* (it would silently cap the resolved torch version well below current), not
   stale as in "gone." The repo now targets cu130 under the renamed `cuda13` extra instead.
 
+**Superseded by the reshape below.** The shape this section describes — a `torch` extra,
+`cuda13`/`rocm7-local` extras that themselves carried torch, and a "point pip at
+`--extra-index-url`" workaround for it — was itself replaced by a second packaging pass shortly
+after landing. The dependency-cleanup findings above (dead packages removed, index typos fixed,
+`triton-rocm` naming, cu128 staleness) remain true of the current file; the extras table and the
+pip-routing analysis do not. See the next section.
+
+### Phase 6 step 3c, second pass — reshaping extras around usage [RESOLVED]
+
+[ESTABLISHED] The shape landed by the first packaging pass (previous section) declared torch
+directly inside the GPU extras. That inverts the package's primary use case: someone who already
+has a working PyTorch build for their hardware and wants uncertainty quantification on top of
+it. Installing `utrace[cuda13]` into such an environment would pull in, and could replace, their
+existing torch. Commit `fe21f31` ("Reshape the extras around how the package is actually used")
+removed the `torch` extra outright and rebuilt the extras around who installs what:
+
+| extra | declares | torch? |
+|---|---|---|
+| (base, `[project].dependencies`) | jax, numpy | no |
+| `cuda13` | jax[cuda13] | no |
+| `rocm7-local` | jax[rocm7-local] | no |
+| `viz` | matplotlib, pandas | no |
+| `examples` | torch, torchvision, monai, nibabel | yes (CPU build, routed via `[tool.uv.sources]`) |
+
+`utrace.utils.pytorch`'s helpers do not need `utrace` to install torch; they need it present. If
+it is not, importing them raises a plain `ImportError` — accepted as the honest failure mode
+rather than something to paper over.
+
+Contributors (who need torch to run `tests/integration/torch/`) now get it from one of three
+mutually conflicting dependency groups instead of an extra: `dev` (default, routes to the `cpu`
+index), `dev-cuda13` (routes to `cu130`), `dev-rocm7` (routes to `rocm7.2`, plus `triton-rocm`).
+The test command changed accordingly: `uv run --extra=torch --extra=viz pytest ...` became
+`uv run --extra=viz pytest ...` — torch now arrives from the default `dev` group, not an extra.
+
+[ESTABLISHED] Verified directly in this pass, not assumed from the commit message:
+- **Group-scoped `[tool.uv.sources]` routing is genuine.** Reading `uv.lock` itself (not
+  checking exit codes) shows separate `torch`/`torchvision` entries with distinct
+  `source.registry` values keyed by marker: `https://download.pytorch.org/whl/cpu` for
+  `group-6-utrace-dev` and `extra-6-utrace-examples`, `.../whl/cu130` for
+  `group-6-utrace-dev-cuda13`, `.../whl/rocm7.2` for `group-6-utrace-dev-rocm7`. All four routes
+  resolve to the same torch/torchvision version (2.13.0 / 0.28.0) — no version skew between
+  them, confirming the drift fix below actually landed everywhere.
+- **`utrace[cuda13]` does not touch an existing torch.** `pip install "utrace[cuda13]" --dry-run`
+  against a venv with `torch==2.13.0+cpu` already installed shows a "Would install" list of
+  `jax`, `jax-cuda13-pjrt`, `jax-cuda13-plugin`, `jaxlib`, the `nvidia-*` CUDA runtime packages,
+  `numpy`, `scipy`, `opt_einsum` and `utrace` itself — torch and torchvision appear nowhere in
+  it, because `cuda13` never declares them as a dependency. A real install over that same venv
+  (not a dry-run) is recorded in `.reports/2026-08-14_packaging_redesign_docs.md`, confirming the
+  installed torch build and its files are unchanged before and after.
+- **`rocm7-local` resolves cleanly and stays torch-free.** `uv pip install --dry-run
+  utrace[rocm7-local]` adds exactly two packages beyond base — `jax-rocm7-pjrt`,
+  `jax-rocm7-plugin` — matching the extras table above.
+
+[ESTABLISHED] **The failure that shaped the `examples` scoping.** The first shape attempted for
+`examples` routed `torch`/`torchvision` to the `cpu` index unconditionally (unscoped by extra or
+group). `uv lock` rejected it outright: conflicting indexes for `torch` across all marker
+environments, because the GPU dev groups (`dev-cuda13`, `dev-rocm7`) already route the same
+package name to different indexes, and an unscoped route collides with a scoped one in any
+resolution fork where both are active simultaneously. The fix actually shipped: scope the
+`examples` extra's route to `extra = "examples"` specifically (as the `dev`/`dev-cuda13`/
+`dev-rocm7` routes are scoped to their own groups), and declare `examples` conflicting with the
+two GPU groups — `dev-cuda13`, `dev-rocm7` — but NOT with `dev`, since `dev` and `examples` both
+want the same `cpu` index and have nothing to fight over.
+
+[ESTABLISHED] **Torch version drift, found and fixed.** Before this pass, `uv.lock`'s `cpu`-routed
+torch was pinned at `2.11.0` (left over from earlier work), while the `cu130` route had already
+moved to `2.13.0` — confirmed by reading the lock at the prior commit (`89a5411`) directly: the
+`cpu`-registry `torch` entries read `version = "2.11.0"` / `"2.11.0+cpu"`, while the `cu130`-registry
+entry already read `version = "2.13.0+cu130"`. `uv`'s minimal-change resolution had preserved the
+`2.11.0` pin on `cpu` rather than advancing it, which would have left CPU contributors testing
+against a different torch than CUDA contributors. A scoped
+`uv lock --upgrade-package torch --upgrade-package torchvision` moved all routes to 2.13.0 /
+0.28.0 uniformly (`setuptools` also moved 81.0.0 → 82.0.1 as a side effect of the same scoped
+resolve — confirmed by diffing `uv.lock` at both commits). The golden `.npy` baselines were
+verified unchanged across the upgrade (recorded in
+`.reports/2026-08-14_packaging_redesign_execution.md`), which matters because those baselines
+were originally generated under the older torch — an upgrade that silently shifted numerics
+would have invalidated them without any test failing to say so.
+
 ### uv finding: dependency-groups and extra-scoped index routing don't mix
 
 [ESTABLISHED] An unmarked (plain) requirement on a package inside a `[dependency-groups]`
@@ -790,12 +892,18 @@ because `uv` treats dependency-group members as active in every resolution fork 
 directly: declaring `torch` as a plain `dev`-group member, with `[tool.uv.sources]` routing
 `torch` per-extra plus an unconditional fallback route for everything else, makes `uv lock` fail
 with "Requirements contain conflicting indexes for package `torch` in all marker environments."
-This is why `torch`/`torchvision` are NOT listed in the `dev` group despite
-`tests/integration/torch/` needing them, and why running the test suite requires
-`uv run --extra=torch --extra=viz pytest ...` rather than a bare `uv run pytest ...` — the
-extras supply what the `dev` group structurally cannot. Recorded here because it looks like an
-oversight to anyone who later notices `torch` is absent from `dev` while being a hard test
-dependency; it is not one.
+This general finding still holds and is why the current file routes torch with a **group-scoped**
+source per dependency group (`group = "dev"`, `group = "dev-cuda13"`, `group = "dev-rocm7"`)
+rather than an extra-scoped route plus an unconditional fallback.
+
+**Superseded consequence.** At the time this was written, the fix was to keep `torch`/
+`torchvision` OUT of the `dev` group entirely and supply them via a `torch` extra instead, which
+is why the test command briefly required `uv run --extra=torch --extra=viz pytest ...`. The
+second packaging pass (see "Phase 6 step 3c, second pass" above) replaced that with group-scoped
+sources, so `torch`/`torchvision` ARE now plain members of `dev`/`dev-cuda13`/`dev-rocm7` — the
+group-scoped source resolves the same conflict this section describes, without needing to keep
+torch out of the group. The test command is `uv run --extra=viz pytest ...`; `--extra=torch` no
+longer exists.
 
 ### Import structure: matplotlib and pandas deferred out of `import utrace`
 
@@ -964,7 +1072,12 @@ What the figure asserts is that the prediction-set size distribution follows the
 - **`utrace.utils.pytorch.*`**: everything that touches torch — `Pytorch_wrapper`, example models, dataset loaders, transforms, and any helper that needs torch (e.g. `flatten_batch` / `unflatten` if they operate on torch tensors).
 - **`utrace.utils.onnx.*`**: analogous, for the ONNX backend.
 - **`utrace.utils`** (root): only truly backend-agnostic helpers (pure numpy).
-- Backends are **optional extras** in `pyproject.toml` (`torch`, `cuda13`, `rocm7-local`). The core must be installable and importable WITHOUT torch.
+- The JAX backend's GPU acceleration is available via the **optional extras** `cuda13` and
+  `rocm7-local` (neither declares torch — see "Phase 6 step 3c, second pass" above). The PyTorch
+  backend (`utrace.utils.pytorch.*`) is reached differently: `utrace` never installs torch for a
+  library user, it only requires torch to already be present (the `examples` extra is the one
+  exception, for running `scripts/`; contributors get torch from the `dev`/`dev-cuda13`/
+  `dev-rocm7` groups). Either way, the core must be installable and importable WITHOUT torch.
 
 ### Placement test for each symbol
 
@@ -979,4 +1092,4 @@ The dependency rule above is already enforced in the code:
 - Pure-numpy helpers (`get_coverage`, `relabel`, `check_row_sums`, etc.) remain in `utils/` root.
 - [RESOLVED, step 5] The core's one residual torch dependency — `uncertaintyQuantifier.py` importing `flatten_batch` (from `utils/pytorch/`) for the deprecated `calibrate` path — was removed together with `calibrate` in Phase 6 step 5. `flatten_batch` itself is untouched and still lives in `utils/pytorch/helpers.py` with its other callers; only the core's import of it is gone. `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards this directly.
 
-This rule guides both the script migration (Phase 4) and the packaging cleanup (make torch an optional extra) tracked in the backlog and Phase 6.
+This rule guides both the script migration (Phase 4) and the packaging cleanup tracked in the backlog and Phase 6 — the goal recorded here as "make torch an optional extra" is what the first packaging pass did; the second pass (see "Phase 6 step 3c, second pass" above) replaced the `torch` extra with the `examples` extra plus contributor dependency groups, for the reasons given there. The underlying rule — core installable and importable without torch — is unchanged by which mechanism supplies torch to whom.

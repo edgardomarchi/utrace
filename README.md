@@ -19,24 +19,42 @@ U-TraCE provides an evaluation method that reports a guaranteed upper bound for 
 
 ### Installation
 
-A plain install gives a working CPU-only core — just JAX and NumPy, nothing else:
+Which install you want depends on what you're doing with it. The core install and its two GPU
+extras are the same three commands regardless of scenario:
 
 ```bash
-pip install utrace@git+ssh://git@github.com/edgardomarchi/utrace.git@main
+pip install utrace@git+https://github.com/edgardomarchi/utrace.git@main                # CPU only
+pip install "utrace[cuda13]@git+https://github.com/edgardomarchi/utrace.git@main"      # + NVIDIA GPU for JAX
+pip install "utrace[rocm7-local]@git+https://github.com/edgardomarchi/utrace.git@main" # + AMD GPU for JAX
 ```
 
-Optional extras add capability on top of the core:
+**Using a black-box model, or a pure JAX model.** Pick whichever of the three commands above
+matches your hardware. That's the whole install.
+
+**Already have PyTorch working for your hardware, and want the `utrace.utils.pytorch`
+helpers.** This is the primary use case the packaging is built around: run the same command
+above, picking the JAX backend extra that matches your hardware, straight into your existing
+environment. `utrace` never installs, upgrades, or replaces your PyTorch — none of these three
+commands declare torch as a dependency at all, so there is nothing for them to touch. The
+helpers under `utrace.utils.pytorch` require torch to already be present in the environment;
+`utrace` does not provide it. Import one without torch installed and you'll get an `ImportError`
+from that submodule, not from `utrace` itself.
+
+**Want to run the example scripts** in `scripts/`. These need `torch`/`torchvision` (to train
+and run the example models) plus `viz` (to plot the results). Because routing `torch` to the
+CPU-only PyTorch wheel index is a `uv`-specific mechanism (see below), install this combination
+with `uv` rather than `pip`:
+
+```bash
+uv pip install "utrace[examples,viz]@git+https://github.com/edgardomarchi/utrace.git@main"
+```
 
 | extra | adds | needed for |
 |---|---|---|
 | `viz` | matplotlib, pandas | the plotting and reporting helpers in `utrace.utils` |
-| `torch` | torch, torchvision (CPU build) | the `utrace.utils.pytorch` helpers |
-| `cuda13` | jax[cuda13], torch/torchvision (CUDA 13 build) | GPU acceleration on NVIDIA |
-| `rocm7-local` | jax[rocm7-local], torch/torchvision (ROCm 7.2 build), triton-rocm | GPU acceleration on AMD, against an existing host ROCm install |
-
-```bash
-pip install utrace\[viz\]@https://github.com/edgardomarchi/utrace.git@main
-```
+| `cuda13` | jax[cuda13] | GPU acceleration on NVIDIA, for the JAX backend only |
+| `rocm7-local` | jax[rocm7-local] | GPU acceleration on AMD, for the JAX backend only, against an existing host ROCm install |
+| `examples` | torch, torchvision (CPU build), monai, nibabel | running the scripts in `scripts/` |
 
 or add it to your `pyproject.toml`:
 
@@ -45,8 +63,6 @@ or add it to your `pyproject.toml`:
 ...
 utrace = { git = "https://github.com/edgardomarchi/utrace.git", branch = "main" }
 ```
-
-`utrace.utils.pytorch` (the PyTorch-specific helpers) requires the `torch` extra.
 
 #### GPU extras
 
@@ -63,24 +79,15 @@ JAX compatibility matrix before relying on it.
 install needed — but does need a driver recent enough for CUDA 13. Per JAX's installation docs,
 that means NVIDIA driver version >= 580 on Linux.
 
-**The pip limitation.** The `torch`, `cuda13` and `rocm7-local` extras all rely on
-`[tool.uv.sources]` to route `torch`/`torchvision` to the matching PyTorch wheel index (CPU,
-cu130, or rocm7.2) — a `uv`-specific mechanism invisible to `pip`. A plain
-`pip install utrace[torch]` (or `[cuda13]`, or `[rocm7-local]`) installs PyPI's default `torch`
-build instead, which bundles CUDA regardless of which extra was requested — not what any of the
-three extras intend. `uv` is the supported, tested path for all three; if you must use `pip`,
-point it at the matching index explicitly with `--extra-index-url` (not `--index-url`, which
-excludes PyPI entirely and breaks resolution of `jax`, `numpy`, and everything else utrace
-needs):
-
-```bash
-pip install utrace\[torch\]@https://github.com/edgardomarchi/utrace.git@main \
-    --extra-index-url https://download.pytorch.org/whl/cpu
-pip install utrace\[cuda13\]@https://github.com/edgardomarchi/utrace.git@main \
-    --extra-index-url https://download.pytorch.org/whl/cu130
-pip install utrace\[rocm7-local\]@https://github.com/edgardomarchi/utrace.git@main \
-    --extra-index-url https://download.pytorch.org/whl/rocm7.2
-```
+**On `pip` vs `uv`.** Under this shape, no extra a normal user installs carries torch — `viz`,
+`cuda13` and `rocm7-local` are all torch-free, so `[tool.uv.sources]` index routing (the
+`uv`-specific mechanism that picks the right PyTorch wheel index) is irrelevant to them, and a
+plain `pip install` works fine for all three. Routing only matters for the `examples` extra,
+which does carry torch, and for the `dev`/`dev-cuda13`/`dev-rocm7` contributor groups documented
+in `CLAUDE.md` — both are `uv` workflows already, so this is not a new constraint. A plain
+`pip install utrace[examples]` still works, but installs PyPI's default `torch` build, which
+bundles CUDA regardless of the extra — not what `examples` intends. Use `uv pip install` (as
+above) to get the CPU build instead.
 
 ## Usage
 
