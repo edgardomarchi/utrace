@@ -154,7 +154,6 @@ dev = [
     "ipython",
 
     # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
-    "monai",
     "nibabel",
     "scikit-learn",
 ]
@@ -202,7 +201,6 @@ dev-cuda13 = [
     "ipython",
 
     # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
-    "monai",
     "nibabel",
     "scikit-learn",
 ]
@@ -251,7 +249,6 @@ dev-rocm7 = [
     "ipython",
 
     # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
-    "monai",
     "nibabel",
     "scikit-learn",
 ]
