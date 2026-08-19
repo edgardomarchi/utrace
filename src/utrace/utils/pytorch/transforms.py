@@ -4,7 +4,7 @@
 import torch
 
 
-class AddGaussianNoise(object):
+class AddGaussianNoise:
     def __init__(self, mean=0., std=1.):
         self.std = std
         self.mean = mean

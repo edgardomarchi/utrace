@@ -13,24 +13,21 @@
 import logging
 from pathlib import Path
 
-import numpy as np
 import matplotlib.pyplot as plt
-
+import numpy as np
 import torch
 import torch.nn.functional as F
+from bayesian_torch.models.dnn_to_bnn import dnn_to_bnn
+from bayesian_torch.utils.util import mutual_information, predictive_entropy
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
-
-
-from bayesian_torch.models.dnn_to_bnn import dnn_to_bnn
-from bayesian_torch.utils.util import predictive_entropy, mutual_information
 
 from utrace.utils.pytorch.example_models import ImageClassifierCNN, train_and_save
 
 logger = logging.getLogger(__name__)
 
 
-class AddGaussianNoise(object):
+class AddGaussianNoise:
     def __init__(self, mean=0., std=1.):
         self.std = std
         self.mean = mean

@@ -1,16 +1,15 @@
-import os
 import glob
-
+import os
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Union, Optional, Callable, Sequence
 
 import nibabel as nib
-
 import torch
-from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
 
 from ..utils import relabel
+
 
 class SplitDataset(Dataset):
     """Auxiliary class to split a dataset into train and test sets.
@@ -32,7 +31,7 @@ class SplitDataset(Dataset):
 class ACDCDataset(Dataset):
     """Helper class to load de ACDC data as a torch dataset.
     """
-    def __init__(self, root_dir:Union[str,Path], target_size:tuple=(256, 256), transform=None):
+    def __init__(self, root_dir:str | Path, target_size:tuple=(256, 256), transform=None):
         self.root_dir = root_dir
         self.target_size = target_size
         self.transform = transform
@@ -104,17 +103,17 @@ class ACDCDataset(Dataset):
         return tensor
 
 
-def get_ACDC_dataloader(root_dir:Union[str,Path]='data', target_size:tuple=(256, 256),
-                        batch_size:int=4, shuffle=True, transform:Optional[Callable]=None, num_workers=0):
+def get_ACDC_dataloader(root_dir:str | Path='data', target_size:tuple=(256, 256),
+                        batch_size:int=4, shuffle=True, transform:Callable | None=None, num_workers=0):
     dataset = ACDCDataset(root_dir, target_size=target_size, transform=transform)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
     
     return dataloader
 
 
-def get_ACDC_train_test_dataloaders(root_dir:Union[str,Path]='data', target_size:tuple=(256, 256),
+def get_ACDC_train_test_dataloaders(root_dir:str | Path='data', target_size:tuple=(256, 256),
                                     train_batch_size:int=4, test_batch_size:int=4,
-                                    train_transform:Optional[Callable]=None, test_transform:Optional[Callable]=None,
+                                    train_transform:Callable | None=None, test_transform:Callable | None=None,
                                     test_size:float=0.2,
                                     shuffle=True, num_workers=0):
     
@@ -134,9 +133,9 @@ def get_ACDC_train_test_dataloaders(root_dir:Union[str,Path]='data', target_size
     
     return train_dataloader, test_dataloader
 
-def get_ACDC_cal_tun_tst_dataloaders(root_dir:Union[str,Path]='data', target_size:tuple=(256, 256),
+def get_ACDC_cal_tun_tst_dataloaders(root_dir:str | Path='data', target_size:tuple=(256, 256),
                                      cal_batch_size:int=10, tune_batch_size:int=10, test_batch_size:int=10,
-                                     cal_transform:Optional[Callable]=None, tune_transform:Optional[Callable]=None, test_transform:Optional[Callable]=None,
+                                     cal_transform:Callable | None=None, tune_transform:Callable | None=None, test_transform:Callable | None=None,
                                      splits:Sequence=(0.1,0.4,0.5),
                                      shuffle=True, num_workers=0) -> tuple[DataLoader, DataLoader, DataLoader]:
     

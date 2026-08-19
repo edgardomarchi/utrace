@@ -3,16 +3,18 @@
 These assert what `import utrace` does to the process: which global JAX configuration it leaves in place, and which heavy dependencies it does NOT pull in - torch, and (since the imports in utils.py were deferred into the two functions that actually need them) matplotlib and pandas. They are grouped because they share that subject, not their mechanism - the torch/matplotlib/pandas absence tests run in a subprocess because pytest's own suite imports all three into this process elsewhere.
 """
 
-import subprocess, sys
+import subprocess
+import sys
 
 import pytest
+
 
 def test_core_does_not_import_torch():
     code = (
         "import sys; import utrace; "
         "assert 'torch' not in sys.modules, sorted(m for m in sys.modules if m.startswith('torch'))"
     )
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)  # noqa: PLW1510 - check=True would raise before this assert could surface r.stderr
     assert r.returncode == 0, r.stderr
 
 
@@ -27,13 +29,14 @@ def test_core_does_not_import_matplotlib_or_pandas():
         "assert 'matplotlib' not in sys.modules and 'pandas' not in sys.modules, "
         "sorted(m for m in sys.modules if m.startswith('matplotlib') or m.startswith('pandas'))"
     )
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)  # noqa: PLW1510 - check=True would raise before this assert could surface r.stderr
     assert r.returncode == 0, r.stderr
 
 
 def test_x64_is_enabled():
-    import utrace  # noqa: F401
     import jax.numpy as jnp
+
+    import utrace  # noqa: F401
     assert jnp.zeros(1, dtype=jnp.float64).dtype == jnp.float64
 
 
@@ -52,7 +55,7 @@ def test_deferred_matplotlib_and_pandas_imports_resolve_on_call():
     import matplotlib.pyplot as plt
     import numpy as np
 
-    from utrace.utils import plot_scores, class_wise_performance
+    from utrace.utils import class_wise_performance, plot_scores
 
     fig, ax = plt.subplots()
     plot_scores(
@@ -100,5 +103,5 @@ def test_torch_helpers_import_does_not_pull_matplotlib():
         "import sys; from utrace.utils.pytorch import helpers; "
         "assert 'matplotlib' not in sys.modules, sorted(m for m in sys.modules if m.startswith('matplotlib'))"
     )
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)  # noqa: PLW1510 - check=True would raise before this assert could surface r.stderr
     assert r.returncode == 0, r.stderr

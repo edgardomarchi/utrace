@@ -1,5 +1,5 @@
-import torch
 import numpy as np
+import torch
 
 
 def flatten_batch(tensor_batch):
@@ -125,7 +125,7 @@ def view_classify(img, ps, version="MNIST"):
     import matplotlib.pyplot as plt
     ps = ps.data.numpy().squeeze()
 
-    fig, (ax1, ax2) = plt.subplots(figsize=(6,9), ncols=2)
+    _fig, (ax1, ax2) = plt.subplots(figsize=(6,9), ncols=2)
     ax1.imshow(img.resize_(1, 28, 28).numpy().squeeze())
     ax1.axis('off')
     ax2.barh(np.arange(10), ps)

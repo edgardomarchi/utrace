@@ -1,28 +1,24 @@
 import logging
 from pathlib import Path
 
-from _common import precompute_softmax
-
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
-from mpl_toolkits.axes_grid1.inset_locator import mark_inset
-
 import numpy as np
 import pandas as pd
-
 import torch
+from _common import precompute_softmax
+from mpl_toolkits.axes_grid1.inset_locator import mark_inset, zoomed_inset_axes
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
-from torchvision.transforms.v2 import RandomPerspective, ElasticTransform
+from torchvision.transforms.v2 import ElasticTransform, RandomPerspective
 
 from utrace import UncertaintyQuantifier
 from utrace.utils import get_coverage
-from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import (
     ImageClassifierCNN,
     ImageClassifierLinear,
     train_and_save,
 )
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.model_wrapper import Pytorch_wrapper
 from utrace.utils.pytorch.transforms import AddGaussianNoise
 

@@ -10,13 +10,12 @@ Both functions implement arr[ceil(q*(n-1))] clipped to n-1 on a sorted array.
 This test pins that they are byte-identical on real calibrated buffers from
 UncertaintyQuantifier, across the full operating alpha/N grid.
 """
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from utrace import UncertaintyQuantifier
 from utrace.utils import _masked_quantile_higher
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

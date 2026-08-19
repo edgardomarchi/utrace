@@ -1,24 +1,23 @@
 import logging
 from pathlib import Path
 
-from _common import derive_max_batch_size, precompute_softmax, setup_example_io
-
-from scipy import stats
-
 import matplotlib.pyplot as plt
 import numpy as np
+
 #import pandas as pd
 import torch
+from _common import derive_max_batch_size, precompute_softmax, setup_example_io
+from scipy import stats
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
 from utrace import UncertaintyQuantifier
-from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import (
     ImageClassifierCNN,
     ImageClassifierLinear,
     train_and_save,
 )
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.model_wrapper import Pytorch_wrapper
 from utrace.utils.pytorch.transforms import AddGaussianNoise
 

@@ -7,24 +7,23 @@ Memory note: calibration is streamed (one batch of logits at a time, scores
 accumulated) so it scales to large calibration sets. Tuning materializes its
 set, which is cheap because conformal prediction converges with few samples.
 """
+import time
 import warnings
 
 import numpy as np
 import pytest
 import torch
-import time
-
-from torch.utils.data import DataLoader, random_split, Subset
+from _baselines import BASELINE_DIR
+from torch.utils.data import DataLoader, Subset, random_split
 from torchvision import datasets, transforms
 
 from utrace import UncertaintyQuantifier
 from utrace.utils import get_coverage
-from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.example_models import ImageClassifierCNN
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.model_wrapper import Pytorch_wrapper
 from utrace.utils.pytorch.transforms import AddGaussianNoise
 
-from _baselines import BASELINE_DIR
 
 def set_all_seeds(seed=42):
     import random
@@ -130,7 +129,7 @@ def _compute_golden_run(seed=42):
 
                 # Test: prediction over the whole set; coverage is a GLOBAL
                 # proportion, not an average of per-batch proportions.
-                y_p, y_s = uqs[C].predict(test_smx)
+                _y_p, y_s = uqs[C].predict(test_smx)
                 valid = np.isin(test_y, np.array([C]))
                 if valid.sum() > 0:
                     coverage = get_coverage(test_y[valid], y_s[valid])

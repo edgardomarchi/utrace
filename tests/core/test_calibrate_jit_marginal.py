@@ -20,8 +20,8 @@ Invariants under test:
 
 No torch import: tests/core/ is torch-free by convention.
 """
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from utrace import UncertaintyQuantifier
 from utrace.uncertaintyQuantifier import _calibrate_write_jit

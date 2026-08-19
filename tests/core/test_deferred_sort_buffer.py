@@ -6,12 +6,10 @@ Invariants under test:
 - reset() restores a clean (sorted) empty buffer.
 - No sort is triggered between batch writes; sort fires exactly on the first post-loop read.
 """
-import numpy as np
 import jax.numpy as jnp
-import pytest
+import numpy as np
 
 from utrace import UncertaintyQuantifier
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

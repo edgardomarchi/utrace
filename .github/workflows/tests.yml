@@ -24,6 +24,36 @@ jobs:
       - name: uv lock --check
         run: uv lock --check
 
+  # Fast, independent lint check. ruff is a static analyzer: it parses source as text/AST and
+  # never imports or executes the code under test, so it needs none of the project's runtime
+  # dependencies (no torch, no jax, no `uv sync` at all) and no Python-version matrix. ruff's
+  # target-version inference comes from `requires-python` in pyproject.toml, so this single
+  # invocation already evaluates syntax compatibility against the full 3.11-3.14 range in one
+  # pass (this is what would catch a Python-3.11-incompatible construct, e.g. the f-string
+  # nested-quote bug fixed in scripts/data_size_analysis.py). Pinned to 0.16.3 to match the
+  # version currently resolved in uv.lock's dev group; not synced from the lock directly because
+  # `ruff` lives in the same `dev` group as torch (see the CI report's pytest/torch coupling
+  # finding), so `uv sync` here would pay for a torch download just to lint. Default ruleset only
+  # (no --select): this job enforces the same rules a plain `ruff check` run enforces locally,
+  # nothing stricter.
+  #
+  # scripts/ is deliberately excluded: it has 25 remaining findings, all dead instrumentation
+  # (unused variables/unpacked results in exploratory example scripts) that the ruff-adoption
+  # passes correctly left alone rather than mechanically deleting - not something this job should
+  # fail on. Excluded pending a deliberate cleanup pass over scripts/, not an oversight.
+  lint:
+    name: Lint (ruff, default ruleset)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - name: ruff check
+        run: uvx ruff@0.16.3 check src/ tests/
+
   # Installs ONLY the base package - no extras, no dependency group - and proves `import utrace`
   # neither requires nor pulls in torch. A test in tests/core/ asserts the same property, but it
   # runs in an environment where torch IS installed (via the dev group), so it can only prove
