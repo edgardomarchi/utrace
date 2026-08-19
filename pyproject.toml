@@ -110,6 +110,21 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [dependency-groups]
+# pytest and its plugins are their own group, not part of dev/dev-cuda13/dev-rocm7, so an
+# environment can run tests/core/ (torch-free by convention) without installing torch. All three
+# dev groups include this group (`{include-group = "test"}`) rather than duplicating its
+# contents - see .reports/2026-08-19_pytest_group_split.md for why pytest-cov had to move here
+# too, not just pytest itself: pyproject.toml's own [tool.pytest.ini_options] addopts references
+# --cov-report/--no-cov flags that only exist once pytest-cov is installed, so an environment
+# missing it can't even collect tests, regardless of whether coverage is actually wanted.
+test = [
+    "pytest",
+    "pytest-describe",
+    "pytest-expecter",
+    "pytest-random",
+    "pytest-cov",
+    "freezegun",
+]
 dev = [
     "torch",
     "torchvision",
@@ -126,12 +141,7 @@ dev = [
     "wrapt",
 
     # Testing
-    "pytest",
-    "pytest-describe",
-    "pytest-expecter",
-    "pytest-random",
-    "pytest-cov",
-    "freezegun",
+    {include-group = "test"},
 
     # Reports
     "coveragespace",
@@ -169,12 +179,7 @@ dev-cuda13 = [
     "wrapt",
 
     # Testing
-    "pytest",
-    "pytest-describe",
-    "pytest-expecter",
-    "pytest-random",
-    "pytest-cov",
-    "freezegun",
+    {include-group = "test"},
 
     # Reports
     "coveragespace",
@@ -213,12 +218,7 @@ dev-rocm7 = [
     "wrapt",
 
     # Testing
-    "pytest",
-    "pytest-describe",
-    "pytest-expecter",
-    "pytest-random",
-    "pytest-cov",
-    "freezegun",
+    {include-group = "test"},
 
     # Reports
     "coveragespace",
