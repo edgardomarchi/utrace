@@ -161,7 +161,7 @@ def main(train_model=False, *, img_path: Path, num_sizes=40):
         ax.set_xlabel(f"{config_dict['xlabel']} data size")
         ax.set_ylabel('U')
         ax.legend()
-        fig.savefig(img_path / Path(f'U_vs_{config_dict['xlabel']}_sizes.pdf'))
+        fig.savefig(img_path / Path(f"U_vs_{config_dict['xlabel']}_sizes.pdf"))
 
 
     for _, config_dict in figures.items():
@@ -180,7 +180,7 @@ def main(train_model=False, *, img_path: Path, num_sizes=40):
         ax.set_ylabel('U')
         ax.legend()
         #fig.tight_layout()
-        fig.savefig(img_path / Path(f'U_vs_{config_dict['xlabel']}_sizes_var.pdf'))
+        fig.savefig(img_path / Path(f"U_vs_{config_dict['xlabel']}_sizes_var.pdf"))
 
 if __name__ == '__main__':
 
