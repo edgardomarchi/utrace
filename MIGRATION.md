@@ -33,8 +33,18 @@ API (renamed from `*_from_proba` by the rename batch; see "Rename batch" below).
       Done: MNIST_class_conditional_example.py (merged), ACDC_example.py (migrated, pending numerical validation against the paper), setsize_analysis.py (migrated), convergence_analysis.py (migrated to *_from_proba; core fixes already in), MNIST_example.py (migrated; quick AWGN sweep, 2 iter, reproduces figs 9(a)/10(a): U_bar tracks U_E and (1-Cov), slightly conservative on the Linear model; full multi-degradation / higher-iteration reproduction pending), data_size_analysis.py (migrated; quick num_sizes=8 sweep reproduces fig 7 trends — U converges onto the U_E plane as calibration grows, stabilizing past cal ~1000; tuning size negligible; surface spiky at small sizes; full 40x40 reproduction pending), MNIST_test_coverage.py (migrated; Appendix-A coverage test validated at 10 iterations — KS and Cramér-von Mises pass for both CNN and FC; Linear KS p marginal at ~0.05, higher iteration count advisable for a stronger check), MNIST_test_convergence.py (migrated; aligned to MNIST_test_coverage's Appendix-A convention — predicts at cp.alpha = U and parameterizes the BetaBinom null with U, resolving the script's prior internal alpha/U inconsistency; numerical validation at full iteration count pending). Pending: none.
       Open paper-level validations (separate from migration): convergence_analysis (fig 7b full sweep), ACDC_example (numerical vs paper), MNIST_test_convergence (full 200-iteration run), MNIST_test_coverage (advisable to strengthen beyond 10 iterations).
 - [x] Phase 5 — Migrate remaining state to `jnp` storage. Closure audit: zero array-valued object state remains on numpy. `conformity_scores_` is the only persistent array state and is a jnp buffer. Achieved via (1) the quantile swap — host-side `np.nanquantile` replaced by the jit `_masked_quantile_higher` in the alpha setter (commit 0f8512f) — and (2) defer-sort — new scores are written into the fixed jnp buffer without per-batch sorting; a single `jnp.sort` runs lazily on first read via the `conformity_scores_` property, gated by a `_sorted` dirty flag (commit 4852c3b). Deliberate exclusion: `__alpha` and `__q_hat` REMAIN `np.float64` host scalars — they are Python-level static args (never traced inside `jit`), not array state, so they are out of scope for "state → jnp" by design. NOTE: "migrating state to jnp" is DONE; this does NOT mean the core is numpy-free. Residual scalar/host-prep numpy (label arrays, class masks, staging buffers on transient locals) is intentional and untouched by this phase. The remaining numpy round-trips are Phase-6 perf/cleanup items (see Backlog), not Phase-5 state.
-- [ ] Phase 6 — Remove legacy API, `model` parameter, the `USE_JAX` flag, and the legacy
-      golden/baselines. Revised step ordering below (supersedes the original single-item
+- [x] Phase 6 — Remove legacy API, `model` parameter, the `USE_JAX` flag, and the legacy
+      golden/baselines. DONE: the original six-step plan (steps 1-6, including sub-steps
+      3a-3c) delivered exactly what this phase's own goal states — the legacy `calibrate`/
+      `predict`/`get_uncertainty_jit`/`get_uncertainty`/`get_uncertainty_opt`/`get_U` methods
+      and the `model` constructor parameter are gone (confirmed absent from
+      `src/utrace/uncertaintyQuantifier.py`; `UncertaintyQuantifier(model=x)` raises
+      `TypeError`), `USE_JAX` no longer exists anywhere in `src/`, and the legacy tests and
+      `.npy` baselines were deleted. Two follow-on items appended to the step list after the
+      original plan — step 7 (labels host-copy) and step 8 (`flatten_batch` ->
+      `flatten_to_pixels` unification) — remain open and are tracked in the step list below;
+      they are cleanup discovered while doing Phase 6, not part of what this phase's stated
+      goal requires. Revised step ordering below (supersedes the original single-item
       plan above; re-derived after a diagnostic pass found the original order had an
       avoidable dependency and after the first two steps were already executed):
       1. DONE — `_max_N` overflow guard.
@@ -134,6 +144,28 @@ API (renamed from `*_from_proba` by the rename batch; see "Rename batch" below).
       `NEW_API_BASELINE_DIR` naming, once flagged here as redundant and a rename candidate, were
       renamed by the rename batch's first commit (`NEW_API_BASELINE_DIR` -> `BASELINE_DIR`,
       `test_golden_mnist_new_api.py` -> `test_golden_mnist.py`); see "Rename batch" below.
+
+### Status at a glance
+
+Done: Phase 6 (the original six-step plan); step-ladder items A, B1, B.5, C, and the rename
+batch; packaging (both passes, see "Phase 6 step 3c" and "Phase 6 step 3c, second pass" below);
+and, outside the phase numbering entirely (see "CI and tooling" below), the CI workflow, ruff
+adoption rung 1, the pytest dependency-group split, and the `scripts/` lint cleanup.
+
+Removed rather than done: step-ladder item B2, after a measured negative result (see "Measured
+negative result: jnp-native padding" below) — its content was absorbed into D, not lost.
+
+Partially done: step-ladder item D — the marginal (`classes=None`) slice is done (see "Step D,
+marginal slice" below); the rest (the class filter under jit, vmap over classes, the `N`
+semantics change) remains fully coupled and not started.
+
+Not started: step-ladder item E; Phase 6 steps 7 and 8 (see above); ruff rungs 2 (pydocstyle) and
+3 (`ruff format`); and the Backlog below.
+
+[INTENT] This document is now over 1200 lines and does three jobs at once — phase plan, findings
+record, and backlog. Splitting the findings into their own file (leaving this one as the phase
+plan and backlog) is a pending structural pass, deliberately kept separate from this content sync
+so that pass's diff is purely structural and reviewable as such.
 
 ## Architecture / design direction (not started — Phase 6 scope unchanged)
 
@@ -725,12 +757,13 @@ to go through them now reads `self._state.<field>` directly (`_N` -> `_state.N`,
 The `_new_api` suffixes and `NEW_API_BASELINE_DIR` naming, flagged alongside these as rename
 candidates, were also renamed by the batch (see "Rename batch" above). The third item flagged
 alongside them — consolidating the two import-property tests
-(`tests/core/test_x64_is_enabled.py` and `tests/core/test_import_properties.py`, currently
+(`tests/core/test_x64_is_enabled.py` and `tests/core/test_import_properties.py`, at the time
 separate files grouped by subject — see "Test conventions" below) — was NOT done by the rename
-batch; the two files remain separate. It stays open, no longer blocked on the collected-test-ID
-constraint that held back the other two (that constraint applied while Phase 6 steps were still
-using an empty-diff acceptance criterion; the rename batch's own criterion, recorded above,
-tolerates a declared, walked ID diff, so a future consolidation could use the same pattern).
+batch, and stayed open for a time; it was done later, by a separate commit
+(`2011758`, "Consolidate the import-property tests into one file") that predates this pass —
+`tests/core/test_x64_is_enabled.py` no longer exists, and `test_x64_is_enabled` lives in
+`tests/core/test_import_properties.py` alongside the rest. Recorded here as corrected, not as
+newly done by this pass — this document had not been updated to reflect it until now.
 
 ### What the state PyTree revealed for step D
 
@@ -821,6 +854,162 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   `get_uncertainty` breaks any script. `float()`, `np.isnan()` and pandas all accept
   jnp scalars, so this is expected to be soft, but it must be checked against the scripts
   rather than assumed.
+
+## CI and tooling (post-Phase-6 infrastructure)
+
+[ESTABLISHED] Five pieces of work landed here, recorded together since they arrived in sequence
+and the later ones build on the earlier: a CI workflow (the project had none before); a Python
+3.11 syntax defect in `scripts/`, found once CI could check for it; ruff adoption, rung 1; the
+pytest dependency-group split; and a `scripts/` lint cleanup that brought `scripts/` under the
+new lint job. None of the five is a phase and nothing here changes the Phase 6 step list or the
+step ladder above.
+
+### Continuous integration
+
+[ESTABLISHED] The project had no CI until now; everything had been verified by hand across three
+machines. `.github/workflows/tests.yml` now runs on every push and on pull requests against
+`main`:
+- `lock-check` — `uv lock --check`, catching a `uv.lock` that has drifted from `pyproject.toml`
+  before anything else runs, without resolving or installing anything.
+- `base-import` — installs only the base package (no extras, no dependency group) and asserts
+  `import utrace` succeeds with torch absent from `sys.modules`. Matrixed across Python 3.11,
+  3.12, 3.13, 3.14.
+- `core` — runs `tests/core/`, matrixed across the same four Python versions; also runs a
+  `compileall` pass over `scripts/` as one of its steps (see below).
+- `integration` — runs `tests/integration/torch/`, matrixed across the same four versions.
+- `lint` — `ruff check src/ tests/ scripts/` (default ruleset), a single run, not matrixed.
+
+[ESTABLISHED] `uv sync --locked` and `uv sync --frozen` are not synonyms, and the difference is
+the entire point of the drift job. Verified against a copy of the project with simulated drift (a
+dependency added to a copy of `pyproject.toml` without re-locking): `--frozen` installs the stale
+lock silently and exits 0; `--locked` and `uv lock --check` both exit 1. A lock that has drifted
+from the pyproject has bitten this project before — the check exists because of that history, not
+speculatively.
+
+[ESTABLISHED] Third-party GitHub Actions (`actions/checkout`, `astral-sh/setup-uv`) are pinned by
+commit SHA rather than by tag, because a tag is a movable pointer to third-party code that runs
+with access to the repository. `.github/dependabot.yml` keeps the pins current (monthly, on the
+`github-actions` ecosystem; it also has a provisional `uv`-ecosystem block for `uv.lock` itself,
+flagged in its own comment as newer, less-proven Dependabot support, to be dropped if it turns out
+not to work). `uv` itself is deliberately NOT pinned to a specific release in the workflow: it
+comes from its own release process rather than running third-party code with repository access in
+the same sense, and `uv.lock` already fixes every dependency version regardless of which `uv`
+release resolves it.
+
+### The Python 3.11 syntax defect scripts/ carried
+
+[ESTABLISHED] `scripts/data_size_analysis.py` used nested identical quote characters inside an
+f-string — PEP 701 syntax, requiring Python 3.12 — while `requires-python` declares `>=3.11`. The
+script did not compile on the oldest Python version the project claims to support. Fixed by
+commit `76fc223` ("Fix f-string syntax that broke scripts/ on Python 3.11").
+
+[ESTABLISHED] Two existing nets both missed it, neither one built to cover the specific
+combination that hid it:
+- CI runs the test suite on 3.11 and passed regardless, because no test in `tests/` imports
+  anything under `scripts/` — a syntax error in a script is invisible to `pytest` collection.
+- The same script had already run successfully, twice, during the step C equivalence check (see
+  "Verification method for unvalidated scripts" above; the run itself is recorded in
+  `.reports/2026-07-31_stepC_group1_5700G.md`) — but in a local environment using this project's
+  development-default Python (3.14 throughout the other sessions in this refactor; that specific
+  report does not print the interpreter version, so this is not a direct quote of it, only the
+  best-supported inference), where the PEP 701 syntax is valid and the bug cannot appear.
+
+Neither net covered "this file" and "the oldest supported interpreter" at the same time. A
+`compileall` pass over `scripts/`, now part of CI (see above), catches this whole class of defect
+in a second, without importing or running anything — it would have caught this one immediately,
+and is exactly why it was added.
+
+### ruff adoption, rung 1
+
+[ESTABLISHED] ruff replaces `black`, `isort`, `pydocstyle`, `pylint`, and `pylint-pytest` in the
+`dev`/`dev-cuda13`/`dev-rocm7` dependency groups — none of which anything in the repo actually
+invoked: no pre-commit config, no CI lint job (until this pass), no Makefile target. `mypy` stays;
+it is a type checker, not a linter, and ruff does not replace it.
+
+[ESTABLISHED] Rung 1 is ruff's default ruleset, chosen on measurement rather than preference: the
+default ruleset finds 130 issues repo-wide and 41 in `src/`, and its safe autofixes touch only
+import ordering and one type-hint modernization. Golden `.npy` baselines byte-identical before and
+after; collected test-ID diff empty.
+
+[ESTABLISHED] Four findings were suppressed rather than fixed, each with the reason recorded
+inline at the point of suppression, because otherwise they will look like oversights to a later
+reader:
+- The broad `except Exception` in `to_jax` is the middle tier of a deliberate three-tier fallback
+  (DLPack, then a cpu/numpy fallback, then a generic one) — swallowing the exception and falling
+  through to the next tier is the mechanism, not an omission.
+- `plot_scores`'s `ax: "plt.Axes"` parameter is a quoted forward reference, added on purpose when
+  matplotlib's import was deferred out of `import utrace` (see "Import structure: matplotlib and
+  pandas deferred out of `import utrace`" above) — the annotation cannot name `plt` unquoted,
+  since `plt` is not bound at module scope until the function body runs.
+- `pytest-expecter`'s `expect(x) == y` performs its assertion as a side effect inside `__eq__`, so
+  the bare comparison expression IS the intended API, not a mistake.
+- `__init__.py` re-exports get a per-file `F401` ignore — the standard convention for a package's
+  public-API surface, not a suppression of a real finding.
+
+[ESTABLISHED] Two findings were real and are fixed:
+- `max_batch_size` was annotated `int` while defaulting to `None` — the same implicit-Optional
+  defect mypy had reported as the single standing error on `uncertaintyQuantifier.py` since the
+  first Phase 6 diagnostic. Now annotated `int | None`; `mypy` reports zero errors on the file.
+- `Pytorch_wrapper.__init__` defaulted `classes` to `np.arange(4)`, a mutable default evaluated
+  once at class-definition time and assigned to `self.classes_` without a copy — every instance
+  constructed without an explicit `classes=` would have shared the same array object. The bug was
+  latent, not live: every one of the nine construction sites across `src/`, `tests/`, and
+  `scripts/` passes `classes=` explicitly, and nothing anywhere mutates `classes_` in place.
+
+[INTENT] Two further rungs were measured and deliberately not taken:
+- pydocstyle would triple the finding count to 364, with 188 in `src/`, and less than half of
+  those are auto-fixable — the remainder is writing docstrings, not running a fixer. Best
+  sequenced after any classifier/regressor split (see "Architecture / design direction" above):
+  docstrings written now, against the current single-class shape, would be written twice.
+- `ruff format` (replacing `black`) would change 159 lines in `uncertaintyQuantifier.py` alone.
+  All-or-nothing per file, low semantic risk, large diff. Best done when the affected files are
+  not about to be rewritten, since formatting first would multiply the noise in any later diff.
+
+### The pytest dependency-group split
+
+[ESTABLISHED] `pytest` lived only inside the three `dev`/`dev-cuda13`/`dev-rocm7` groups, all of
+which bundle torch, so no environment could run the suite without installing it — and the CI
+`core` job paid that download for tests that never import torch. A `test` group now holds
+`pytest` and its plugins; the three `dev*` groups include it via PEP 735 `{include-group =
+"test"}` rather than duplicating the package list, verified by actually installing from each
+route, not only by resolving.
+
+[ESTABLISHED] `pytest-cov` had to move with it, non-obviously. `pyproject.toml`'s `addopts` block
+passes `--cov-report=...` and `--no-cov-on-fail` unconditionally, on every invocation, and
+`--no-cov` — the canonical test command's own flag — is itself a `pytest-cov`-provided option.
+Without the plugin, `pytest` fails at argument-parsing time, before collection starts, on every
+invocation including the canonical `--no-cov` one. Leaving `pytest-cov` behind in `dev` would have
+made the new `test` group unusable for its only purpose. `coveragespace`, which uploads coverage
+reports rather than hooking into `pytest` itself, stays in `dev`.
+
+[ESTABLISHED] A clean environment synced with the `test` group and the `viz` extra — no `dev`
+group, no torch — runs `tests/core/` at 113 passed, 1 skipped; the skip is the one test that asks
+for torch and does not find it (`pytest.importorskip("torch")`, by design).
+
+### scripts/ lint cleanup
+
+[ESTABLISHED] ruff found 53 findings in `scripts/` at the start of this pass, mostly dead
+instrumentation — summary statistics computed, assigned, and never printed, saved, or plotted.
+Worth recording precisely, because a smaller figure (25) had circulated earlier: 25 was the count
+for seven of the eight touched files — an earlier ruff-adoption pass had deliberately excluded
+`scripts/ACDC_example.py` from an autofix run because its `I001`/`F811` findings were entangled in
+one hunk, and that file's remaining 28 findings were never separately addressed until this pass.
+All 53 are now resolved; `scripts/` is under the CI `lint` job (see above).
+
+[ESTABLISHED] Two cases a blind autofix would have gotten wrong are the argument for
+grep-verifying every deletion by hand rather than trusting a fixer:
+- A deleted variable in `MNIST_test_convergence.py` was referenced by a commented-out alternative
+  implementation directly below it. The comment was removed along with the variable, rather than
+  being left pointing at a name that no longer exists.
+- Removing `test_loader` in `data_size_analysis.py` orphaned `test_dataset`, one element of a
+  `random_split` tuple whose other elements stay live. It was renamed with a leading underscore
+  rather than deleted, keeping the `random_split` call — and therefore its RNG consumption —
+  identical.
+
+[ESTABLISHED] No test covers `scripts/`, so the suite passing proved nothing about this cleanup.
+Verification used the step C equivalence procedure (see "Verification method for unvalidated
+scripts" above) on two of the eight touched scripts, including the one with the cascading deletion
+above; both produced byte-identical `.npy` output before and after.
 
 ## Backlog (does not block the phases)
 
@@ -934,7 +1123,8 @@ _masked_quantile_higher is called only from the tuning fori_loop, which is why i
 - [RESOLVED, step 3a] Consequence at the time: `score='aps'` was non-functional in every reachable configuration (`scores/jax_impl.py`'s `aps`/`aps_cal` both unconditionally raised `NotImplementedError()`; the numpy implementation that did implement them could never load, per the point above). Resolved: `score='aps'` now raises `ValueError` explicitly at construction, naming `'lac'` as the supported value; the `aps`/`aps_cal` stub functions were removed from `scores/jax_impl.py` in step 3b.
 - [RESOLVED, step 3b] `src/utrace/.env.example` used to ship `USE_JAX=False` while the actual development `src/utrace/.env` in this checkout had `USE_JAX=True`; a fresh clone following the repo's own example file would have gotten a package that raised `ImportError` on `import utrace`. `.env.example` was deleted; `USE_JAX` has no effect anywhere now, so there is no longer a variable for an example file to get wrong.
 - [RESOLVED, step 3b — moot] `scores/numpy_impl.py`'s `lac_cal` was not actually numpy-typed despite the module name (it called `.cpu().numpy()` on the indexed result, which only works on a torch tensor). This was unreachable code even before removal, so it never bit in practice; the file was deleted outright.
-- [RESOLVED, step 3b] x64 precision's ordering concern — `src/utrace/__init__.py` imports `.uncertaintyQuantifier` BEFORE calling `jax.config.update("jax_enable_x64", True)`, which worked only because nothing at import time of `uncertaintyQuantifier.py` computes a float64 array before the flag is set — was preserved when the call became unconditional (the `if USE_JAX:` guard was removed, not the ordering). Now directly guarded by `tests/core/test_x64_is_enabled.py::test_x64_is_enabled`.
+- [RESOLVED, step 3b] x64 precision's ordering concern — `src/utrace/__init__.py` imports `.uncertaintyQuantifier` BEFORE calling `jax.config.update("jax_enable_x64", True)`, which worked only because nothing at import time of `uncertaintyQuantifier.py` computes a float64 array before the flag is set — was preserved when the call became unconditional (the `if USE_JAX:` guard was removed, not the ordering). Now directly guarded by `tests/core/test_import_properties.py::test_x64_is_enabled` (consolidated
+from its own former file, `test_x64_is_enabled.py` — see "Forwarding accessors" above).
 
 ### Phase 6 step 3c — packaging cleanup [RESOLVED]
 
@@ -1175,7 +1365,7 @@ Note: `.cpu().numpy()` is still legitimate for values that do NOT go into the co
 - `tests/integration/torch/`: may import torch (legitimate).
 - Baselines: `tests/integration/torch/baselines/` (new API only — `baselines/legacy/` was removed in Phase 6 step 4). Regenerate with `regenerate_baselines.py --api new` (the flag now has a single remaining choice; paths relative to the file).
 - Core property tests that survive Phase 6 (cache, performance smoke) live alongside the new-API golden.
-- `tests/core/test_x64_is_enabled.py` and `tests/core/test_import_properties.py` assert properties of the package as an importable artifact (global JAX x64 config, torch absent from `sys.modules` after `import utrace`) rather than API behavior; they are grouped by that subject, not by mechanism — the torch-absence check runs in a subprocess because the rest of the integration suite imports torch into the main test process.
+- `tests/core/test_import_properties.py` (which includes `test_x64_is_enabled`, consolidated into this file — see "Forwarding accessors: temporary scaffolding (removed)" above) asserts properties of the package as an importable artifact (global JAX x64 config, torch/matplotlib/pandas absent from `sys.modules` after `import utrace`) rather than API behavior; these are grouped by that subject, not by mechanism — the torch-absence check runs in a subprocess because the rest of the integration suite imports torch into the main test process.
 
 ## Decisions to respect (do NOT "fix" without confirming)
 
