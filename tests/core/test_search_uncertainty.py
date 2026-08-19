@@ -1,15 +1,18 @@
-import numpy as np
 import jax.numpy as jnp
-from utrace.uncertaintyQuantifier import _search_uncertainty
+import numpy as np
+
 from utrace.scores import lac
+from utrace.uncertaintyQuantifier import _search_uncertainty
+
 
 def test_cs_padding_does_not_recompile_on_N_change():
     """After Phase 2.1: _search_uncertainty must NOT recompile when only n_cs
     changes, holding sample-related shapes (y, p, valid_mask) fixed."""
     import jax.numpy as jnp
     import numpy as np
-    from utrace.uncertaintyQuantifier import _search_uncertainty
+
     from utrace.scores import lac
+    from utrace.uncertaintyQuantifier import _search_uncertainty
 
     _search_uncertainty.clear_cache()
 

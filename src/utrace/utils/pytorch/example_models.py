@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 
 import numpy as np
-
 import torch
 from torch.utils.data import DataLoader
 
@@ -55,7 +54,7 @@ class ImageClassifierCNN(torch.nn.Module):
     """ Simple MNIST digits classifier based on CNN.
     """
     def __init__(self):
-        super(ImageClassifierCNN, self).__init__()
+        super().__init__()
         self.conv_layers = torch.nn.Sequential(
             torch.nn.Conv2d(1, 32, kernel_size=3),
             torch.nn.ReLU(),

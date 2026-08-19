@@ -26,7 +26,12 @@ def cli():
     # Set the root logger level based on the -l argument
     log_level = getattr(logging, args.log.upper(), None)
     if not isinstance(log_level, int):
-        raise ValueError(f"Invalid log level: {args.log}")
+        # Reasoning for the noqa below: this isinstance check is a proxy for "getattr found no
+        # matching attribute" (args.log doesn't name a real logging level), not a
+        # caller-passed-wrong-type check - ValueError is the correct exception for an invalid CLI
+        # argument *value*, matching argparse convention; ruff's TRY004 heuristic assumes every
+        # isinstance-guard-then-raise is type validation, which doesn't fit this usage.
+        raise ValueError(f"Invalid log level: {args.log}")  # noqa: TRY004
     logging.getLogger('').setLevel(log_level)
 
 if __name__ == '__main__':  # pragma: no cover

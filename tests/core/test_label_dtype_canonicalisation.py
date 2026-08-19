@@ -4,8 +4,8 @@ caller's input dtype.
 
 No torch import: tests/core/ is torch-free by convention.
 """
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from utrace import UncertaintyQuantifier
 from utrace.scores import lac_cal

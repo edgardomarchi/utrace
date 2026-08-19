@@ -11,11 +11,10 @@ regenerated .npy files alongside the change that motivated them, and explain
 the reason in the commit message.
 """
 import argparse
-from pathlib import Path
 
 import numpy as np
-
 from _baselines import BASELINE_DIR
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

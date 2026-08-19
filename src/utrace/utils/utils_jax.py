@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jax import jit
 
+
 @jit
 def _masked_quantile_higher(sorted_padded: jnp.ndarray,
                             n_valid: jnp.ndarray,

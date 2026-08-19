@@ -1,6 +1,7 @@
 """Tests for the `score` parameter validation in UncertaintyQuantifier.__init__."""
 
 import pytest
+
 from utrace import UncertaintyQuantifier
 
 

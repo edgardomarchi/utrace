@@ -1,17 +1,22 @@
+# ruff: noqa: N999 - renaming this module (uncertaintyQuantifier.py -> snake_case) is a real
+# refactor, not a trivial fix: 5 other files import it by module path (src/utrace/__init__.py,
+# tests/core/test_calibrate_jit_marginal.py, tests/core/test_search_uncertainty.py,
+# tests/integration/torch/test_golden_mnist.py, tests/core/test_alpha_setter_quantile_equiv.py),
+# all of which would need updating in the same change. Deferred, not fixed here.
 """Conformal predictor wrapper.
 """
 
 import logging
-from typing import Literal, Union, Callable, NamedTuple
+from collections.abc import Callable
+from functools import partial
+from typing import Literal, NamedTuple
 
 import numpy as np
-from jax import numpy as jnp
 from jax import jit, lax
-
-from functools import partial
+from jax import numpy as jnp
 
 from .scores import lac, lac_cal
-from .utils import _masked_quantile_higher, _bucket_size
+from .utils import _bucket_size, _masked_quantile_higher
 from .utils.tensors import to_jax
 
 logger = logging.getLogger(__name__)
@@ -196,9 +201,9 @@ class UncertaintyQuantifier:
         The scoring function to use, by default 'lac'
     """
     def __init__(self, N: int = 1000,
-                 classes: Union[list[int], np.ndarray, None] = None,
+                 classes: list[int] | np.ndarray | None = None,
                  score: Literal['lac'] = 'lac',
-                 max_batch_size: int = None):
+                 max_batch_size: int | None = None):
         """Wrapper for uncertainty quantification using U-TraCE.
 
         Parameters

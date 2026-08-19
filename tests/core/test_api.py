@@ -5,13 +5,13 @@ numpy/jnp inputs only. The equivalence between this API and the legacy
 *(X)* methods that require a torch model lives in
 tests/integration/torch/test_legacy_equivalence.py.
 """
-import numpy as np
-import jax.numpy as jnp
-import pytest
 import warnings
 
-from utrace import UncertaintyQuantifier
+import jax.numpy as jnp
+import numpy as np
+import pytest
 
+from utrace import UncertaintyQuantifier
 
 # ----- helpers ---------------------------------------------------------
 

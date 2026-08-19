@@ -1,4 +1,5 @@
 import logging
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,10 @@ def plot_scores(
     scores: np.ndarray,
     quantiles: np.ndarray,
     method: str,
-    ax: "plt.Axes",
+    ax: "plt.Axes",  # noqa: F821 - quoted forward reference on purpose: matplotlib's import
+    # is deferred into this function's body (see below) precisely so `import utrace` stops
+    # paying for matplotlib; the annotation can't reference `plt` unquoted at module-evaluation
+    # time, since `plt` isn't bound at module scope.
 ) -> None:
     """
     Plots the distribution of scores and overlays quantile lines.
@@ -60,7 +64,9 @@ def plot_scores(
     Returns:
     None
     """
-    import matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt  # noqa: F401 - deferred import kept for its side effect
+    # (loading matplotlib on call, not on `import utrace`); see MIGRATION.md "Import structure:
+    # matplotlib and pandas deferred out of `import utrace`". Not referenced by name below.
     colors = {0: "#1f77b4", 1: "#ff7f0e", 2: "#2ca02c"}
     n, _, _ = ax.hist(scores, bins="auto")
     for quantile in quantiles:

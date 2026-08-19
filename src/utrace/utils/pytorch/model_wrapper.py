@@ -1,18 +1,21 @@
 import numpy as np
 import torch
-from torch import nn
-from sklearn.base import BaseEstimator  # TODO: not needed anymore
 import torch.nn.functional as F
+from sklearn.base import BaseEstimator  # TODO: not needed anymore
+from torch import nn
 
 from .helpers import flatten_batch
 
 
 class Pytorch_wrapper(nn.Module, BaseEstimator):
-    def __init__(self, model, classes: np.ndarray=np.arange(4), device: str|torch.device = "cpu"):
+    def __init__(self, model, classes: np.ndarray | None = None, device: str|torch.device = "cpu"):
         super().__init__()
         self.model = model
         self.__is_fitted = True
-        self.classes_ = classes
+        # Materialized here, not as the default value: a mutable default (np.arange(4)) would be
+        # evaluated once at class-definition time and shared, by reference, across every instance
+        # constructed without an explicit classes= - see .reports/2026-08-19_ruff_rung1_completion.md.
+        self.classes_ = classes if classes is not None else np.arange(4)
         self.device = torch.device(device)
         self.model.to(self.device)
 

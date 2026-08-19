@@ -1,9 +1,9 @@
+import logging
+
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
-import logging
 import numpy as np
-
+from jax.typing import ArrayLike
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,10 @@ def to_jax(array_like: ArrayLike) -> jnp.ndarray:
     if hasattr(array_like, '__dlpack__'):
         try:
             return jax.dlpack.from_dlpack(array_like)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - deliberate: this is the middle tier of a
+            # three-tier fallback (DLPack, then cpu/numpy, then generic); swallowing whatever
+            # DLPack raises and falling through to the next tier is the mechanism, not an
+            # oversight.
             logger.debug("DLPack transfer failed. Using fallback. Error: %s", e)
     
     # Safeguard fallback
