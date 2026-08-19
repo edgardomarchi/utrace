@@ -1,4 +1,5 @@
 # U-TraCE
+[![Tests](https://github.com/edgardomarchi/utrace/actions/workflows/tests.yml/badge.svg)](https://github.com/edgardomarchi/utrace/actions/workflows/tests.yml)
 
 ![Project Status: WIP - Work in Progress](https://img.shields.io/badge/status-work%20in%20progress-yellow.svg)
 
