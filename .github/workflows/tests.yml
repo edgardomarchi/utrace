@@ -85,11 +85,13 @@ jobs:
 
   # tests/core/ is torch-free by convention (no test in it imports torch directly) and needs the
   # viz extra (matplotlib, pandas) for one test that exercises the plotting/reporting helpers.
-  # Note: pytest itself is only declared inside the `dev` / `dev-cuda13` / `dev-rocm7` dependency
-  # groups in pyproject.toml, bundled together with torch/torchvision in all three. There is no
-  # dependency group that provides pytest without also providing torch, so this job still
-  # installs torch via the default `dev` group - it cannot skip that download given the current
-  # packaging. See the CI report for details; this is a packaging observation, not a workflow bug.
+  # pytest and its plugins live in their own `test` dependency group (not `dev`/`dev-cuda13`/
+  # `dev-rocm7`, which all bundle torch/torchvision) precisely so this job can skip torch - see
+  # .reports/2026-08-19_pytest_group_split.md. `--no-default-groups --group test` must be
+  # repeated on the `uv run` step, not just the preceding `uv sync`: `uv run` performs its own
+  # sync-reconciliation using its own default-group assumptions if not told otherwise, and would
+  # silently re-add the default `dev` group (and torch) even after a narrower `uv sync` - the
+  # same gotcha `--extra=viz` already has here, now also true of the group selection.
   core:
     name: Core tests - py${{ matrix.python-version }}
     runs-on: ubuntu-latest
@@ -106,10 +108,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-suffix: core-${{ matrix.python-version }}
-      - name: Install dependencies (default dev group + viz extra)
-        run: uv sync --locked --extra=viz
+      - name: Install dependencies (test group + viz extra, no torch)
+        run: uv sync --locked --no-default-groups --group test --extra=viz
       - name: Run core tests
-        run: uv run --extra=viz pytest tests/core/ -q --no-cov
+        run: uv run --no-default-groups --group test --extra=viz pytest tests/core/ -q --no-cov
       - name: Check scripts parse on this Python
         run: uv run --no-sync python -m compileall -q scripts/
 

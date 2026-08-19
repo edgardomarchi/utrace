@@ -541,7 +541,7 @@ wheels = [
 
 [package.optional-dependencies]
 toml = [
-    { name = "tomli", marker = "python_full_version <= '3.11'" },
+    { name = "tomli", marker = "python_full_version <= '3.11' or (extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev-cuda13') or (extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev-rocm7') or (extra == 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13') or (extra == 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-rocm7') or (extra == 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7')" },
 ]
 
 [[package]]
@@ -2509,7 +2509,7 @@ name = "pytest"
 version = "8.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev-cuda13') or (extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev-rocm7') or (extra == 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13') or (extra == 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-rocm7') or (extra == 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -2524,7 +2524,7 @@ name = "pytest-cov"
 version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "coverage", extra = ["toml"], marker = "extra == 'group-6-utrace-dev' or extra == 'group-6-utrace-dev-cuda13' or extra == 'group-6-utrace-dev-rocm7'" },
+    { name = "coverage", extra = ["toml"] },
     { name = "pluggy" },
     { name = "pytest" },
 ]
@@ -3641,6 +3641,14 @@ dev-rocm7 = [
     { name = "triton-rocm" },
     { name = "wrapt" },
 ]
+test = [
+    { name = "freezegun" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-describe" },
+    { name = "pytest-expecter" },
+    { name = "pytest-random" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -3742,6 +3750,14 @@ dev-rocm7 = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/rocm7.2", conflict = { package = "utrace", group = "dev-rocm7" } },
     { name = "triton-rocm", index = "https://download.pytorch.org/whl/rocm7.2", conflict = { package = "utrace", group = "dev-rocm7" } },
     { name = "wrapt" },
+]
+test = [
+    { name = "freezegun" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-describe" },
+    { name = "pytest-expecter" },
+    { name = "pytest-random" },
 ]
 
 [[package]]
