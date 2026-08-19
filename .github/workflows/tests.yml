@@ -80,6 +80,8 @@ jobs:
         run: uv sync --locked --extra=viz
       - name: Run core tests
         run: uv run --extra=viz pytest tests/core/ -q --no-cov
+      - name: Check scripts parse on this Python
+        run: uv run --no-sync python -m compileall -q scripts/
 
   # tests/integration/torch/ downloads torch and torchvision (via the default `dev` group) and
   # trains small MNIST models. It does not need the viz extra: no test in this directory touches
