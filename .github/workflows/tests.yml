@@ -4,12 +4,9 @@ name: Tests
 # rather than only validated after merging to main.
 on:
   push:
+    branches: [main]
   pull_request:
     branches: [main]
-
-env:
-  # Pinned to the uv version verified locally (`uv --version`) when this workflow was written.
-  UV_VERSION: "0.9.21"
 
 jobs:
   # Fast drift check: fails if uv.lock is out of sync with pyproject.toml, without resolving
@@ -23,7 +20,6 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: ${{ env.UV_VERSION }}
           python-version: "3.13"
       - name: uv lock --check
         run: uv lock --check
@@ -46,7 +42,6 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-suffix: base-import-${{ matrix.python-version }}
@@ -78,7 +73,6 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-suffix: core-${{ matrix.python-version }}
@@ -103,7 +97,6 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-suffix: integration-${{ matrix.python-version }}
