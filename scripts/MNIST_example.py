@@ -223,7 +223,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                 for X_test, y_test in testDataLoader:
                     smx_test = classifier.predict_proba(X_test)
                     y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
-                    y_p, y_s = uq.predict(smx_test)
+                    _y_p, y_s = uq.predict(smx_test)
                     V = len(y_test_arr)
                     if V > 0:
                         batch_covs.append(get_coverage(y_test_arr, y_s))
@@ -258,20 +258,11 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         std_coverages = np.std(iter_coverages, axis=0)
         np.save(model_data_path / Path('std_coverages.npy'), std_coverages)
 
-        iter_set_sizes = np.array(iter_set_sizes_)
-        mean_set_sizes = np.mean(iter_set_sizes, axis=0)
-
         iter_accuracies = np.array(iter_accuracies_)
         mean_accuracies = np.mean(iter_accuracies, axis=0)
         np.save(model_data_path / Path('mean_accuracies.npy'), mean_accuracies)
         std_accuracies = np.std(iter_accuracies, axis=0)
         np.save(model_data_path / Path('std_accuracies.npy'), std_accuracies)
-
-        iter_alphas = np.array(iter_alphas_)
-        mean_alphas = np.mean(iter_alphas, axis=0)
-
-        iter_alphas_std = np.array(iter_alphas_std_)
-        mean_alphas_std = np.mean(iter_alphas_std, axis=0)
 
         iter_uncertainties = np.array(iter_uncertainties_)
         mean_uncertainties = np.mean(iter_uncertainties, axis=0)
@@ -282,9 +273,6 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         # Save the noises used:
         noises = np.array(noises)
         np.save(model_data_path / Path('noises.npy'), noises)
-
-        iter_uncertainties_std = np.array(iter_uncertainties_std_)
-        mean_uncertainties_std = np.mean(iter_uncertainties_std_, axis=0)
         # -
 
         # Fill the table:

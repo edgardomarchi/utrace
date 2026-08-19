@@ -259,10 +259,8 @@ def main(train_model: bool=False,
         ax.hist(empirical_data, density=True, bins=5, alpha=0.6, label='Histograma de datos')
 
         # PDF teórica de la distribución Beta
-        x = np.linspace(0, 1, 4000)
         center = int(empirical_data.mean())
         x_int = np.linspace(center-12000, center+12000, 24000, dtype=int)
-        #pdf_beta = stats.beta.pdf(x, a_hyp, b_hyp)
         pdf_beta = stats.betabinom.pmf(x_int, Nr, a_hyp, b_hyp)
         ax.plot(x_int, pdf_beta, 'r-', lw=2, label=f'PDF de Beta({a_hyp}, {b_hyp})')
 
