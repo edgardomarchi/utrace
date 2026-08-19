@@ -1,0 +1,113 @@
+name: Tests
+
+# pull_request is included (not just push) so this workflow can be iterated on from a PR,
+# rather than only validated after merging to main.
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+env:
+  # Pinned to the uv version verified locally (`uv --version`) when this workflow was written.
+  UV_VERSION: "0.9.21"
+
+jobs:
+  # Fast drift check: fails if uv.lock is out of sync with pyproject.toml, without resolving
+  # or installing anything. Independent of Python version, so it runs once.
+  lock-check:
+    name: Lock file check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+      - name: uv lock --check
+        run: uv lock --check
+
+  # Installs ONLY the base package - no extras, no dependency group - and proves `import utrace`
+  # neither requires nor pulls in torch. A test in tests/core/ asserts the same property, but it
+  # runs in an environment where torch IS installed (via the dev group), so it can only prove
+  # torch isn't imported eagerly, not that utrace works without torch installed at all. This job
+  # verifies the stronger claim for real.
+  base-import:
+    name: Base import (no extras, no dev group) - py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-suffix: base-import-${{ matrix.python-version }}
+      - name: Install base package only (no extras, no dependency group)
+        run: uv sync --locked --no-default-groups
+      - name: Assert import utrace succeeds with torch absent from sys.modules
+        run: >-
+          uv run --no-sync python -c "import sys; import utrace;
+          assert 'torch' not in sys.modules, sorted(m for m in sys.modules if
+          m.startswith('torch'))"
+
+  # tests/core/ is torch-free by convention (no test in it imports torch directly) and needs the
+  # viz extra (matplotlib, pandas) for one test that exercises the plotting/reporting helpers.
+  # Note: pytest itself is only declared inside the `dev` / `dev-cuda13` / `dev-rocm7` dependency
+  # groups in pyproject.toml, bundled together with torch/torchvision in all three. There is no
+  # dependency group that provides pytest without also providing torch, so this job still
+  # installs torch via the default `dev` group - it cannot skip that download given the current
+  # packaging. See the CI report for details; this is a packaging observation, not a workflow bug.
+  core:
+    name: Core tests - py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-suffix: core-${{ matrix.python-version }}
+      - name: Install dependencies (default dev group + viz extra)
+        run: uv sync --locked --extra=viz
+      - name: Run core tests
+        run: uv run --extra=viz pytest tests/core/ -q --no-cov
+
+  # tests/integration/torch/ downloads torch and torchvision (via the default `dev` group) and
+  # trains small MNIST models. It does not need the viz extra: no test in this directory touches
+  # matplotlib or pandas.
+  integration:
+    name: Integration tests (torch) - py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-suffix: integration-${{ matrix.python-version }}
+      - name: Install dependencies (default dev group)
+        run: uv sync --locked
+      - name: Run integration tests
+        run: uv run pytest tests/integration/torch/ -q --no-cov

@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned GitHub Actions current. Dependabot opens a PR with the new commit SHA
+  # and the tag it corresponds to, so the pins stay reviewable rather than going stale.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+
+  # Python dependencies come from uv.lock. Dependabot's uv support is newer than its Actions
+  # support, so treat this block as provisional: if it produces noise or PRs that do not
+  # actually update uv.lock, remove it and keep the actions block.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
