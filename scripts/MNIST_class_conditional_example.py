@@ -241,7 +241,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                     logger.info("Testing class %d with alpha=%f (std=%f) and U=%f (std=%f)...", C, alpha, alpha_std, U, U_std)
                     mask_C = (test_y_all == C)
                     y_n_C = test_y_all[mask_C]
-                    y_p, y_s = uqs[C].predict(test_smx_all)
+                    _y_p, y_s = uqs[C].predict(test_smx_all)
                     y_s_C = y_s[mask_C]
 
                     coverage = get_coverage(y_n_C, y_s_C)
@@ -275,20 +275,11 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         std_coverages = np.std(iter_coverages, axis=0)
         np.save(model_data_path / Path('std_coverages.npy'), std_coverages)
 
-        iter_set_sizes = np.array(iter_set_sizes_)
-        mean_set_sizes = np.mean(iter_set_sizes, axis=0)
-
         iter_accuracies = np.array(iter_accuracies_)
         mean_accuracies = np.mean(iter_accuracies, axis=0)
         np.save(model_data_path / Path('mean_accuracies.npy'), mean_accuracies)
         std_accuracies = np.std(iter_accuracies, axis=0)
         np.save(model_data_path / Path('std_accuracies.npy'), std_accuracies)
-
-        iter_alphas = np.array(iter_alphas_)
-        mean_alphas = np.mean(iter_alphas, axis=0)
-
-        iter_alphas_std = np.array(iter_alphas_std_)
-        mean_alphas_std = np.mean(iter_alphas_std, axis=0)
 
         iter_uncertainties = np.array(iter_uncertainties_)
         mean_uncertainties = np.mean(iter_uncertainties, axis=0)
@@ -299,9 +290,6 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         # Save the noises used:
         noises = np.array(noises)
         np.save(model_data_path / Path('noises.npy'), noises)
-
-        iter_uncertainties_std = np.array(iter_uncertainties_std_)
-        mean_uncertainties_std = np.mean(iter_uncertainties_std_, axis=0)
         # -
 
         # Fill the table:
@@ -319,16 +307,6 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
         dfs.to_latex(model_tab_path / Path('class_uncertainty.tex'), hrules=True, label=f'tab:{model_name}_class_uncertainty',
                     caption='Class-wise uncertainty and empirical uncertainty for different noise levels.')
         print(data_df)
-
-
-        if iterations==1:
-            U_str = r'${U}$'
-            Ue_str = r'${U}_E$'
-            Cov_str = r'$1-{Cov}$'
-        else:
-            U_str = r'$\bar{U}$'
-            Ue_str = r'$\bar{U}_E$'
-            Cov_str = r'$1-\overline{Cov}$'
 
         # +
         layout = [

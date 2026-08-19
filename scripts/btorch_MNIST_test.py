@@ -100,10 +100,10 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
                                                                         transforms.Normalize((0.5,), (0.5,)),
                                                                         AddGaussianNoise(0., noise)]))
 
-            cal_dataset, tune_dataset, test_dataset = random_split(wholeDataset, splits)
+            _cal_dataset, _tune_dataset, test_dataset = random_split(wholeDataset, splits)
 
-            #calDataLoader = DataLoader(cal_dataset, batch_size=BATCH_SIZE, shuffle=True)
-            #tuneDataLoader = DataLoader(tune_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            #calDataLoader = DataLoader(_cal_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            #tuneDataLoader = DataLoader(_tune_dataset, batch_size=BATCH_SIZE, shuffle=True)
             testDataLoader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
             x_test, y_test = next(iter(testDataLoader))

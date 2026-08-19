@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 def main(train_model=False, *, img_path: Path):
 
     BATCH_SIZE = 1024*6
-    lambda_ = 0
     MODEL_SEED = 42
     SPLIT_SEED = 24
 

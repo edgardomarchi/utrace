@@ -36,11 +36,6 @@ jobs:
   # finding), so `uv sync` here would pay for a torch download just to lint. Default ruleset only
   # (no --select): this job enforces the same rules a plain `ruff check` run enforces locally,
   # nothing stricter.
-  #
-  # scripts/ is deliberately excluded: it has 25 remaining findings, all dead instrumentation
-  # (unused variables/unpacked results in exploratory example scripts) that the ruff-adoption
-  # passes correctly left alone rather than mechanically deleting - not something this job should
-  # fail on. Excluded pending a deliberate cleanup pass over scripts/, not an oversight.
   lint:
     name: Lint (ruff, default ruleset)
     runs-on: ubuntu-latest
@@ -52,7 +47,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: ruff check
-        run: uvx ruff@0.16.3 check src/ tests/
+        run: uvx ruff@0.16.3 check src/ tests/ scripts/
 
   # Installs ONLY the base package - no extras, no dependency group - and proves `import utrace`
   # neither requires nor pulls in torch. A test in tests/core/ asserts the same property, but it

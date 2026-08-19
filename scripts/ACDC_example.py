@@ -58,34 +58,26 @@ REFERENCES
 """
 
 import logging
+import math
 from pathlib import Path
 
-from _common import setup_example_io
-
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
-from mpl_toolkits.axes_grid1.inset_locator import mark_inset
-from matplotlib.ticker import MaxNLocator
-from matplotlib.colors import ListedColormap
-
-import math
-
 import numpy as np
 import pandas as pd
 import torch
+from _common import setup_example_io
 from matplotlib.colors import ListedColormap
+from matplotlib.ticker import MaxNLocator
 from monai.bundle.utils import load_bundle_config
 from torchvision import transforms
-from torchvision.transforms.v2 import RandomPerspective, ElasticTransform
-
+from torchvision.transforms.v2 import ElasticTransform, RandomPerspective
 
 from utrace import UncertaintyQuantifier
-from utrace.utils import get_coverage
-from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.dataset_wrapper import (
     get_ACDC_cal_tun_tst_dataloaders,
     get_ACDC_dataloader,
 )
+from utrace.utils.pytorch.helpers import flatten_batch
 from utrace.utils.pytorch.model_wrapper import Pytorch_wrapper
 
 logger = logging.getLogger(__name__)
@@ -138,7 +130,7 @@ class MinMaxNormalize:
         return (x - x.min()) / (x.max() - x.min())
 
 
-class AddGaussianNoise(object):
+class AddGaussianNoise:
     def __init__(self, mean=0., std=1.):
         self.std = std
         self.mean = mean
@@ -147,7 +139,7 @@ class AddGaussianNoise(object):
         return tensor + torch.randn(tensor.shape) * self.std + self.mean
 
     def __repr__(self):
-        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
+        return self.__class__.__name__ + f'(mean={self.mean}, std={self.std})'
 
 
 def main(img_path: Path=Path("img/ACDC_example/"),
@@ -335,7 +327,7 @@ def main(img_path: Path=Path("img/ACDC_example/"),
                 # y_test_arr feeds mask_C / y_s indexing below (non-core, numpy-typed), not the core: kept as numpy.
                 y_test_arr = flatten_batch(y_test).ravel().numpy().astype(int)
                 for C in model.classes_:
-                    y_p, y_s = uqs[C].predict(smx_test)
+                    _y_p, y_s = uqs[C].predict(smx_test)
                     mask_C = (y_test_arr == C)
                     n_C = int(mask_C.sum())
                     total_test_pix[C] += n_C
@@ -373,37 +365,18 @@ def main(img_path: Path=Path("img/ACDC_example/"),
     model_data_path.mkdir(parents=True, exist_ok=True)
     # +
     iter_coverages = np.array(iter_coverages_)
-    min_coverages = np.min(iter_coverages, axis=0)
-    max_coverages = np.max(iter_coverages, axis=0)
     mean_coverages =  np.mean(iter_coverages, axis=0)
     np.save(model_data_path / Path('mean_coverages.npy'), mean_coverages)
     std_coverages = np.std(iter_coverages, axis=0)
     np.save(model_data_path / Path('std_coverages.npy'), std_coverages)
 
-    iter_set_sizes = np.array(iter_set_sizes_)
-    max_set_sizes = np.max(iter_set_sizes, axis=0)
-    min_set_sizes = np.min(iter_set_sizes, axis=0)
-    mean_set_sizes = np.mean(iter_set_sizes, axis=0)
-
     iter_accuracies = np.array(iter_accuracies_)
-    min_accuracies = np.min(iter_accuracies, axis=0)
-    max_accuracies = np.max(iter_accuracies, axis=0)
     mean_accuracies = np.mean(iter_accuracies, axis=0)
     np.save(model_data_path / Path('mean_accuracies.npy'), mean_accuracies)
     std_accuracies = np.std(iter_accuracies, axis=0)
     np.save(model_data_path / Path('std_accuracies.npy'), std_accuracies)
 
-    iter_alphas = np.array(iter_alphas_)
-    min_alphas = np.min(iter_alphas, axis=0)
-    max_alphas = np.max(iter_alphas, axis=0)
-    mean_alphas = np.mean(iter_alphas, axis=0)
-
-    iter_alphas_std = np.array(iter_alphas_std_)
-    mean_alphas_std = np.mean(iter_alphas_std, axis=0)
-
     iter_uncertainties = np.array(iter_uncertainties_)
-    min_uncertainties = np.min(iter_uncertainties, axis=0)
-    max_uncertainties = np.max(iter_uncertainties, axis=0)
     mean_uncertainties = np.mean(iter_uncertainties, axis=0)
     np.save(model_data_path / Path('mean_uncertainties.npy'), mean_uncertainties)
     std_uncertainties = np.std(iter_uncertainties, axis=0)
@@ -412,9 +385,6 @@ def main(img_path: Path=Path("img/ACDC_example/"),
     # Save the noises used:
     noises = np.array(noises)
     np.save(model_data_path / Path('noises.npy'), noises)
-
-    iter_uncertainties_std = np.array(iter_uncertainties_std_)
-    mean_uncertainties_std = np.mean(iter_uncertainties_std_, axis=0)
     # -
 
     # Fill the table:
@@ -435,20 +405,9 @@ def main(img_path: Path=Path("img/ACDC_example/"),
     print(data_df)
     data_df.to_latex(tab_path / 'KM_class_uncertainty.tex', index=True, float_format="%.3f")
 
-
-    if iterations==1:
-        U_str = r'${U}$'
-        Ue_str = r'${U}_E$'
-        Cov_str = r'$1-{Cov}$'
-    else:
-        U_str = r'$\bar{U}$'
-        Ue_str = r'$\bar{U}_E$'
-        Cov_str = r'$1-\overline{Cov}$'
-
     offset = 0.0
     x = np.arange(len(noises))
     x_float = x.astype(float)
-    xlabels = [f'{noise:.2f}' for noise in noises]
 
 
     fig, axs = plt.subplots(1, 4, figsize=(7, 7/4), layout='constrained')

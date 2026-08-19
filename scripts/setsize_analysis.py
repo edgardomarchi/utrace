@@ -212,7 +212,7 @@ def main(train_model=False, img_path=Path("img/")):
         # Find alpha that produces average set size of 1:
         # materialize the full tune set, then ONE binary search — no per-batch averaging
         tune_softmax, tune_y = precompute_softmax(tune_loader, classifier)
-        U, alpha = cp.get_uncertainty(tune_softmax, tune_y)
+        _U, alpha = cp.get_uncertainty(tune_softmax, tune_y)
         cp.alpha = alpha
 
         logger.info("Noise std: %f - Alpha found: %f", noise_std, alpha)

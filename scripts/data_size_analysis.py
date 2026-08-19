@@ -103,11 +103,10 @@ def main(train_model=False, *, img_path: Path, num_sizes=40):
                         int(calsize*total_samples), int(tunesize*total_samples), int(testsize*total_samples))
 
             # Re-calibrate and re-test with noise:
-            calibrate_dataset, tune_dataset, test_dataset = random_split(wholeDataset, [calsize, tunesize, testsize])
+            calibrate_dataset, tune_dataset, _test_dataset = random_split(wholeDataset, [calsize, tunesize, testsize])
 
             calibrate_loader = DataLoader(calibrate_dataset, batch_size=BATCH_SIZE, shuffle=True)
             tune_loader = DataLoader(tune_dataset, batch_size=BATCH_SIZE, shuffle=True)
-            test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
             cp.reset()  # Reset the conformal predictor
             for X_cal, y_cal in calibrate_loader:
@@ -119,7 +118,7 @@ def main(train_model=False, *, img_path: Path, num_sizes=40):
             # data, so per-batch averaging is invalid)
             tune_smx_all, tune_y_all = precompute_softmax(tune_loader, classifier)
             tune_y_all = flatten_batch(tune_y_all).ravel()
-            U, alpha = cp.get_uncertainty(tune_smx_all, tune_y_all, max_iters=30)
+            U, _alpha = cp.get_uncertainty(tune_smx_all, tune_y_all, max_iters=30)
             alphas[cs, ts] = U  # NOTE: 'alphas' holds U, matching the legacy naming the plots below read
 
     # Plot the results
@@ -148,7 +147,7 @@ def main(train_model=False, *, img_path: Path, num_sizes=40):
         },
     }
 
-    for _, config_dict in figures.items():
+    for config_dict in figures.values():
 
         fig, ax = plt.subplots(1, figsize=(3.5, 2.5), layout='constrained')
         axis:int = config_dict['axis'] # type:ignore
@@ -166,7 +165,7 @@ def main(train_model=False, *, img_path: Path, num_sizes=40):
         fig.savefig(img_path / Path(f"U_vs_{config_dict['xlabel']}_sizes.pdf"))
 
 
-    for _, config_dict in figures.items():
+    for config_dict in figures.values():
 
         fig, ax = plt.subplots(1, figsize=(3.5, 2.5), layout='constrained')
         axis:int = config_dict['axis'] # type:ignore
