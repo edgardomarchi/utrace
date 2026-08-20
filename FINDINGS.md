@@ -361,7 +361,7 @@ reader:
 [INTENT] Two further rungs were measured and deliberately not taken:
 - pydocstyle would triple the finding count to 364, with 188 in `src/`, and less than half of
   those are auto-fixable — the remainder is writing docstrings, not running a fixer. Best
-  sequenced after any classifier/regressor split (see "Architecture / design direction" above):
+  sequenced after any classifier/regressor split (see "Architecture / design direction" in MIGRATION.md):
   docstrings written now, against the current single-class shape, would be written twice.
 - `ruff format` (replacing `black`) would change 159 lines in `uncertaintyQuantifier.py` alone.
   All-or-nothing per file, low semantic risk, large diff. Best done when the affected files are
@@ -410,7 +410,7 @@ grep-verifying every deletion by hand rather than trusting a fixer:
 
 [ESTABLISHED] No test covers `scripts/`, so the suite passing proved nothing about this cleanup.
 Verification used the step C equivalence procedure (see "Verification method for unvalidated
-scripts" above) on two of the eight touched scripts, including the one with the cascading deletion
+scripts" in CONTRIBUTING.md) on two of the eight touched scripts, including the one with the cascading deletion
 above; both produced byte-identical `.npy` output before and after.
 
 - [DONE] Packaging cleanup (post-Phase 6): see "Phase 6 step 3c — packaging cleanup [RESOLVED]" and its second pass, "Phase 6 step 3c, second pass — reshaping extras around usage [RESOLVED]", both below. Note that torch was already absent from `[project].dependencies` before either cleanup - it only appeared in the optional-dependency groups (first pass) / dependency groups (current). What used to keep torch mandatory was that the core imported `flatten_batch` at module level; Phase 6 step 5 removed that import, and `tests/core/test_import_properties.py::test_core_does_not_import_torch` now guards the property.
