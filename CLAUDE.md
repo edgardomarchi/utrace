@@ -5,7 +5,7 @@ Backend-agnostic uncertainty quantification (conformal prediction) for black-box
 ## Build & test
 - Run tests: `uv run --extra=viz pytest tests/ -q --no-cov`
   `--extra=torch` is gone: torch now comes from the default `dev` dependency group (see
-  MIGRATION.md, "Phase 6 step 3c — packaging cleanup" and the reshape entry above it), so a plain
+  FINDINGS.md, "Phase 6 step 3c — packaging cleanup" and the reshape entry above it), so a plain
   `uv sync`/`uv run` already has it. `--extra=viz` is still required on the `uv run` that executes
   pytest, not on a preceding `uv sync` — a bare `uv run pytest` re-syncs the environment down to
   base plus `dev` and silently drops `matplotlib`/`pandas`, which are NOT part of the `dev` group.
@@ -37,12 +37,13 @@ error: Groups `dev` (enabled by default) and `dev-cuda13` are incompatible with 
 
 ## Active refactor — READ FIRST
 This repo is mid-refactor (PyTorch → backend-agnostic core). Before touching
-any core code, tests, or example scripts, read `MIGRATION.md`. It defines the
-phase state, the canonical migration recipe, and the dependency rule (core
-never imports torch). Do not deviate from it without flagging the conflict.
+any core code, tests, or example scripts, read `MIGRATION.md` and `CONTRIBUTING.md`.
+MIGRATION.md defines the phase state; CONTRIBUTING.md defines the canonical migration
+recipe and the dependency rule (core never imports torch). Do not deviate from either
+without flagging the conflict.
 
 ## Working style
 - One script / one concern per change. Do not migrate multiple scripts at once.
 - Preserve behavior; the golden tests are the safety net.
-- Some things that look like bugs are intentional (see MIGRATION.md "Decisions
+- Some things that look like bugs are intentional (see CONTRIBUTING.md "Decisions
   to respect"). Flag, don't "fix" silently.

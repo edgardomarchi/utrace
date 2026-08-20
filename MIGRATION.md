@@ -4,9 +4,9 @@
 
 
 Context document for the ongoing refactor of the `utrace` package. Captures the phase
-status, the canonical migration pattern, and agreed conventions. This is the source of
-truth for the refactor: when in doubt about "how something is done here," this document
-and the tests are authoritative.
+status — this document and the tests are the source of truth for where the refactor
+stands. The canonical migration recipe and contributor conventions live in
+CONTRIBUTING.md; verified findings live in FINDINGS.md; open work lives in BACKLOG.md.
 
 Diagnostic and execution reports produced during this refactor are kept in a private
 companion repository, checked out at `.reports/` (gitignored).

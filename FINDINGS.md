@@ -53,7 +53,7 @@ convention (`predict_proba` as a model-wrapper method name), lives outside the c
 `utils/pytorch/model_wrapper.py`, and was the single largest remaining source of `proba` hits
 after the library and caller renames — left untouched on purpose, not missed.
 
-### Accidental public surface
+### Accidental public surface [RESOLVED]
 
 [ESTABLISHED] `src/utrace/scores/__init__.py` does `from .jax_impl import *`, and
 `scores/jax_impl.py` defines no `__all__`, so every public (non-underscore) module-level name
@@ -64,9 +64,9 @@ reachable today, without anyone having decided that as an API surface. Verified 
 during the batch (`from utrace import scores; 'jax_print' in dir(scores)` returned `True` before
 the dead-code commit), not inferred from reading the wildcard import.
 
-[INTENT] An explicit `__all__` on `scores/jax_impl.py` (or replacing the wildcard import in
-`scores/__init__.py` with named imports) would close this. Not done — added to the backlog,
-see BACKLOG.md.
+[RESOLVED] `scores/jax_impl.py` now declares `__all__ = ["lac", "lac_cal"]` (landed in the
+three-cleanups commit), closing the wildcard re-export: `jnp` and `jit` are no longer
+reachable through `utrace.scores`.
 
 ### Discrepancies found against earlier counts
 
@@ -341,7 +341,7 @@ reader:
   through to the next tier is the mechanism, not an omission.
 - `plot_scores`'s `ax: "plt.Axes"` parameter is a quoted forward reference, added on purpose when
   matplotlib's import was deferred out of `import utrace` (see "Import structure: matplotlib and
-  pandas deferred out of `import utrace`" above) — the annotation cannot name `plt` unquoted,
+  pandas deferred out of `import utrace`" below) — the annotation cannot name `plt` unquoted,
   since `plt` is not bound at module scope until the function body runs.
 - `pytest-expecter`'s `expect(x) == y` performs its assertion as a side effect inside `__eq__`, so
   the bare comparison expression IS the intended API, not a mistake.
@@ -418,7 +418,7 @@ above; both produced byte-identical `.npy` output before and after.
   at the time as an unwanted side effect, since `torch` was NOT otherwise a `dev`-group member,
   so a plotting-only dev environment paid for `torch` (then pinned to `2.11.0`, per the dry-run
   that established this) purely as monai's transitive dependency. The second packaging pass (see
-  "Phase 6 step 3c, second pass" above) made `torch` a direct, intentional `dev`-group member —
+  "Phase 6 step 3c, second pass" below) made `torch` a direct, intentional `dev`-group member —
   every contributor environment needs it for `tests/integration/torch/` regardless of monai — so
   the "pays for torch it didn't ask for" framing no longer applies; monai no longer changes
   whether `torch` is installed, only that it's one more package alongside it. Only
