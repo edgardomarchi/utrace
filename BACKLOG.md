@@ -63,3 +63,89 @@ Out of scope for the current script-migration work. Recorded here so the context
 2. BetaBinom null fragility: in both Appendix-A scripts, `Nr` (= `Nv`) is taken from only the last loop iteration's test-set size, while per-iteration sizes vary by ~1 sample due to `random_split`'s remainder rounding. The null distribution's trial count is therefore a (very close) approximation, not exact, across all recorded iterations.
 3. GPU validation for per-class calibration: the per-class calibration path (classes=[...]) has not been fully validated on a GPU backend end-to-end; only the global path (classes=None, MNIST_example) has a clean GPU run. MNIST_class_conditional ran on GPU only with ad-hoc batch tuning (a probe, not the final structure). This remains an open GPU-validation item.
 
+## Research questions (candidates for a second publication — NOT implementation tasks)
+
+These are open research questions the refactor surfaced, recorded here because this is where the
+work happens, not because any of them is scheduled work. Nobody should pick one of these up as a
+chore; each needs measurement or proof that has not been done, and some needs data or hardware
+this project does not currently have.
+
+A second publication is anticipated alongside the package's planned regression support (the
+current public API — `calibrate`, `predict`, `get_uncertainty` — was already named task-agnostically
+for this, per "Naming convention now in force" in FINDINGS.md), and the questions below are
+candidates for it.
+
+1. **Numerical quantisation as a contribution to the reported uncertainty.**
+   [ESTABLISHED, from source] The conformity-score buffer is `jnp.float64`
+   throughout (`_UQState.conformity_scores`, `uncertaintyQuantifier.py`). `lac`/`lac_cal`
+   (`scores/jax_impl.py`) return `1 - smx`, so scores lie in `[0,1]`, which float32 would
+   represent with room to spare. `_masked_quantile_higher` (`utils/utils_jax.py`) does not
+   interpolate: it computes `ceil(q*(n-1))`, clips to `[0, n_valid-1]`, and indexes into the
+   sorted buffer — so it returns an element of the array, not a blend of two, and the precision
+   of the returned quantile is the precision of the scores themselves.
+   The risk in float32 is therefore not rounding of the quantile value but TIES: two adjacent
+   scores collapsing to the same float32 value, changing which index the ceil/clip selects.
+   Coverage's marginal guarantee depends on the ORDERING of the scores, not their values, so the
+   question is concrete and measurable: how many adjacent score pairs tie or invert under
+   float32, how that propagates to `q_hat`, to empirical coverage, and to prediction-set size —
+   compared against the Monte Carlo error of coverage itself, which scales as `1/sqrt(N)` and is
+   tiny at the N this project reaches (see item 3). In a metrological setting this is a
+   contribution to the uncertainty budget that has to be declared, not optional polish.
+   Caveat on the memory framing: halving the buffer's dtype would halve its footprint, but the
+   one full-scale ACDC OOM actually measured (`.reports/2026-08-21_stepE_device_coherence.md`,
+   `RESOURCE_EXHAUSTED: Out of memory while trying to allocate 2.03GiB`) was in the tuning-set
+   padding/masking array inside `_get_uncertainty_jit_impl`, not in the conformity-score buffer
+   itself — so "float32 buffer is the difference between the full ACDC dataset fitting and not"
+   is plausible but not demonstrated by anything measured so far; the buffer's own memory
+   footprint at full scale has not been isolated.
+
+2. **The computational cost of pixel-scale uncertainty quantification.**
+   [ESTABLISHED] This refactor measured jitting's effect across two CPU architectures and one
+   GPU — not three CPU architectures as sometimes summarized; the documented machines are a
+   Ryzen 7 5700G workstation, a Ryzen AI 7 PRO 350 laptop (both CPU backend), and an RTX 3070
+   (GPU, one figure). The mechanism established ("Step D, marginal slice" in MIGRATION.md,
+   measured on the Ryzen AI 7 PRO 350): jitting the buffer write amortises dispatch overhead, and
+   the advantage shrinks as the batch grows and compute comes to dominate — **~13.5x at B=500**,
+   **~2.3x at B=12000**, **~1.08x (near parity) at ACDC pixel scale (B=65000)**
+   (`.reports/2026-08-18_stepD_jit_marginal_diagnostic.md`). Separately, the defer-sort design
+   measured **~357x faster streaming calibration at ~2M-score ACDC scale (7.2s → 20ms)** on the
+   RTX 3070 (FINDINGS.md, "defer-sort" entry).
+   None of this characterises end-to-end per-pixel UQ overhead in a full segmentation pipeline at
+   the scale a clinical user would run — that is the open question: for medical image
+   segmentation, where one image is tens of thousands of pixels per class, what is the practical
+   cost of adding UQ to a pipeline, and nobody appears to have characterised it yet.
+
+3. **Streaming calibration under a bounded memory budget.**
+   [ESTABLISHED] The fixed-size buffer with a masked quantile lets calibration run over tens of
+   millions of scores without holding them all — the ACDC majority class alone reached
+   **N≈67.5M at full scale** (`.reports/2026-08-21_stepE_device_coherence.md`). On the RTX 3070
+   (8GB), the full ~150-patient dataset produced two distinct, separately-reproduced OOMs: the
+   model forward pass at `BATCH_SIZE=200` (`torch.OutOfMemoryError`), and — independent of that —
+   the tuning-set padding/masking array in `_get_uncertainty_jit_impl` at `BATCH_SIZE=20`
+   (`jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate
+   2.03GiB`). Both tracebacks are captured verbatim in that report.
+   The open question is statistical, not engineering: how many scores does the quantile actually
+   need for a given alpha and a given coverage tolerance, and at what point does a bounded buffer
+   stop being sufficient? [UNVERIFIED] Whether the buffer's own `jnp.sort` (JAX arrays are
+   immutable, so a sort necessarily allocates a fresh array rather than sorting in place) adds a
+   separately significant amount on top of the measured tuning-padding OOM has not been isolated
+   — only the tuning-padding contribution was directly measured.
+
+4. **The trained model as a calibrated instrument.**
+   [ESTABLISHED] The project is PTB-funded (Physikalisch-Technische Bundesanstalt, Germany's
+   national metrology institute — see README.md), and FINDINGS.md's "Rename batch" section
+   records the paper's argument that treating a model's scaled logits as an approximation to a
+   probability distribution is a conceptual error — the reason the public API dropped `proba`
+   from its method names. The implementation now exists, runs on GPU, and has been exercised on
+   real ACDC medical-imaging data end-to-end (`.reports/2026-08-21_stepE_device_coherence.md`).
+   One specific claim in the source conversation for this entry — that the distinction between
+   metrological traceability of outputs and data lineage was contributed to a BIPM working group
+   ("BIPM TG-IA") — could not be substantiated: it does not appear anywhere in MIGRATION.md,
+   FINDINGS.md, CONTRIBUTING.md, README.md, or the git history searched for this pass. It is
+   **not** asserted here and should not be treated as established until someone who can confirm
+   it directly does so.
+   What is open, grounded only in what's confirmed above: the gap between the traceability
+   argument and a demonstration of it running on real data is smaller than it was, but what
+   would still be needed to close it into a publishable claim — statistically, and not just as a
+   working pipeline — remains unstated.
+
