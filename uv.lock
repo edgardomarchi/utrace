@@ -2538,14 +2538,14 @@ wheels = [
 
 [[package]]
 name = "pytest-describe"
-version = "3.1.0"
+version = "3.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pytest" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ed/45/aee62c1c994c3bd1074e0d9ec3152e8a7b98d3cdefa315b7921ba2e75645/pytest_describe-3.1.0.tar.gz", hash = "sha256:096017a0efd7beab7114c8fb7ced3a0cfd3a6d8a37e89578ea3d7b190bec6871", size = 9180, upload-time = "2025-12-12T18:44:29.138Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c2/87/87d60fcacee9b003a78c802034fca975ec1ee5e744788ff98aa0b25cbbdc/pytest_describe-3.2.0.tar.gz", hash = "sha256:8697f9818c330c80312c28c731022618ac96d0dab3b5238116c4a7d0cd187d9f", size = 15042, upload-time = "2026-06-12T21:29:00.66Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/1c/9a44c86cf1f0ddc7dbedec3160e6b455501f0a413fb0c123334f37eeb27a/pytest_describe-3.1.0-py3-none-any.whl", hash = "sha256:9835cc6732c1cc92b0ae230f0a8a6084924129669cb370fe9d4422445cae3cc1", size = 7322, upload-time = "2025-12-12T18:44:26.868Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/40/dc0a52e0d1213a847ac7ce493ce49109fe62986e31d4b2587bd22052e1eb/pytest_describe-3.2.0-py3-none-any.whl", hash = "sha256:ea4ef9968145d017847b0e705d058b1ea35ea35c59b5adf4a34378c418ac455a", size = 11732, upload-time = "2026-06-12T21:28:59.378Z" },
 ]
 
 [[package]]
