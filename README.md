@@ -112,9 +112,9 @@ Example scripts can be found in the `scripts` folder.
 This project was developed in collaboration between the following institutions:
 
 *   **Physikalisch-Technische Bundesanstalt (PTB)** - Germany's national metrology institute.
-*   **Instituto Nacional de Tecnología Industrial (INTI)** - The National Institute of Industrial Technology of Argentina.
+*   **Instituto Nacional de Tecnología Industrial (INTI)** - Argentina's national metrology institute.
 
-The project was funded by PTB.
+This work was funded in part by PTB, which supported a three-month research stay at its Berlin facilities. Open-access publication of the associated article was covered under PTB's institutional agreement with the publisher. It was carried out by researchers at INTI and PTB as part of their institutional research activity.
 
 <div style="display: flex; justify-content: center; align-items: center; gap: 20px;">
   
