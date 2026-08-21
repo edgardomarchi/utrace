@@ -1,7 +1,7 @@
 [project]
 
 name = "utrace"
-version = "0.0.1"
+version = "0.1.0"
 description = "Uncertainty Tracking for Complex Estimators"
 
 license = "MIT"
