@@ -183,7 +183,7 @@ def main(train_model: bool=False, img_path: Path=Path("img/MNIST_example/"),
                                                                             ]))
                 # num_workers=0: DataLoader workers fork(), which can deadlock once JAX has started its
                 # threads (fork + multithreading hazard, not a JAX bug). spawn or lazy JAX init could
-                # re-enable workers — deferred; see docs (TODO) / MIGRATION.md.
+                # re-enable workers — deferred; see docs (TODO) / BACKLOG.md.
                 whole_data_loader = DataLoader(wholeDataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
 
                 correct_pix = np.zeros_like(classifier.classes_)

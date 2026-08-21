@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sklearn.base import BaseEstimator  # TODO: not needed anymore
+from sklearn.base import BaseEstimator  # base class; see __sklearn_is_fitted__ below
 from torch import nn
 
 from .helpers import flatten_batch

@@ -121,45 +121,19 @@ explicit = true
 # missing it can't even collect tests, regardless of whether coverage is actually wanted.
 test = [
     "pytest",
-    "pytest-describe",
     "pytest-expecter",
-    "pytest-random",
     "pytest-cov",
-    "freezegun",
 ]
 dev = [
     "torch",
     "torchvision",
 
-    "ipykernel",
-    "jupytext",
-
-    # Formatters
-    "tomli",
-
     # Linters
     "mypy",
     "ruff",
-    "wrapt",
 
     # Testing
     {include-group = "test"},
-
-    # Reports
-    "coveragespace",
-
-    # Documentation
-    "mkdocs",
-    "pygments",
-
-    # Tooling
-    "pre-commit",
-    "bump2version",
-    "pyinstaller",
-    "sniffer",
-    "MacFSEvents; sys_platform == 'darwin'",
-    "pync; sys_platform == 'darwin'",
-    "ipython",
 
     # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
     "nibabel",
@@ -169,35 +143,12 @@ dev-cuda13 = [
     "torch",
     "torchvision",
 
-    "ipykernel",
-    "jupytext",
-
-    # Formatters
-    "tomli",
-
     # Linters
     "mypy",
     "ruff",
-    "wrapt",
 
     # Testing
     {include-group = "test"},
-
-    # Reports
-    "coveragespace",
-
-    # Documentation
-    "mkdocs",
-    "pygments",
-
-    # Tooling
-    "pre-commit",
-    "bump2version",
-    "pyinstaller",
-    "sniffer",
-    "MacFSEvents; sys_platform == 'darwin'",
-    "pync; sys_platform == 'darwin'",
-    "ipython",
 
     # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
     "nibabel",
@@ -208,35 +159,12 @@ dev-rocm7 = [
     "torchvision",
     "triton-rocm",
 
-    "ipykernel",
-    "jupytext",
-
-    # Formatters
-    "tomli",
-
     # Linters
     "mypy",
     "ruff",
-    "wrapt",
 
     # Testing
     {include-group = "test"},
-
-    # Reports
-    "coveragespace",
-
-    # Documentation
-    "mkdocs",
-    "pygments",
-
-    # Tooling
-    "pre-commit",
-    "bump2version",
-    "pyinstaller",
-    "sniffer",
-    "MacFSEvents; sys_platform == 'darwin'",
-    "pync; sys_platform == 'darwin'",
-    "ipython",
 
     # Framework helpers (utils/pytorch/*, scripts/) - not needed by the core
     "nibabel",

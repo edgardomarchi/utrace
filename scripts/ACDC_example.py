@@ -39,8 +39,6 @@ EXTRA DEPENDENCIES (beyond the utrace core)
         torchvision, matplotlib
 
 USAGE NOTES
-    - Set USE_JAX appropriately in the environment (see config / .env); the core import
-      depends on it (see MIGRATION.md).
     - Per-class CP buffer sizes (N) are computed from the data: a one-time pass counts
       per-class pixels, then N is sized to the calibration fraction with a safety margin.
       This is required for segmentation, where pixel counts reach tens of millions.
