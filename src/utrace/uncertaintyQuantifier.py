@@ -11,6 +11,7 @@ from collections.abc import Callable
 from functools import partial
 from typing import Literal, NamedTuple
 
+import jax
 import numpy as np
 from jax import jit, lax
 from jax import numpy as jnp
@@ -301,7 +302,7 @@ class UncertaintyQuantifier:
 
     def calibrate(self, softmax, y, batched: bool = False):
         """Calibrate the conformal predictor with precomputed softmax output.
-        
+
         Parameters
         ----------
         softmax : array-like, shape (n_samples, n_classes)
@@ -311,9 +312,29 @@ class UncertaintyQuantifier:
             Integer class labels.
         batched : bool, default=False
             If True, append to existing calibration scores instead of replacing.
+
+        Notes
+        -----
+        `softmax` and `y` may arrive committed to different devices (e.g. a GPU-resident
+        model output alongside host-resident labels); this method reconciles them by
+        moving `y` to `softmax`'s device before scoring, rather than raising.
         """
         softmax = to_jax(softmax)
         y_arr = to_jax(y).astype(self.label_dtype_)
+        # to_jax converts each argument independently and does NOT reconcile devices
+        # (see its docstring) -- two genuine framework tensors sourced from different
+        # devices (e.g. a CUDA-resident softmax output alongside host-resident labels,
+        # the shape ACDC's per-batch loop produces once the model runs on GPU) reach
+        # here still committed to their own devices, and the jitted score function
+        # raises "Received incompatible devices for jitted computation" if left as-is.
+        # Reconcile here, at the one place both arguments are about to feed the same
+        # jit call: move y_arr to softmax's device rather than the reverse, since
+        # softmax carries n_classes columns per sample and y_arr carries one -- moving
+        # the labels is the smaller transfer whichever device softmax landed on
+        # (including the common case where both are already on the same device,
+        # where devices() equality makes this a no-op).
+        if y_arr.devices() != softmax.devices():
+            y_arr = jax.device_put(y_arr, next(iter(softmax.devices())))
         self._calibrate_impl(softmax, y_arr, batched=batched)
 
     def _calibrate_impl(self, smx, y, batched: bool = False):
