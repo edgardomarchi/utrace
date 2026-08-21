@@ -65,7 +65,7 @@ def plot_scores(
     None
     """
     import matplotlib.pyplot as plt  # noqa: F401 - deferred import kept for its side effect
-    # (loading matplotlib on call, not on `import utrace`); see MIGRATION.md "Import structure:
+    # (loading matplotlib on call, not on `import utrace`); see FINDINGS.md "Import structure:
     # matplotlib and pandas deferred out of `import utrace`". Not referenced by name below.
     colors = {0: "#1f77b4", 1: "#ff7f0e", 2: "#2ca02c"}
     n, _, _ = ax.hist(scores, bins="auto")
