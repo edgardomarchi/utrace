@@ -19,12 +19,19 @@ Backend-agnostic uncertainty quantification (conformal prediction) for black-box
 
 ## Contributor environment setup
 The `dev`, `dev-cuda13` and `dev-rocm7` dependency groups are mutually conflicting (one torch
-build per hardware target) and `dev` is the default group, so pick exactly one:
+build per hardware target) and `dev` is the default group, so pick exactly one. The dependency
+GROUP only routes `torch`/`torchvision` to the right wheel index — it does NOT give `jax` GPU
+support. That comes from a separate EXTRA (`cuda13` / `rocm7-local`), which must be requested
+too, or `jax.default_backend()` silently falls back to `'cpu'` (with an easy-to-miss warning)
+while torch sees the GPU fine. Confirmed by resolution/execution on an RTX 3070 — see
+`.reports/2026-08-20_gpu_verification_3070.md` and `.reports/2026-08-20_gpu_packaging_fixes.md`;
+the ROCm line below carries the identical defect by construction (same group/extra split) but
+was only checked by resolution, no ROCm hardware:
 
 ```bash
-uv sync --extra=viz                                              # CPU (default group, no flags needed)
-uv sync --extra=viz --no-default-groups --group dev-cuda13       # NVIDIA GPU
-uv sync --extra=viz --no-default-groups --group dev-rocm7        # AMD GPU
+uv sync --extra=viz                                                             # CPU (default group, no flags needed)
+uv sync --extra=viz --extra=cuda13      --no-default-groups --group dev-cuda13  # NVIDIA GPU (jax GPU + torch GPU)
+uv sync --extra=viz --extra=rocm7-local --no-default-groups --group dev-rocm7   # AMD GPU (jax GPU + torch GPU)
 ```
 
 `--extra=viz` is needed in all three cases for the same reason as the test command above.
@@ -34,6 +41,17 @@ builds — `uv` refuses outright, naming the conflicting groups:
 error: Groups `dev` (enabled by default) and `dev-cuda13` are incompatible with the conflicts:
 {`utrace:dev`, `utrace:dev-cuda13`, `utrace:dev-rocm7`}
 ```
+
+**Every flag above must be repeated on every subsequent `uv run`, not just the first `uv sync`.**
+This is the same trap as `--extra=viz` on the test command, but worse on the GPU paths: a bare
+`uv run <anything>` (missing `--no-default-groups --group dev-cuda13 --extra=cuda13`, or the
+ROCm equivalent) silently re-syncs down to the default `dev` group and replaces an
+already-installed GPU torch with the CPU build — same version number, only the `+cu130`/`+cpu`
+local segment changes, and `jax` reverts to CPU the same way. There is no error and no obvious
+warning beyond a routine "Uninstalled 2 packages / Installed 2 packages" line. Verified directly:
+this happened on the first bare `uv run` issued right after a correct GPU install. Always pass
+the full flag set — `--no-default-groups --group dev-cuda13 --extra=viz --extra=cuda13` (or the
+ROCm equivalent) — on every `uv run`, not only `uv sync`.
 
 ## Active refactor — READ FIRST
 This repo is mid-refactor (PyTorch → backend-agnostic core). Before touching
