@@ -121,7 +121,6 @@ explicit = true
 # missing it can't even collect tests, regardless of whether coverage is actually wanted.
 test = [
     "pytest",
-    "pytest-expecter",
     "pytest-cov",
 ]
 dev = [
@@ -177,13 +176,6 @@ dev-rocm7 = [
 utrace = "utrace.cli:main"
 
 [tool.ruff.lint.per-file-ignores]
-# expect(x) == y is pytest-expecter's assertion API: the comparison's side effect (inside
-# __eq__) IS the assertion, so the bare comparison expression is the intended usage, not a
-# mistake. The file already carries a `# pylint: disable=...` for exactly this; ruff doesn't
-# read old pylint comments, so this is the ruff-native equivalent. Whole file is affected (both
-# test functions use the idiom), hence a per-file-ignore rather than per-line noqa.
-"src/utrace/tests/test_utils.py" = ["B015", "E711"]
-
 # Names imported into an __init__.py purely to form the package's public API surface, never
 # used by name within the __init__.py itself. Ignoring F401 for __init__.py is the standard
 # convention (ruff's own docs recommend it), not a suppression of a real finding - these are

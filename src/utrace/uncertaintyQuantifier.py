@@ -427,16 +427,14 @@ class UncertaintyQuantifier:
         if self.classes is not None and new_N == 0:
             logger.warning("No calibration scores for the requested class group %s after calibration.", self.classes)
         
-    def predict(self, softmax, force_non_empty_sets: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    def predict(self, softmax) -> tuple[np.ndarray, np.ndarray]:
         """Predict class labels and prediction sets from precomputed softmax output.
-        
+
         Parameters
         ----------
         softmax : array-like, shape (n_samples, n_classes)
             Predicted class softmax output. Accepts any DLPack-compatible array.
-        force_non_empty_sets : bool, default=False
-            If True, ensure the predicted class is always included in the set.
-        
+
         Returns
         -------
         y_pred : np.ndarray, shape (n_samples,)
@@ -499,8 +497,15 @@ class UncertaintyQuantifier:
         """
     
         # TODO: _get_uncertainty_jit_impl espera numpy (lo convierte a jnp adentro)
+        # y goes through to_jax first, exactly like softmax on the line above -- a raw
+        # device-resident tensor (e.g. a CUDA torch tensor) fails np.asarray() directly
+        # (TypeError: can't convert cuda:0 device type tensor to numpy), but to_jax's
+        # DLPack conversion produces a jax array that np.asarray() *can* consume via the
+        # array protocol, with an implicit device-to-host copy. This mirrors calibrate's
+        # own to_jax(y) call; it does not change _get_uncertainty_jit_impl, which still
+        # receives, and still rebuilds, plain host numpy arrays exactly as before.
         softmax = np.asarray(to_jax(softmax))
-        y_arr = np.asarray(y).flatten().astype(int)
+        y_arr = np.asarray(to_jax(y)).flatten().astype(int)
         return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters)
 
     def _get_uncertainty_jit_impl(self, smx, y, max_iters=30):

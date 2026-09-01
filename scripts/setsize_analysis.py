@@ -122,7 +122,7 @@ def main(train_model=False, img_path=Path("img/")):
         for i, alpha in enumerate(alphas):
 
             cp.alpha = alpha
-            _, y_s = cp.predict(test_softmax, force_non_empty_sets=False)
+            _, y_s = cp.predict(test_softmax)
             setsizes = y_s.sum(axis=1)
 
             if not i%4:

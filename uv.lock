@@ -1594,15 +1594,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pytest-expecter"
-version = "3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/24/2c/c1b0f6b202c106005d9b0f8beb3a15c5df3d486734ffc4f425705f90ddd1/pytest-expecter-3.0.tar.gz", hash = "sha256:be8f3e9f823af6d6713e3f552ed47560061a2fd243a78952180f5df61a2b76a4", size = 6354, upload-time = "2022-09-18T19:55:56.577Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/71/151868808dd15628fb2fe58ba3d9cd65603d253fb27d63240f4d7980cbcc/pytest_expecter-3.0-py3-none-any.whl", hash = "sha256:98fe65ecc1ddb7ca29084dc68ec07983dbbdb20b566fd14140b0b5f4b7c84cc8", size = 6699, upload-time = "2022-09-18T19:55:57.927Z" },
-]
-
-[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -2302,7 +2293,6 @@ dev = [
     { name = "nibabel" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-expecter" },
     { name = "ruff" },
     { name = "scikit-learn" },
     { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'group-6-utrace-dev') or (sys_platform != 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev-cuda13') or (sys_platform != 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev-rocm7') or (extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13') or (extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-rocm7') or (extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7') or (extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13') or (extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-rocm7') or (extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7')" },
@@ -2315,7 +2305,6 @@ dev-cuda13 = [
     { name = "nibabel" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-expecter" },
     { name = "ruff" },
     { name = "scikit-learn" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
@@ -2326,7 +2315,6 @@ dev-rocm7 = [
     { name = "nibabel" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-expecter" },
     { name = "ruff" },
     { name = "scikit-learn" },
     { name = "torch", version = "2.13.0+rocm7.2", source = { registry = "https://download.pytorch.org/whl/rocm7.2" } },
@@ -2336,7 +2324,6 @@ dev-rocm7 = [
 test = [
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-expecter" },
 ]
 
 [package.metadata]
@@ -2360,7 +2347,6 @@ dev = [
     { name = "nibabel" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-expecter" },
     { name = "ruff" },
     { name = "scikit-learn" },
     { name = "torch", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "utrace", group = "dev" } },
@@ -2371,7 +2357,6 @@ dev-cuda13 = [
     { name = "nibabel" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-expecter" },
     { name = "ruff" },
     { name = "scikit-learn" },
     { name = "torch", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "utrace", group = "dev-cuda13" } },
@@ -2382,7 +2367,6 @@ dev-rocm7 = [
     { name = "nibabel" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-expecter" },
     { name = "ruff" },
     { name = "scikit-learn" },
     { name = "torch", index = "https://download.pytorch.org/whl/rocm7.2", conflict = { package = "utrace", group = "dev-rocm7" } },
@@ -2392,5 +2376,4 @@ dev-rocm7 = [
 test = [
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-expecter" },
 ]
