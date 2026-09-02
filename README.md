@@ -16,7 +16,7 @@ U-TraCE provides an evaluation method that reports a guaranteed upper bound for 
 
 ### Requirements
 
-* Python 3.12+
+* Python 3.11-3.14
 
 ### Installation
 
@@ -42,12 +42,13 @@ helpers under `utrace.utils.pytorch` require torch to already be present in the 
 from that submodule, not from `utrace` itself.
 
 **Want to run the example scripts** in `scripts/`. These need `torch`/`torchvision` (to train
-and run the example models) plus `viz` (to plot the results). Because routing `torch` to the
-CPU-only PyTorch wheel index is a `uv`-specific mechanism (see below), install this combination
-with `uv` rather than `pip`:
+and run the example models) plus `viz` (to plot the results); `scripts/ACDC_example.py` also
+needs the `acdc` extra (MONAI, for loading the cardiac model bundle, and nibabel, for reading
+NIfTI images). Because routing `torch` to the CPU-only PyTorch wheel index is a `uv`-specific
+mechanism (see below), install this combination with `uv` rather than `pip`:
 
 ```bash
-uv pip install "utrace[examples,viz]@git+https://github.com/edgardomarchi/utrace.git@main"
+uv pip install "utrace[examples,acdc,viz]@git+https://github.com/edgardomarchi/utrace.git@main"
 ```
 
 | extra | adds | needed for |
@@ -55,7 +56,8 @@ uv pip install "utrace[examples,viz]@git+https://github.com/edgardomarchi/utrace
 | `viz` | matplotlib, pandas | the plotting and reporting helpers in `utrace.utils` |
 | `cuda13` | jax[cuda13] | GPU acceleration on NVIDIA, for the JAX backend only |
 | `rocm7-local` | jax[rocm7-local] | GPU acceleration on AMD, for the JAX backend only, against an existing host ROCm install |
-| `examples` | torch, torchvision (CPU build), monai, nibabel | running the scripts in `scripts/` |
+| `examples` | torch, torchvision (CPU build) | running the scripts in `scripts/` |
+| `acdc` | monai, nibabel | `scripts/ACDC_example.py` specifically |
 
 or add it to your `pyproject.toml`:
 

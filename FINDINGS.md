@@ -165,14 +165,22 @@ dataloader never moves them. So on a machine where `torch.cuda.is_available()` i
 devices. `to_jax`'s own docstring states it does "NOT reconcile mismatches between two genuine
 tensors on different devices... that remains the caller's responsibility."
 
-This is an inference from reading the code, not an observation: every machine used in this
-refactor has been CPU-only, where all placements coincide and the mismatch cannot appear. No
-test covers it.
+This was an inference from reading the code, not an observation, when written: every machine used
+in this refactor up to that point had been CPU-only, where all placements coincide and the
+mismatch cannot appear.
 
-[UNVERIFIED] Whether an array is committed to a particular device, and whether two arguments
-reaching the same jitted call agree, is not observable on a CPU backend — every device is the
-same device there. This needs the RTX 3070, which is on a machine that has not been available
-during this work.
+**[ESTABLISHED, confirmed and fixed]** The RTX 3070 has since been available and answered this
+directly. `.reports/2026-08-20_gpu_verification_3070.md` (Q1) reproduced the crash exactly as
+predicted, both synthetically and against the real ACDC model and data: `calibrate()` raised
+`ValueError: Received incompatible devices for jitted computation` on the first calibration
+batch when probabilities are GPU-resident and labels are host-resident. It fails loud, not
+silently — no wrong numbers were produced. The fix landed in `calibrate()` in commit `7f140ea`
+("Reconcile argument devices in calibrate", see `.reports/2026-08-21_stepE_device_coherence.md`),
+and the analogous defect in `get_uncertainty` (found by the 2026-08-21 docs audit, H4b) was fixed
+separately in Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`). `predict` takes no `y` and
+was never exposed. Both fixes have GPU-only regression tests
+(`tests/core/test_calibrate_device_reconciliation.py`,
+`tests/core/test_get_uncertainty_device_reconciliation.py`).
 
 ### Convention: performance figures carry their machine
 
@@ -183,16 +191,23 @@ figures (the isolated-section comparison, the call-count sweep, and the golden-r
 taken on a Ryzen 7 5700G workstation; the ACDC step-C figures were taken on a Ryzen AI 7 350
 laptop.
 
-The defer-sort win (~357x, 7.2s → 20ms, in the Backlog "defer-sort" entry below) keeps its
+The defer-sort win (~357x, 7.2s → 20ms, the defer-sort entry below, in this document) keeps its
 existing attribution to an RTX 3070. The `to_jax` direct-vs-indirect figures under "What is
 unverified" below were measured on the 5700G; see
 `.reports/2026-07-29_phase6_step7_diagnostic_labels_hostcopy_5700G.md`.
 
-[UNVERIFIED] All measurements to date are CPU backend, except the RTX 3070 defer-sort figure
-noted above. The open GPU questions — the device-to-host-to-device ratio, whether np.asarray
-rejects a torch CUDA tensor, whether the jnp padding pays inside a jit trace, and now the
-device-commitment risk from step C — require an RTX 3070 on a third machine. This is a
-constraint on where, not only on when.
+[UPDATED] Most measurements were CPU backend at the time this was written; the RTX 3070 has since
+produced several reports (`.reports/2026-08-20_gpu_verification_3070.md`,
+`.reports/2026-08-20_gpu_packaging_fixes.md`, `.reports/2026-08-21_stepE_device_coherence.md`,
+`.reports/2026-08-21_gpu_main_verification.md`, `.reports/2026-08-21_gpu_measurements_acdc.md`).
+Of the open GPU questions listed here: the device-to-host-to-device ratio is now measured
+(`2026-08-20_gpu_verification_3070.md`, Q3: 32.03x at 2M elements for CUDA-origin tensors, not
+the CPU-measured 175x — a different comparison; the direct `to_jax` path is not flat on GPU
+either, unlike on CPU); whether `np.asarray` rejects a CUDA tensor is confirmed yes (same report,
+Q2, `TypeError`); and the device-commitment risk from step C is confirmed real and has since been
+fixed (see "Step C: device-commitment risk" above). [UNVERIFIED] still open: whether the jnp-native
+padding measured as a CPU regression under "Measured negative result: jnp-native padding" in
+MIGRATION.md pays off inside a jit trace on GPU — no report has measured this specific question.
 
 ### Forwarding accessors: temporary scaffolding (removed)
 
@@ -232,26 +247,34 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   0.0852 ms and 6.98 ms respectively, a 175x ratio at ACDC pixel scale. The flatness is
   consistent with genuine DLPack zero-copy doing no data movement.
   On a GPU backend the data must reach the device regardless, so the relevant comparison is
-  device→host→device versus device→device, which is a DIFFERENT ratio and has not been
-  measured on any GPU backend. Do not read a CPU ~175x figure as applying to GPU hardware.
-- [UNVERIFIED] Whether `np.asarray()` on a torch CUDA tensor raises, and therefore whether the
-  current `calibrate` rejects GPU-resident labels outright rather than merely
-  copying them inefficiently. This is the strongest single argument for step A if true, and it
-  is an inference from known torch behaviour that nobody has run. No CUDA device was available
-  in this (or any prior) diagnostic environment.
+  device→host→device versus device→device — a DIFFERENT ratio. **[ESTABLISHED]** now measured:
+  `.reports/2026-08-20_gpu_verification_3070.md` (Q3) found 32.03x at 2M elements for
+  CUDA-origin tensors (5.34x for CPU-origin tensors at the same size) — do not read the CPU
+  ~175x figure as applying to GPU hardware; the direct `to_jax` path's flatness does not hold on
+  GPU either, it scales mildly with size.
+- **[ESTABLISHED]** Whether `np.asarray()` on a torch CUDA tensor raises, and therefore whether
+  the pre-step-A `calibrate` would have rejected GPU-resident labels outright rather than merely
+  copying them inefficiently. Confirmed yes: `.reports/2026-08-20_gpu_verification_3070.md` (Q2)
+  — `np.asarray(t_cuda)` raises `TypeError: can't convert cuda:0 device type tensor to numpy`.
+  The current DLPack-based path correctly accepts CUDA-resident labels when they agree with the
+  probability tensor's device (mismatched devices raise instead — see "Step C:
+  device-commitment risk" above).
 - [UNVERIFIED] Whether the real cost is the copy or the per-batch device→host synchronisation
   that `np.asarray()` on a jax array forces. In the ACDC streaming pattern this would be a sync
   barrier per batch, which an isolated microbenchmark cannot see because it calls
   `block_until_ready` anyway.
-- [ESTABLISHED, was UNVERIFIED] Whether jitting `_calibrate_impl` pays at all, independent of
-  vmap, is answered on CPU for the marginal (`classes=None`) slice only — see "Step D, marginal
-  slice" in MIGRATION.md for the full numbers, machine, and design findings. Short version: yes, it pays,
-  from the very first call, at the batch sizes MNIST-family scripts use (~2-3x end-to-end through
-  the public `calibrate()`, more in isolation); the win shrinks to near-parity (~1.08x) at ACDC
-  pixel scale, where it remains genuinely open pending GPU measurement. The class-conditional path
-  (with vmap not yet in the picture) is untested and untouched — this item's "independent of
-  vmap" framing is answered only for the branch that has no class filter to interact with vmap in
-  the first place.
+- [ESTABLISHED] Whether jitting `_calibrate_impl` pays at all, independent of vmap, for the
+  marginal (`classes=None`) slice — see "Step D, marginal slice" in MIGRATION.md for the full
+  numbers, machine, and design findings. On CPU: yes, it pays, from the very first call, at the
+  batch sizes MNIST-family scripts use (~2-3x end-to-end through the public `calibrate()`, more
+  in isolation), shrinking to near-parity (~1.08x) at ACDC pixel scale. **Since answered on GPU
+  too**: `.reports/2026-08-20_gpu_verification_3070.md` (Q4/Q5) measured the same marginal-write
+  jit on an RTX 3070 and found the win does not shrink to parity there — it stabilizes around
+  ~1.3x even at pixel scale (B=2,000,000; ~1.3-1.5x depending on whether measured as a per-call
+  steady-state ratio or total streaming wall-clock), a real, resolved separation, not overlapping
+  noise. The class-conditional path (with vmap not yet in the picture) remains untested and
+  untouched on both backends — this item's "independent of vmap" framing is answered only for
+  the branch that has no class filter to interact with vmap in the first place.
 - [UNVERIFIED] Whether returning jnp scalars instead of numpy scalars from
   `get_uncertainty` breaks any script. `float()`, `np.isnan()` and pandas all accept
   jnp scalars, so this is expected to be soft, but it must be checked against the scripts
@@ -344,7 +367,12 @@ reader:
   pandas deferred out of `import utrace`" below) — the annotation cannot name `plt` unquoted,
   since `plt` is not bound at module scope until the function body runs.
 - `pytest-expecter`'s `expect(x) == y` performs its assertion as a side effect inside `__eq__`, so
-  the bare comparison expression IS the intended API, not a mistake.
+  the bare comparison expression IS the intended API, not a mistake. **No longer live**: this
+  suppressed a per-file ignore for `src/utrace/tests/test_utils.py`, the only file that used the
+  idiom. Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`) removed that file, its per-file
+  ignore, and the `pytest-expecter` dependency itself as dead — `pyproject.toml`'s
+  `[tool.ruff.lint.per-file-ignores]` now names only `__init__.py`. Left here as a record of a
+  suppression that once existed, not a description of the current file.
 - `__init__.py` re-exports get a per-file `F401` ignore — the standard convention for a package's
   public-API surface, not a suppression of a real finding.
 
@@ -384,9 +412,17 @@ invocation including the canonical `--no-cov` one. Leaving `pytest-cov` behind i
 made the new `test` group unusable for its only purpose. `coveragespace`, which uploads coverage
 reports rather than hooking into `pytest` itself, stays in `dev`.
 
-[ESTABLISHED] A clean environment synced with the `test` group and the `viz` extra — no `dev`
-group, no torch — runs `tests/core/` at 113 passed, 1 skipped; the skip is the one test that asks
-for torch and does not find it (`pytest.importorskip("torch")`, by design).
+[ESTABLISHED, re-measured 2026-09-02] A clean environment synced with the `test` group and the
+`viz` extra — no `dev` group, no torch — runs `tests/core/` at 113 passed, 5 skipped: the one
+test that asks for torch and does not find it (`pytest.importorskip("torch")`, by design), plus
+two GPU-only tests in each of `test_calibrate_device_reconciliation.py` and
+`test_get_uncertainty_device_reconciliation.py`, inert without GPU-backed jax hardware. The
+figure was already stale before Batch 1: `test_calibrate_device_reconciliation.py` (2 skips)
+predates it, added by `7f140ea` ("Reconcile argument devices in calibrate"), which landed after
+this "113 passed, 1 skipped" line was written. Batch 1
+(`.reports/2026-08-21_batch1_defect_fixes.md`) added the other file, the remaining 2 skips. The
+passed count (113) is unchanged throughout — none of the four device-reconciliation tests run on
+a backend without GPU-backed jax.
 
 ### scripts/ lint cleanup
 
@@ -678,12 +714,12 @@ Mapping to paper figures (Marchi & Liebl 2026, Mach. Learn.: Sci. Technol. 7 015
 
 | Script | Paper figures | Legacy methods used | Status |
 |---|---|---|---|
-| `MNIST_class_conditional_example.py` | 11, 12 | calibrate, get_uncertainty_jit, predict | Directly migratable (Phase 4) |
+| `MNIST_class_conditional_example.py` | 11, 12 | calibrate, get_uncertainty_jit, predict | Migrated (Phase 4) |
 | `MNIST_example.py` | 9, 10 | calibrate, get_uncertainty_opt, predict | Migrated (Phase 4) |
-| `ACDC_example.py` | 13–16, tables B1/B2 | calibrate, get_uncertainty, predict | Migratable (per-class, pixels) |
-| `convergence_analysis.py` | 7(b) | fit, get_uncertainty | Rewrite |
+| `ACDC_example.py` | 13–16, tables B1/B2 | calibrate, get_uncertainty, predict | Migrated (Phase 4; pending numerical validation against the paper) |
+| `convergence_analysis.py` | 7(b) | fit, get_uncertainty | Migrated (Phase 4) |
 | `data_size_analysis.py` | 7(a,c) | fit, get_uncertainty_opt | Migrated (Phase 4) |
-| `setsize_analysis.py` | 4, 5 | fit, get_uncertainty, predict | Rewrite |
+| `setsize_analysis.py` | 4, 5 | fit, get_uncertainty, predict | Migrated (Phase 4) |
 | `MNIST_test_coverage.py` | Appendix A | fit_opt, get_uncertainty_opt, predict_opt | Migrated (Phase 4) |
 | `MNIST_test_convergence.py` | Appendix A | fit, get_uncertainty_opt, predict | Migrated (Phase 4) |
 | `btorch_MNIST_test.py` | Appendix C | (none — bayesian-torch) | DO NOT TOUCH |
