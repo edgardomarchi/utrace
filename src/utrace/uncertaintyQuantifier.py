@@ -16,21 +16,26 @@ import numpy as np
 from jax import jit, lax
 from jax import numpy as jnp
 
-from .scores import lac, lac_cal
+from .scores import lac, lac_cal, abs_error, abs_error_cal
+
+
 from .utils import _bucket_size, _masked_quantile_higher
 from .utils.tensors import to_jax
 
 logger = logging.getLogger(__name__)
 
-@partial(jit, static_argnames=["score_fn"])
-def _predict_sets(smx:jnp.ndarray, q_hat: np.float64, 
-                  score_fn: Callable) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Predicts the class labels and sets of labels for the input data X.
+@partial(jit, static_argnames=["score_fn", "task"])
+def _predict_sets(smx: jnp.ndarray, q_hat: np.float64, 
+                  score_fn: Callable, 
+                  task: str = "classification") -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Construct classification prediction sets or regression intervals
+        bound.
 
     Parameters
     ----------
     smx : np.ndarray
-        Softmax output for each class.
+        Softmax output for each class for classification.
+        y_hat output for regression
     q_hat : jnp.float64
         Calibrated quantile level.
     score_fn : Callable
@@ -43,11 +48,16 @@ def _predict_sets(smx:jnp.ndarray, q_hat: np.float64,
     y_sets : jnp.ndarray
         The sets of labels as a boolean array.
     """
-    y_pred = jnp.argmax(smx, axis=1)  # -1 for tensorflow
-    scores = score_fn(smx)
-    y_sets = scores <= q_hat
-    
-    return y_pred, y_sets
+    if task == "classification":
+        y_pred = jnp.argmax(smx, axis=1)  # -1 for tensorflow
+        scores = score_fn(smx)
+        y_sets = scores <= q_hat
+        return y_pred, y_sets
+    else:
+        # score_fn is the continuous region constructor
+        # score_fn(y_hat, q_hat) -> (lower, upper)
+        lower, upper = score_fn(smx, q_hat)
+        return lower, upper
 
 @jit
 def _q_hat_from_alpha(cs_padded: jnp.ndarray,
@@ -58,66 +68,119 @@ def _q_hat_from_alpha(cs_padded: jnp.ndarray,
     q_level = jnp.minimum(q_level, 1.0)
     return _masked_quantile_higher(cs_padded, n_cs, q_level)
 
-@partial(jit, static_argnames=["score_fn", "max_iters"])
+
+@jit
+def _intersection_length(lower_cp: jnp.ndarray, upper_cp:jnp.ndarray,
+                         lower_tol: jnp.ndarray, upper_tol: jnp.ndarray) -> jnp.ndarray:
+    """Computes the geometric intersection between the Conformal
+        prediction intervals and the tolerance bounds."""
+    left = jnp.maximum(lower_cp, lower_tol)
+    right = jnp.minimum(upper_cp, upper_tol)
+    return jnp.maximum(0.0, right - left)
+
+@partial(jit, static_argnames=["score_fn"])
+def clf_risk_fn(y: jnp.ndarray, smx: jnp.ndarray, q_hat: jnp.ndarray,
+                valid_mask: jnp.ndarray, 
+                score_fn: Callable, 
+                aux_data: tuple = ()) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Classification risk function trgeting 'lac'."""
+    _, prediction_sets = _predict_sets(smx, q_hat, score_fn = score_fn)
+
+    n_valid = jnp.maximum(valid_mask.sum(), 1)
+    set_sizes = prediction_sets.sum(axis = 1)
+
+    # 1. Steering Metric: Average set size across valid samples
+    setsize_curr = jnp.where(valid_mask, set_sizes, 0.0).sum()/n_valid
+
+    # 2. Efficiency Metric (E): Average 1/|S| over valid covered samples
+    is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
+    mask_succ = is_covered & (set_sizes > 0) & valid_mask
+    safe_sizes = jnp.where(mask_succ, set_sizes, 1.0)
+    inv_succ = jnp.where(mask_succ, 1.0/safe_sizes, 0.0)
+    n_succ = mask_succ.sum()
+
+    EC_yt_curr = inv_succ.sum()/jnp.maximum(n_succ, 1)
+    return setsize_curr, EC_yt_curr
+
+@partial(jit, static_argnames=["score_fn"])
+def reg_risk_fn(y: jnp.ndarray, y_hat: jnp.ndarray, q_hat: jnp.ndarray, 
+                valid_mask: jnp.ndarray, score_fn: Callable,
+                aux_data: tuple) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Regression Risk function targeting 'abs_error'.
+    
+    preds = (y_hat, lower_tol, upper_tol, score_fn)"""
+    lower_tol, upper_tol = y_hat - aux_data[0], y_hat + aux_data[1]
+
+    lower_cp, upper_cp = _predict_sets(y_hat, q_hat, score_fn = score_fn,
+                                         task = "regression")
+
+    L = jnp.maximum(upper_cp - lower_cp, 1e-8)
+    delta = _intersection_length(lower_cp, upper_cp, lower_tol, upper_tol)
+
+    covered = (y >= lower_cp) & (y <= upper_cp)
+    valid_covered = covered = covered & valid_mask
+    n_valid_covered = valid_covered.sum()
+    bounded_values = jnp.minimum(1.0, delta/L)
+
+    ratio = jnp.where(n_valid_covered > 0,
+                      (bounded_values*valid_covered).sum()/n_valid_covered,
+                      1.0)
+
+    # For regression, steering metric and efficiency metric are both ratio
+    return ratio, ratio 
+
+@partial(jit, static_argnames = ["risk_fn", "score_fn", "max_iters"])
 def _search_uncertainty(
-    y: jnp.ndarray,                  # (n,) filtered labels
-    smx: jnp.ndarray,                # (n, K) softmax output
-    valid_mask: jnp.ndarray,         # (n,) bool - True: sample from selected class(es)
-    cs_padded: jnp.ndarray,          # (m,) calibration scores
-    n_cs: jnp.ndarray,               # (1,) number of calibration scores
+    y: jnp.ndarray,                  # (n,) Target Values or labels.
+    preds: jnp.ndarray,              # softmax array (clf) or y_hat (reg).
+    valid_mask: jnp.ndarray,         # (n,) bool - valid samples.
+    cs_padded: jnp.ndarray,          # (m,) calibration scores.
+    n_cs: jnp.ndarray,               # (1,) valid scores count
     max_iters: int,
     score_fn: Callable,
-):
+    target_ratio: float = 1.0,
+    aux_data: tuple = (),           # () for clf, (lower_tol, upper_tol) for reg
+    risk_fn: Callable = clf_risk_fn,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
 
     init_state = (
-        jnp.asarray(1.0),    # alpha
-        jnp.asarray(1.0),    # delta
-        jnp.asarray(0.0),    # setsize
-        jnp.asarray(0.0),    # EC_yt
-        jnp.asarray(False),  # frozen: alpha is out from [0,1]
+        jnp.asarray(1.0),   # alpha.
+        jnp.asarray(1.0),   # delta.
+        jnp.asarray(0.0),   # metric: setsize for clf, ratio for reg.
+        jnp.asarray(0.0),   # E_curr: eficiency metric EC_yt for clf, ratio for reg.
+        jnp.asarray(False), # frozen: alpha is out from [0, 1]   
     )
-
-    n_valid = valid_mask.sum()
 
     def body(i, state):
         alpha, delta, setsize, EC_yt, frozen = state
 
         # Update:
-        delta_new      = delta / 2.0
-        sign           = jnp.where(setsize > 1.0, 1.0, -1.0)
-        alpha_proposed = alpha + sign * delta_new
+        delta_new = delta/2.0
+
+        # Higher alpha shrinks sets/intervals -> metric decreases
+        sign = jnp.where(setsize > target_ratio, 1.0, -1.0)
+        alpha_proposed = alpha + sign*delta_new
 
         # Freeze if out of bounds
         out_of_bounds = (alpha_proposed < 0.0) | (alpha_proposed > 1.0)
-        will_freeze   = frozen | out_of_bounds
+        will_freeze = frozen | out_of_bounds
 
         # If frozen, we do not update
         alpha_next = jnp.where(will_freeze, alpha, alpha_proposed)
         delta_next = jnp.where(will_freeze, delta, delta_new)
 
-        # Predict
+        # Quantile estimation
         q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha_next)
-        _, prediction_sets = _predict_sets(smx, q_hat, score_fn=score_fn)
 
-        set_sizes    = prediction_sets.sum(axis=1)
-        setsize_curr = jnp.where(valid_mask, set_sizes, 0.0).sum() / jnp.maximum(n_valid, 1)
+        setsize_curr, EC_yt_curr = risk_fn(y, preds, q_hat, valid_mask, score_fn, aux_data)
 
-        is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
-        mask_succ  = is_covered & (set_sizes > 0) & valid_mask
-        safe_sizes = jnp.where(mask_succ, set_sizes, 1)
-        inv_succ   = jnp.where(mask_succ, 1.0 / safe_sizes, 0.0)
-        n_succ     = mask_succ.sum()
-        EC_yt_curr = inv_succ.sum() / jnp.maximum(n_succ, 1)
-
-        # If frozen:
         setsize_next = jnp.where(will_freeze, setsize, setsize_curr)
-        EC_yt_next   = jnp.where(will_freeze, EC_yt, EC_yt_curr)
+        EC_yt_next = jnp.where(will_freeze, EC_yt, EC_yt_curr)
 
         return (alpha_next, delta_next, setsize_next, EC_yt_next, will_freeze)
 
-    alpha_f, _, _, EC_yt_f, _ = lax.fori_loop(0, max_iters, body, init_state)
-
-    U = 1.0 - EC_yt_f * (1.0 - alpha_f)
+    alpha_f, _, _, E_f, _ = lax.fori_loop(0, max_iters, body, init_state)
+    U = 1.0 - E_f*(1-alpha_f)
     return alpha_f, U
 
 @jit
@@ -203,7 +266,7 @@ class UncertaintyQuantifier:
     """
     def __init__(self, N: int = 1000,
                  classes: list[int] | np.ndarray | None = None,
-                 score: Literal['lac'] = 'lac',
+                 score: Literal['lac', 'abs_error'] = 'lac',
                  max_batch_size: int | None = None):
         """Wrapper for uncertainty quantification using U-TraCE.
 
@@ -213,8 +276,8 @@ class UncertaintyQuantifier:
             Maximum number of calibration scores to retain.
         classes : list[int] or array, optional
             labels defining the conditioning group; instantiate one object per class/group; None → marginal calibration.
-        score : {'lac'}, default='lac'
-            Scoring function for nonconformity. For now, only 'lac' is supported.
+        score : {'lac', 'abs_error'}, default='lac'
+            Scoring function for nonconformity. For now, only 'lac' for clf and 'abs_error' for reg is supported.
         max_batch_size : int, optional
             Fixed padding size for input batches. See _get_uncertainty_jit_impl.
         """
@@ -222,6 +285,9 @@ class UncertaintyQuantifier:
         self._classes_jax = jnp.asarray(classes) if classes is not None else None
         self._max_batch_size = max_batch_size
 
+        self.score_name = score
+
+        
         match score:
             case 'lac':
                 self.cal_score_ = lac_cal
@@ -231,6 +297,7 @@ class UncertaintyQuantifier:
                 # integer cast in calibrate would silently truncate continuous
                 # targets.
                 self.label_dtype_ = jnp.int32
+                self._task = "classification"
             case 'aps':
                 raise ValueError(
                     "score='aps' is not implemented in the JAX backend. "
@@ -239,14 +306,19 @@ class UncertaintyQuantifier:
                     "configuration. This is a known gap, not a typo. "
                     "'lac' is the supported value."
                 )
+            case 'abs_error':
+                self.cal_score_ = abs_error_cal
+                self.score_ = abs_error
+                self.label_dtype_ = jnp.float64
+                self._task = "regression"
+
             case _:
                 raise ValueError(
-                    f"Unknown score {score!r}. The supported value is 'lac'."
+                    f"Unknown score {score!r}. The supported value is 'lac' (clf) and 'abs_error' (reg)."
                 )
+
         self._max_N = N
         self.reset()
-
-
 
     def reset(self):
         """Resets the scoores and alpha."""
@@ -301,26 +373,33 @@ class UncertaintyQuantifier:
         return self._state.conformity_scores
 
     def calibrate(self, softmax, y, batched: bool = False):
-        """Calibrate the conformal predictor with precomputed softmax output.
+        
+        """
+        Calibrate the conformal predictor with precomputed softmax output.
 
         Parameters
         ----------
-        softmax : array-like, shape (n_samples, n_classes)
-            Predicted class softmax output. Accepts any array type that implements
-            DLPack (jax, numpy, torch, tensorflow, ...). Zero-copy when possible.
         y : array-like, shape (n_samples,)
-            Integer class labels.
+            Target labels or values.
+
+        softmax : array-like, shape (n_samples, n_classes) or (n_samples,)
+            Predicted outputs (softmax output for classification, or point
+            estimation for regression). Accepts any array type that implements
+            DLPack (jax, numpy, torch, tensorflow, ...). Zero-copy when possible.
         batched : bool, default=False
             If True, append to existing calibration scores instead of replacing.
 
         Notes
         -----
-        `softmax` and `y` may arrive committed to different devices (e.g. a GPU-resident
+        `preds` and `y` may arrive committed to different devices (e.g. a GPU-resident
         model output alongside host-resident labels); this method reconciles them by
         moving `y` to `softmax`'s device before scoring, rather than raising.
         """
-        softmax = to_jax(softmax)
         y_arr = to_jax(y).astype(self.label_dtype_)
+        smx_arr = to_jax(softmax)
+
+        if y_arr.devices() != smx_arr.devices():
+            y_arr = jax.device_put(y_arr, next(iter(smx_arr.devices())))
         # to_jax converts each argument independently and does NOT reconcile devices
         # (see its docstring) -- two genuine framework tensors sourced from different
         # devices (e.g. a CUDA-resident softmax output alongside host-resident labels,
@@ -333,23 +412,22 @@ class UncertaintyQuantifier:
         # the labels is the smaller transfer whichever device softmax landed on
         # (including the common case where both are already on the same device,
         # where devices() equality makes this a no-op).
-        if y_arr.devices() != softmax.devices():
-            y_arr = jax.device_put(y_arr, next(iter(softmax.devices())))
-        self._calibrate_impl(softmax, y_arr, batched=batched)
+        self._calibrate_impl(smx_arr, y_arr, batched=batched)
 
-    def _calibrate_impl(self, smx, y, batched: bool = False):
+    def _calibrate_impl(self, smx: jnp.ndarray, y: jnp.ndarray, batched: bool = False):
         """Calibrates the conformal predictor with the given data.
 
         Parameters
         ----------
         smx : np.ndarray
-            Softmax output for calibration.
+            Softmax output or point predictions for calibration.
         y : np.ndarray
             Target labels for calibration.
         batched : bool, optional
             For batched calibration; appends new scores to the buffer. By default False
         """
-        old_N = self._state.N
+        old_N = self._state.N 
+
         if self._classes_jax is None:
             # Marginal path: jitted buffer write (_calibrate_write_jit) in place
             # of the eager `.at[].set()` below. cal_score_ stays a standalone,
@@ -426,14 +504,14 @@ class UncertaintyQuantifier:
 
         if self.classes is not None and new_N == 0:
             logger.warning("No calibration scores for the requested class group %s after calibration.", self.classes)
-        
+
     def predict(self, softmax) -> tuple[np.ndarray, np.ndarray]:
-        """Predict class labels and prediction sets from precomputed softmax output.
+        """Predict class labels/values and prediction sets/intervals from precomputed output.
 
         Parameters
         ----------
-        softmax : array-like, shape (n_samples, n_classes)
-            Predicted class softmax output. Accepts any DLPack-compatible array.
+        preds : array-like, shape (n_samples, n_classes)
+            Predicted class/labels output. Accepts any DLPack-compatible array.
 
         Returns
         -------
@@ -443,10 +521,11 @@ class UncertaintyQuantifier:
             Boolean prediction sets.
         """
         softmax = to_jax(softmax)
-        y_pred, y_sets = _predict_sets(softmax, self._state.q_hat, score_fn=self.score_)
+        y_pred, y_sets = _predict_sets(softmax, self._state.q_hat, score_fn = self.score_, 
+                                       task = self._task)
         return np.array(y_pred), np.array(y_sets)
 
-    def get_uncertainty(self, softmax, y, max_iters: int = 30) -> tuple[np.float64, np.float64]:
+    def get_uncertainty(self, softmax, y, max_iters: int = 30, eps: float = 0.1) -> tuple[np.float64, np.float64]:
         """Estimate model uncertainty over a tuning set via conformal prediction.
 
         Searches for the alpha that yields the target average prediction-set size,
@@ -505,10 +584,15 @@ class UncertaintyQuantifier:
         # own to_jax(y) call; it does not change _get_uncertainty_jit_impl, which still
         # receives, and still rebuilds, plain host numpy arrays exactly as before.
         softmax = np.asarray(to_jax(softmax))
-        y_arr = np.asarray(to_jax(y)).flatten().astype(int)
-        return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters)
+        y_arr = np.asarray(to_jax(y)).flatten()
+        if self._task == "classification":
+            y_arr = y_arr.astype(int)
+        else:
+            y_arr = y_arr.astype(float)
 
-    def _get_uncertainty_jit_impl(self, smx, y, max_iters=30):
+        return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters, eps = eps)
+
+    def _get_uncertainty_jit_impl(self, smx, y, max_iters=30, eps = 0.1):
         """Builds a fixed-size, class-masked, zero-padded batch from variable-size
         input, then calls the jitted `_search_uncertainty` on it.
 
@@ -539,11 +623,11 @@ class UncertaintyQuantifier:
             `_search_uncertainty`.
         """
         B = y.shape[0]
-        K = smx.shape[1]
+        K = smx.shape[1] if smx.ndim > 1 else 1
 
         # 1. máscara de validez: muestra real (siempre True aquí, B es el real)
         #    AND pertenece a la clase de interés
-        if self.classes is not None:
+        if self._task == "classification" and self.classes is not None:
             valid = np.isin(np.asarray(y), np.asarray(self.classes))
         else:
             valid = np.ones(B, dtype=bool)
@@ -561,17 +645,24 @@ class UncertaintyQuantifier:
         else:
             target_size = _bucket_size(B)
         # arrays paddeados con valores arbitrarios (se enmascaran)
-        y_arr = np.asarray(y).astype(np.int32)
-        y_padded   = np.zeros(target_size, dtype=np.int32)
-        p_padded   = np.zeros((target_size, K), dtype=np.float64)
+        y_dtype = np.int32 if self._task == "classification" else np.float64 
+        y_arr = np.asarray(y).astype(y_dtype)
+
+        y_padded   = np.zeros(target_size, dtype=y_dtype)
         mask_padded = np.zeros(target_size, dtype=bool)
+
+        if smx.ndim > 1:
+            p_padded = np.zeros((target_size, K), dtype = np.float64)
+        else:
+            p_padded = np.zeros(target_size, dtype = np.float64)
 
         y_padded[:B]    = y_arr
         p_padded[:B]    = np.asarray(smx)
         mask_padded[:B] = valid                       # solo válidos reales en True
 
         # 3. y_safe: índices en rango incluso en padding (clase 0)
-        y_safe = np.where(mask_padded, y_padded, 0)
+        fill_val = 0 if self._task == "classification" else 0.0 
+        y_safe = np.where(mask_padded, y_padded, fill_val)
 
         # 4. a jnp y al JIT
         y_j    = jnp.asarray(y_safe)
@@ -582,5 +673,21 @@ class UncertaintyQuantifier:
         cs_padded = self._state.conformity_scores
         n_cs = jnp.int32(self._state.N)
 
-        alpha, U = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs, max_iters, self.score_)
+        if self._task == "classification":
+            # For classification: empty aux_data, defaults to clf_risk_fn
+            alpha, U = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs,
+                                           target_ratio = 1.0,
+                                           score_fn = self.score_,
+                                           aux_data = (),
+                                           max_iters = max_iters,
+                                           risk_fn = clf_risk_fn)
+        else:
+            # For regression pass bounds eps in aux data and use reg_risk_fn
+            alpha, U = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs,
+                                           target_ratio = 1.0,
+                                           score_fn = self.score_,
+                                           aux_data = (eps, eps),
+                                           max_iters = max_iters,
+                                           risk_fn = reg_risk_fn)
+
         return np.float64(U), np.float64(alpha)
