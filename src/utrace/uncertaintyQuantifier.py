@@ -107,8 +107,7 @@ def reg_risk_fn(y: jnp.ndarray, y_hat: jnp.ndarray, q_hat: jnp.ndarray,
                 valid_mask: jnp.ndarray, score_fn: Callable,
                 aux_data: tuple) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Regression Risk function targeting 'abs_error'.
-    
-    preds = (y_hat, lower_tol, upper_tol, score_fn)"""
+    """
     lower_tol, upper_tol = y_hat - aux_data[0], y_hat + aux_data[1]
 
     lower_cp, upper_cp = _predict_sets(y_hat, q_hat, score_fn = score_fn,
@@ -118,13 +117,14 @@ def reg_risk_fn(y: jnp.ndarray, y_hat: jnp.ndarray, q_hat: jnp.ndarray,
     delta = _intersection_length(lower_cp, upper_cp, lower_tol, upper_tol)
 
     covered = (y >= lower_cp) & (y <= upper_cp)
-    valid_covered = covered = covered & valid_mask
+    valid_covered = covered & valid_mask
     n_valid_covered = valid_covered.sum()
     bounded_values = jnp.minimum(1.0, delta/L)
 
-    ratio = jnp.where(n_valid_covered > 0,
-                      (bounded_values*valid_covered).sum()/n_valid_covered,
-                      1.0)
+    ratio = jnp.where(
+        n_valid_covered > 0,
+        (bounded_values*valid_covered).sum()/jnp.maximum(n_valid_covered,1),
+        0.0)
 
     # For regression, steering metric and efficiency metric are both ratio
     return ratio, ratio 
@@ -141,24 +141,31 @@ def _search_uncertainty(
     target_ratio: float = 1.0,
     aux_data: tuple = (),           # () for clf, (lower_tol, upper_tol) for reg
     risk_fn: Callable = clf_risk_fn,
+    direction: float = 1.0          # +1.0 if metric decreases w/alpha (clf), -1.0 if it increases (reg)
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
 
+    init_alpha = jnp.asarray(0.5, dtype = jnp.float64)
+    init_q_hat = _q_hat_from_alpha(cs_padded, n_cs, init_alpha)
+    init_metric, init_E = risk_fn(y, preds, init_q_hat, valid_mask, score_fn, aux_data)
     init_state = (
-        jnp.asarray(1.0),   # alpha.
-        jnp.asarray(1.0),   # delta.
-        jnp.asarray(0.0),   # metric: setsize for clf, ratio for reg.
-        jnp.asarray(0.0),   # E_curr: eficiency metric EC_yt for clf, ratio for reg.
+        init_alpha,
+        #jnp.asarray(0.5),   # alpha.
+        jnp.asarray(0.5),   # delta.
+        #jnp.asarray(0.0),   # metric: setsize for clf, ratio for reg.
+        init_metric,
+        #jnp.asarray(0.0),   # E_curr: eficiency metric EC_yt for clf, ratio for reg.
+        init_E,
         jnp.asarray(False), # frozen: alpha is out from [0, 1]   
     )
 
     def body(i, state):
-        alpha, delta, setsize, EC_yt, frozen = state
+        alpha, delta, metric, EC_yt, frozen = state
 
         # Update:
         delta_new = delta/2.0
 
         # Higher alpha shrinks sets/intervals -> metric decreases
-        sign = jnp.where(setsize > target_ratio, 1.0, -1.0)
+        sign = jnp.where(metric >= target_ratio - 1e-6, direction, -direction)
         alpha_proposed = alpha + sign*delta_new
 
         # Freeze if out of bounds
@@ -172,12 +179,12 @@ def _search_uncertainty(
         # Quantile estimation
         q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha_next)
 
-        setsize_curr, EC_yt_curr = risk_fn(y, preds, q_hat, valid_mask, score_fn, aux_data)
+        metric_curr, EC_yt_curr = risk_fn(y, preds, q_hat, valid_mask, score_fn, aux_data)
 
-        setsize_next = jnp.where(will_freeze, setsize, setsize_curr)
+        metric_next = jnp.where(will_freeze, metric, metric_curr)
         EC_yt_next = jnp.where(will_freeze, EC_yt, EC_yt_curr)
 
-        return (alpha_next, delta_next, setsize_next, EC_yt_next, will_freeze)
+        return (alpha_next, delta_next, metric_next, EC_yt_next, will_freeze)
 
     alpha_f, _, _, E_f, _ = lax.fori_loop(0, max_iters, body, init_state)
     U = 1.0 - E_f*(1-alpha_f)
@@ -525,7 +532,8 @@ class UncertaintyQuantifier:
                                        task = self._task)
         return np.array(y_pred), np.array(y_sets)
 
-    def get_uncertainty(self, softmax, y, max_iters: int = 30, eps: float = 0.1) -> tuple[np.float64, np.float64]:
+    def get_uncertainty(self, softmax, y, max_iters: int = 30, eps: float = 0.1,
+                        target_ratio: float = 1.0) -> tuple[np.float64, np.float64]:
         """Estimate model uncertainty over a tuning set via conformal prediction.
 
         Searches for the alpha that yields the target average prediction-set size,
@@ -589,10 +597,13 @@ class UncertaintyQuantifier:
             y_arr = y_arr.astype(int)
         else:
             y_arr = y_arr.astype(float)
+            if softmax.ndim > 1 and softmax.shape[1] == 1:
+                softmax = softmax.flatten()
 
-        return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters, eps = eps)
+        return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters, eps = eps,
+                                              target_ratio = target_ratio)
 
-    def _get_uncertainty_jit_impl(self, smx, y, max_iters=30, eps = 0.1):
+    def _get_uncertainty_jit_impl(self, smx, y, max_iters=30, eps = 0.1, target_ratio = 1.0):
         """Builds a fixed-size, class-masked, zero-padded batch from variable-size
         input, then calls the jitted `_search_uncertainty` on it.
 
@@ -680,14 +691,17 @@ class UncertaintyQuantifier:
                                            score_fn = self.score_,
                                            aux_data = (),
                                            max_iters = max_iters,
-                                           risk_fn = clf_risk_fn)
+                                           risk_fn = clf_risk_fn,
+                                           direction = 1.0) # metric decreases with alpha
         else:
-            # For regression pass bounds eps in aux data and use reg_risk_fn
+            # For regression pass,  eps  and direction = -1.0
+            # Ensure target_ratio < 1.0 when callig get_uncertainty
             alpha, U = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs,
-                                           target_ratio = 1.0,
+                                           target_ratio = target_ratio,
                                            score_fn = self.score_,
                                            aux_data = (eps, eps),
                                            max_iters = max_iters,
-                                           risk_fn = reg_risk_fn)
+                                           risk_fn = reg_risk_fn,
+                                           direction = -1.0)
 
         return np.float64(U), np.float64(alpha)
