@@ -1,7 +1,7 @@
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.datasets import fetch_california_housing
-from ucimlrepo import fetch_ucirepo
+#from ucimlrepo import fetch_ucirepo
 
 
 def simulate_gaussian(n, sigma = 0.5, random_state = None):
@@ -33,7 +33,7 @@ def simulate_heteroskedastic(n, random_state = None):
     noise = noise_std*rng.standard_normal(n)
     y = y + noise
     return X, y 
-
+'''
 def load_uci_dataset(dataset_name):
     """
     Fetches and preprocess standard regression benchmarks
@@ -78,3 +78,4 @@ def load_uci_dataset(dataset_name):
     # Standarize features
     X = StandardScaler().fit_transform(X)
     return X, y 
+'''
