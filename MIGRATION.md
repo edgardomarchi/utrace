@@ -80,7 +80,7 @@ API (renamed from `*_from_proba` by the rename batch; see "Rename batch" in FIND
           extras (`cuda13`, `rocm7-local`) no longer declare torch at all, torch instead comes
           from an `examples` extra or from the `dev`/`dev-cuda13`/`dev-rocm7` contributor
           groups, and torch/torchvision are upgraded to 2.13.0/0.28.0 uniformly across all
-          routes. Current extras: `cuda13`, `rocm7-local`, `viz`, `examples`. See "Phase 6 step
+          routes. Current extras: `cuda13`, `rocm7-local`, `viz`, `examples`, `acdc`. See "Phase 6 step
           3c — packaging cleanup [RESOLVED]" and "Phase 6 step 3c, second pass — reshaping
           extras around usage [RESOLVED]", both in FINDINGS.md.
       4. DONE — removed the legacy tests (`test_golden_mnist.py`,
@@ -106,7 +106,16 @@ API (renamed from `*_from_proba` by the rename batch; see "Rename batch" in FIND
          test deletion, predicted by name in advance:
          `tests/core/test_from_proba_api.py::test_constructor_warns_when_model_passed` (the
          only construction anywhere in the repo passing `model=`). Test count: 107 → 106.
-      7. Labels host-copy: remove the `# COMPAT` numpy round-trip in the core and in scripts.
+      7. Labels host-copy — not independent work, a pointer. The original wording ("remove the
+         `# COMPAT` numpy round-trip in the core and in scripts") names a marker that no longer
+         exists anywhere (`git grep -n "# COMPAT" -- src scripts` → zero hits; the scripts' own
+         round-trip was already removed by step-ladder C, see FINDINGS.md's "Step C: the
+         `# COMPAT` marker post-mortem"). The actual open round-trip is in the core:
+         `get_uncertainty`'s `np.asarray(to_jax(...))` calls on `softmax`/`y` — the same call
+         site step-ladder D's own text below lists as still carried, and the same one
+         BACKLOG.md's "Zero-copy in tuning" entry tracks (including its device-reconciliation
+         coupling warning). One piece of remaining work described in three places, not three;
+         this line is a pointer to that BACKLOG.md entry, not an independent task.
       8. `flatten_batch` -> `flatten_to_pixels` unification. Diagnostic finding: as of this
          pass, `flatten_to_pixels` (in `utils/tensors.py`) and the three `unflatten_*`
          functions (`utils/pytorch/helpers.py`) have ZERO call sites anywhere in `src/`,
@@ -154,7 +163,12 @@ Done: Phase 6 (the original six-step plan); step-ladder items A, B1, B.5, C, and
 batch; packaging (both passes, see "Phase 6 step 3c" and "Phase 6 step 3c, second pass" in
 FINDINGS.md); and, outside the phase numbering entirely (see "CI and tooling" in FINDINGS.md),
 the CI workflow, ruff
-adoption rung 1, the pytest dependency-group split, and the `scripts/` lint cleanup.
+adoption rung 1, the pytest dependency-group split, and the `scripts/` lint cleanup. Also done,
+outside the step-ladder numbering: device coherence in the *core* (`calibrate()`/`get_uncertainty()`
+reconciling mismatched argument devices rather than crashing) — commits `7f140ea` and Batch 1
+(`.reports/2026-08-21_batch1_defect_fixes.md`). This is a different piece of work from
+step-ladder item E below and is called out explicitly to avoid the two being conflated (see "E.
+Device coherence" further down).
 
 Removed rather than done: step-ladder item B2, after a measured negative result (see "Measured
 negative result: jnp-native padding" below) — its content was absorbed into D, not lost.
@@ -163,13 +177,10 @@ Partially done: step-ladder item D — the marginal (`classes=None`) slice is do
 marginal slice" below); the rest (the class filter under jit, vmap over classes, the `N`
 semantics change) remains fully coupled and not started.
 
-Not started: step-ladder item E; Phase 6 steps 7 and 8 (see above); ruff rungs 2 (pydocstyle) and
-3 (`ruff format`); and the backlog (see BACKLOG.md).
-
-[INTENT] This document is now over 1200 lines and does three jobs at once — phase plan, findings
-record, and backlog. Splitting the findings into their own file (leaving this one as the phase
-plan and backlog) is a pending structural pass, deliberately kept separate from this content sync
-so that pass's diff is purely structural and reviewable as such.
+Not started: step-ladder item E2, device coherence in the script/wrapper layer (see "E. Device
+coherence" below — item E1, the core-level device coherence, is done, see above); Phase 6 steps 7
+and 8 (see above); ruff rungs 2 (pydocstyle) and 3 (`ruff format`); and the backlog (see
+BACKLOG.md).
 
 ## Architecture / design direction (not started — Phase 6 scope unchanged)
 
@@ -424,14 +435,13 @@ measured only for a design that pre-stacks an entire stream of batches into one
 `lax.fori_loop` trace, dispatched once — but that conflicts with this package's explicit
 bounded-memory streaming goal (see the canonical migration recipe: "This keeps only one batch of
 logits in memory at a time"). That tension is not resolved by anything measurable on a CPU
-backend. Whether the shrink-to-near-parity pattern holds on GPU is also unknown — the mechanism
-identified (dispatch-overhead amortisation shrinking as compute time grows) is exactly the kind of
-effect whose balance could differ where kernel-launch and host/device synchronisation costs have a
-different shape than CPU dispatch overhead. This joins the existing list of open questions waiting
-on the RTX 3070 (see "What is unverified" in FINDINGS.md). **The marginal slice is justified on the
-moderate-N regime alone** (MNIST-family scripts, N in the low tens of thousands); the pixel-scale
-case that motivates step D as a whole still needs GPU measurement before a performance case can be
-made for it there.
+backend. **[ESTABLISHED, since measured]** Whether the shrink-to-near-parity pattern holds on GPU
+was unknown when this was written; `.reports/2026-08-20_gpu_verification_3070.md` (Q4/Q5) has
+since measured it on an RTX 3070 and found it does NOT shrink to parity there — the win stabilizes
+around ~1.3x even at pixel scale (B=2,000,000), a real, resolved separation from noise, milder
+than the CPU speedup at small B but never disappearing. **The marginal slice is therefore justified
+on GPU at pixel scale too, not only the moderate-N regime** — see "What is unverified" in
+FINDINGS.md for the full figures.
 
 ### Step ladder
 
@@ -440,7 +450,8 @@ removed as a standalone step after a measured negative result (see "Measured neg
 jnp-native padding (B2, reverted)" above); its content was absorbed into D. The step 3c
 packaging block is now resolved, across two passes (see "Phase 6 step 3c — packaging cleanup
 [RESOLVED]" and "Phase 6 step 3c, second pass — reshaping extras around usage [RESOLVED]",
-both in FINDINGS.md). What remains after this pass is D and E, plus the backlog (BACKLOG.md).
+both in FINDINGS.md). What remains after this pass is D and E2 (E1 is done — see "E. Device
+coherence" below), plus the backlog (BACKLOG.md).
 
 - [ESTABLISHED] **A. The boundary.** DONE. `to_jax(y)` once on entry, no numpy in the core,
   `jnp.isin` for the class mask, eager boolean indexing left as-is. Plus tests for the
@@ -492,10 +503,30 @@ both in FINDINGS.md). What remains after this pass is D and E, plus the backlog 
   still carries what was B2: the `_get_uncertainty_jit_impl` padding, the class mask leftover in
   `_get_uncertainty_jit_impl` (its own `np.asarray(self.classes)`), and the
   `np.asarray(to_jax(...))` on entry to `get_uncertainty` — because all of them must land inside
-  the jit boundary or not at all.
-- [INTENT] **E. Device coherence in the script layer.** Not started. Make probabilities and
-  labels reach the core committed to the same device (see "Step C: device-commitment risk"
-  in FINDINGS.md). Open questions to record, none of them decided:
+  the jit boundary or not at all. This is the same remaining work described in BACKLOG.md's
+  "Zero-copy in tuning" entry, not a second, independent task — see that entry's
+  device-reconciliation coupling warning before touching this: rewriting
+  `_get_uncertainty_jit_impl`'s internal host padding to preserve device residency requires the
+  same device-reconciliation logic `calibrate()` gained in `7f140ea` and `get_uncertainty` gained
+  in Batch 1, or it reopens the device-mismatch crash those fixes closed.
+- **E. Device coherence.** "E" has named two different things at different times; split
+  explicitly here so status is unambiguous:
+  - [ESTABLISHED] **E1. Device coherence in the core — DONE.** `calibrate()` and
+    `get_uncertainty()` now reconcile mismatched argument devices (raising a clear error) instead
+    of crashing inside a jitted call or, in `get_uncertainty`'s case, on a bare `np.asarray` of a
+    CUDA tensor. Commit `7f140ea` ("Reconcile argument devices in calibrate"; see
+    `.reports/2026-08-21_stepE_device_coherence.md`) did `calibrate`; Batch 1
+    (`.reports/2026-08-21_batch1_defect_fixes.md`, found by the 2026-08-21 docs audit, H4b) did
+    `get_uncertainty`. `predict` takes no `y` and was never exposed to this. Both have GPU-only
+    regression tests (`tests/core/test_calibrate_device_reconciliation.py`,
+    `tests/core/test_get_uncertainty_device_reconciliation.py`).
+  - [INTENT] **E2. Device coherence in the script/wrapper layer — not started.** This is what the
+    step-ladder originally scoped as "E": make probabilities and labels reach the core already
+    committed to the same device, further upstream than E1's fix, by moving the transfer into
+    `utrace.utils.pytorch.*` and/or the scripts themselves (see "Step C: device-commitment risk"
+    in FINDINGS.md for the mechanism E1 patches around, not upstream). Genuinely unstarted — no
+    commit has touched `src/utrace/utils/pytorch/` for this. Open questions to record, none of
+    them decided:
   - Where the transfer belongs: inside the dataset/model wrappers, or in the scripts. Moving it
     into the dataset wrapper is not free — several consumers legitimately need host arrays
     (ACDC's accuracy tally over `gt_img`, the coverage indexing over `y_test_arr`), so a wrapper

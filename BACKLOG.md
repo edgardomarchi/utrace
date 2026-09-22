@@ -26,7 +26,6 @@ anymore` comment on that import is stale and actively misleading — it produced
 backlog item already. Removing the comment, not the import, is the correct follow-up.
 - Performance benchmark per phase.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
-- force_non_empty_sets is silently ignored in the new prediction path. The jit _predict_sets does not implement it, and predict (renamed from predict_from_proba by the rename batch) accepts the parameter but does not pass it through. The legacy _predict_sets (initial commit) honored it (y_sets[arange, y_pred] = True). This is behavior lost in the jit migration. Harmless for callers passing False, but a latent bug for any script relying on force_non_empty_sets=True.
 
 ### TODO: make device handling in to_jax() explicit (deferred)
 
@@ -41,7 +40,20 @@ When addressing device handling (separate task, own branch / design discussion):
 
 Out of scope for the current script-migration work. Recorded here so the context is not lost.
 
-- [Phase 6] Zero-copy in tuning: `get_uncertainty`'s (renamed from `get_uncertainty_from_proba`) body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate` / `predict` (renamed from `calibrate_from_proba` / `predict_from_proba`) keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:435-436` as of HEAD `53b1e8d`, but re-verify by symbol/grep rather than trusting that number after further commits — it has now moved twice, from `417-418` as of `ebc5ddb`, to `355-356` as of `a0ea8f6`, to `435-436` as of `53b1e8d` (the B.5 state-extraction commit added ~150 lines earlier in the file), each time purely from unrelated line-count changes, never from this call site itself being touched. Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark in FINDINGS.md measured the calibration path, not the tuning/uncertainty path).
+- [Phase 6] Zero-copy in tuning: `get_uncertainty`'s (renamed from `get_uncertainty_from_proba`) body does `np.asarray(to_jax(...))` on both its `softmax` and `y` arguments — anchor by the adjacent bare `# TODO: _get_uncertainty_jit_impl espera numpy (lo convierte a jnp adentro)` comment and by the `np.asarray(to_jax(...))` calls themselves, not by line number: this entry already tracked three prior line-number drifts (`417-418` → `355-356` → `435-436`) before Batch 1 caused a fourth, to `507-508` — each drift came from unrelated line-count changes elsewhere in the file, never from this call site being touched, so recording a fifth number would just repeat the pattern that made the first three stale. Forces a host copy and negates DLPack zero-copy on the tuning path; `calibrate` / `predict` (renamed from `calibrate_from_proba` / `predict_from_proba`) keep zero-copy. Make tuning consume the jnp array directly. Perf impact is UNMEASURED (the RTX 3070 GPU benchmark in FINDINGS.md measured the calibration path, not the tuning/uncertainty path).
+
+  **Device-reconciliation coupling — read before implementing.** Found by the 2026-08-21 docs
+  audit (H4) and confirmed by Batch 1's own fix. `_get_uncertainty_jit_impl` currently rebuilds
+  fresh host numpy arrays internally regardless of the caller's device, which is exactly what
+  makes the two outer `np.asarray` calls removable today without reopening a device-mismatch
+  crash on their own. Implementing "make tuning consume the jnp array directly" as literally
+  described means rewriting that internal host padding to preserve device residency too — and
+  once it does, `get_uncertainty` needs the same device-reconciliation logic `calibrate()` gained
+  in commit `7f140ea` (see "Step C: device-commitment risk" in FINDINGS.md) and `get_uncertainty`
+  itself gained in Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`), or this item will
+  reopen the exact `ValueError: Received incompatible devices for jitted computation` crash those
+  two fixes closed — this time inside `_search_uncertainty`. Not implemented by this entry as
+  currently scoped; recorded so the next person to pick it up does not have to rediscover it.
 
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
@@ -50,6 +62,23 @@ Out of scope for the current script-migration work. Recorded here so the context
 - User-configurable target device for to_jax (like torch's device=): host arrays currently go to JAX's default compute device; a future API should let the user choose. The current fix is written so the default-device path is the single point a future device= would generalize.
 
 - Noise-sweep scripts rebuild the dataset (and DataLoader) inside the iteration loop, partly to reshuffle the split per iteration and partly to change the noise level. Reconstructing the full dataset per iteration is wasteful — only the noise (and the split) need to change, not the 60000-sample base. Optimization: instantiate the base dataset (and loader) ONCE outside the loop, and inside the loop either mutate the transform's sigma (transform.std sigma — valid because AddGaussianNoise reads self.std in __call__, not __init__) or reassign it (dataset.transform = AddGaussianNoise(0., sigma)). IMPORTANT: the random_split must STAY inside the loop (with a varying generator) to preserve per-iteration reshuffling — only the dataset/loader construction moves out. Caveat: mutating transform.std from the main process only propagates with num_workers=0; with spawn/fork workers, each worker holds its own copy and the loader would need rebuilding (ties into the num_workers decision). Applies to several sweep scripts (MNIST_class_conditional, and others with a noise sweep). Behavior-adjacent — revalidate numbers after the change. Its own diagnostic + commit.
+
+- **Classifier/Regressor split: decided in principle, not designed.** A future split of the
+  public `UncertaintyQuantifier` into `UncertaintyQuantifierClassifier` and
+  `UncertaintyQuantifierRegressor` is anticipated (regression support is the basis for the second
+  publication referenced under "Research questions" below, and the current public API —
+  `calibrate`, `predict`, `get_uncertainty` — was already named task-agnostically for this, per
+  "Naming convention now in force" in FINDINGS.md), but this decision is recorded in no document
+  as of this entry — confirmed by `git grep`, zero matches for either class name or the phrase
+  "classifier/regressor" anywhere in `src/`, `tests/`, `scripts/`, or the other five documents,
+  except FINDINGS.md's own passing mention (see "Two further rungs were measured and deliberately
+  not taken" under "ruff adoption, rung 1"), which cites "Architecture / design direction" in
+  MIGRATION.md as if it documents the split — it does not; that section is entirely about
+  jit/vmap/state-PyTree design for the existing single class. Recording only: the split has been
+  decided in principle. Not decided: the module layout, the API surface each subclass exposes, or
+  the definition of the regression uncertainty measure itself (the classification measure is
+  `1 - P(ŷ = y_t)`; regression has no analogous definition here yet). None of that is designed by
+  this entry.
 
 ### GPU / scalability (example scripts)
 
@@ -61,7 +90,13 @@ Out of scope for the current script-migration work. Recorded here so the context
 
 1. U-vs-alpha for the two Appendix-A scripts (`MNIST_test_coverage.py`, `MNIST_test_convergence.py`): both now use `U` (not the tuned alpha) on BOTH the prediction threshold (`cp.alpha = U`) and the BetaBinom null parameter (`a_p = U_mean`), per the `uq.alpha = U` decision in CONTRIBUTING.md ("Decisions to respect"). Whether the tuned alpha is preferable instead is an open question — revisit once, for both scripts together, not independently.
 2. BetaBinom null fragility: in both Appendix-A scripts, `Nr` (= `Nv`) is taken from only the last loop iteration's test-set size, while per-iteration sizes vary by ~1 sample due to `random_split`'s remainder rounding. The null distribution's trial count is therefore a (very close) approximation, not exact, across all recorded iterations.
-3. GPU validation for per-class calibration: the per-class calibration path (classes=[...]) has not been fully validated on a GPU backend end-to-end; only the global path (classes=None, MNIST_example) has a clean GPU run. MNIST_class_conditional ran on GPU only with ad-hoc batch tuning (a probe, not the final structure). This remains an open GPU-validation item.
+3. [RESOLVED] GPU validation for per-class calibration: was open when written (only the global
+   `classes=None` path had a clean GPU run at the time). Since exercised end-to-end on an RTX
+   3070 with real per-class (`classes=[C]`) `UncertaintyQuantifier` instances against real ACDC
+   data: `.reports/2026-08-21_stepE_device_coherence.md` (real model, real data, real per-class
+   streaming-calibration pipeline, 4 classes) and `.reports/2026-08-21_gpu_measurements_acdc.md`
+   (36-batch streaming loops per class, 4 classes, ~3.1M total scores written, summed wall-clock
+   and peak-memory figures reported per class).
 
 ## Research questions (candidates for a second publication — NOT implementation tasks)
 

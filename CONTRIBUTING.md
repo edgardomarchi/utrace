@@ -57,6 +57,23 @@ silently drop `matplotlib`/`pandas` if they're not part of it.
 (before/after, comparing output) — a passing test suite says nothing about whether a script
 still works.
 
+### Verification method for unvalidated scripts
+
+`scripts/` is covered by no test, so verifying a change to it means reproducing this procedure:
+
+- Check out HEAD into a git worktree for the "before" side.
+- Assert environment parity between the two trees before running anything — interpreter path,
+  Python version, jax and torch versions — because a worktree is a fresh checkout and does not
+  carry untracked files, including any tool-version-manager config that decides which
+  interpreter is active.
+- Seed from an external driver, since none of the scripts seeds itself and several have multiple
+  randomness sources, including per-image noise transforms.
+- Where a full run is too slow, apply an IDENTICAL scope reduction to both copies and diff them,
+  asserting the diff contains exactly the intended edit and nothing else.
+- Compare exactly rather than approximately, and capture accumulators out of the running frame
+  where they do not reach disk.
+- Run sequentially and, for timing, interleave the variants.
+
 ## Linting
 
 ```bash
@@ -186,7 +203,9 @@ contains backend-specific code; what matters is where it lives and the direction
 - **`utrace.utils.pytorch.*`**: everything that touches torch — `Pytorch_wrapper`, example
   models, dataset loaders, transforms, and any helper that needs torch (e.g. `flatten_batch` /
   `unflatten_batch` when operating on torch tensors).
-- **`utrace.utils.onnx.*`**: analogous, for the ONNX backend.
+- **`utrace.utils.onnx.*`**: reserved namespace for an ONNX backend, following the same rule when
+  one is built. No implementation exists yet — `utrace/utils/onnx/` is not part of the tracked
+  source tree.
 - **`utrace.utils`** (root): only truly backend-agnostic helpers (pure numpy).
 - The JAX backend's GPU acceleration is available via the optional extras `cuda13` and
   `rocm7-local` (neither declares torch). The PyTorch backend (`utrace.utils.pytorch.*`) is
@@ -206,3 +225,16 @@ For example: `flatten_batch`, `unflatten_batch`, `unflatten_pixels`, `unflatten_
 `relabel`, `check_row_sums` are pure numpy, so they stay in `utils/` root, which is itself
 torch-free — guarded directly by
 `tests/core/test_import_properties.py::test_core_does_not_import_torch`.
+
+## Documentation ownership
+
+A change owns the documentation its own change falsifies, and corrects it in the same commit.
+Claims that were already false before the change are reported, not fixed, and go to a dedicated
+documentation pass. Deferring the first kind is what produced the drift the 2026-08-21 audit
+found (`.reports/2026-08-21_docs_audit.md`).
+
+Finding what a change falsified is a mechanical step, not a matter of recall. Take every symbol,
+file path and directory name added or removed in the diff, and `git grep` each one across all
+tracked `.md` files. Unconditionally: if the change adds or removes tests, search the
+documentation for test counts; if it deletes files, search for those paths and regenerate any
+tree listing; if it changes a public signature, search for that symbol.

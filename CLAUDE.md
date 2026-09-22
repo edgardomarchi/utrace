@@ -47,18 +47,30 @@ This is the same trap as `--extra=viz` on the test command, but worse on the GPU
 `uv run <anything>` (missing `--no-default-groups --group dev-cuda13 --extra=cuda13`, or the
 ROCm equivalent) silently re-syncs down to the default `dev` group and replaces an
 already-installed GPU torch with the CPU build — same version number, only the `+cu130`/`+cpu`
-local segment changes, and `jax` reverts to CPU the same way. There is no error and no obvious
-warning beyond a routine "Uninstalled 2 packages / Installed 2 packages" line. Verified directly:
-this happened on the first bare `uv run` issued right after a correct GPU install. Always pass
-the full flag set — `--no-default-groups --group dev-cuda13 --extra=viz --extra=cuda13` (or the
-ROCm equivalent) — on every `uv run`, not only `uv sync`.
+local segment changes. There is no error and no obvious warning beyond a routine "Uninstalled 2
+packages / Installed 2 packages" line. Verified directly: this happened on the first bare `uv run`
+issued right after a correct GPU install. Always pass the full flag set — `--no-default-groups
+--group dev-cuda13 --extra=viz --extra=cuda13` (or the ROCm equivalent) — on every `uv run`, not
+only `uv sync`.
 
-## Active refactor — READ FIRST
-This repo is mid-refactor (PyTorch → backend-agnostic core). Before touching
-any core code, tests, or example scripts, read `MIGRATION.md` and `CONTRIBUTING.md`.
-MIGRATION.md defines the phase state; CONTRIBUTING.md defines the canonical migration
-recipe and the dependency rule (core never imports torch). Do not deviate from either
-without flagging the conflict.
+Torch and jax do not necessarily revert together: torch always reverts on the group swap described
+above, but whether `jax` reverts to CPU depends on whether the specific bare invocation included
+`--extra=cuda13`/`--extra=rocm7-local` — a bare `uv run --extra=viz` (matching the canonical test
+command, not a GPU sync command) has been observed to revert torch to `+cpu` while leaving the
+`jax-cuda13-*` packages installed and `jax.default_backend()` still reporting `'gpu'`.
+
+## Project status
+`utrace` reached `v0.1.0`: Phases 0-6 of the backend-agnostic migration are complete and tagged
+(`MIGRATION.md`'s `## Phase status`). What remains open — step-ladder items D and E, ruff rungs
+2-3, and the items in `BACKLOG.md` — is scoped explicitly by `MIGRATION.md` itself as work beyond
+Phase 6, not a continuation of an ongoing refactor.
+
+Read `CONTRIBUTING.md` before touching any code, tests, or example scripts — it holds the
+canonical conventions and the dependency rule (core never imports torch), and applies regardless
+of what you're working on. Read `MIGRATION.md` too, but only when the work touches step-ladder
+item D (jit/vmap over classes) or E2 (device coherence in the script/wrapper layer — E1, the
+core-level device coherence, already shipped) specifically — it is the design-in-progress record
+for that work, not a general orientation document.
 
 ## Working style
 - One script / one concern per change. Do not migrate multiple scripts at once.
