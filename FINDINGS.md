@@ -740,3 +740,103 @@ What the figure asserts is that the prediction-set size distribution follows the
   -> identical weights hash.
 - convergence_analysis (paper fig 7b): validates that U converges to the empirical error (1 - accuracy) as calibration size grows. Noisy at small calibration (expected), settles onto the flat 1-Cov / Ue lines at large calibration. Reference: post-fix run converges to U ~ 0.05 / 0.50 / 0.75 / 0.81 for sigma_n = 0 / 0.75 / 1.25 / 2.0. Requires both core fixes (sort + _N).
 
+## Alpha search: floor, feasible-alpha return, status propagation (2026-09-22 fix)
+
+Both defects below were confirmed by direct
+reproduction against this repository's own code before being fixed, not assumed from what was
+found during use of the package.
+
+- [RESOLVED] **Quantile-level clipping below `alpha = 1/(N+1)` voided the coverage guarantee.**
+  `_q_hat_from_alpha` clips the quantile level to 1.0 whenever `alpha < 1/(N+1)`, silently (inside
+  `@jit`, no warning possible); the pre-fix search had no floor on its `[0,1]` domain, so for a
+  well-separated calibration/tuning distribution with a small `N`, it would walk straight to
+  `alpha = 2**-max_iters` and return that as the answer. Reproduced exactly: synthetic
+  highly-confident softmax at N=96/50/42 returned `alpha = 9.313226e-10 = 2**-30`, matching the
+  value found during use of the package bit-for-bit, under both this repo's locked JAX 0.9.2 and
+  an isolated JAX 0.11.1 (identical in both). Fix: the search now operates on `[1/(N+1), 1]`;
+  below the floor the clip is unchanged (and now provably harmless -- see
+  `_q_hat_from_alpha`'s docstring) because a sub-floor evaluation can no longer be the value
+  returned. `SearchStatus.FLOOR_LIMITED` names this outcome explicitly.
+
+- [RESOLVED] **The search returned the last loop iterate, not the last iterate meeting its own
+  criterion.** `_search_uncertainty`'s `fori_loop` always overwrote `setsize`/`EC_yt` with the
+  current iteration's values (whenever not frozen), regardless of whether that iteration's mean
+  set size actually met the target (`<= 1.0`). Because the criterion is a step function (jumps at
+  the quantile's discrete order-statistic grid -- see CONTRIBUTING.md, "Departures from the
+  published paper", for the exact grid), bisection near convergence can land on either side of a
+  jump depending on `max_iters`' parity. Verified on this repo's own golden configuration
+  (untrained CNN, classes 0 and 3, N=18/26): stopping one iteration earlier than the checked-in
+  `max_iters=30` changed the returned `U` by up to ~0.097 -- an ordinary, non-saturated case, not
+  only the sub-floor regime. Separately, 16 of the golden suite's 20 configurations never visit a
+  feasible iterate at all in 30 steps (the mean set size stays `> 1` throughout, even approaching
+  `alpha = 1`) -- a third, previously-unnamed regime, distinct from the oscillation case. Fix: the
+  search now explicitly tracks the smallest feasible alpha visited (and the conditioned mean at
+  that same alpha) through the loop, selecting among three outcomes after it --
+  `SearchStatus.CONVERGED` / `FLOOR_LIMITED` / `INFEASIBLE` -- instead of reading off whatever the
+  final iterate happened to be. Verified directly against the pre-fix `_search_uncertainty`
+  (loaded from git, unmodified) on the real golden class-0/class-3 data: the old code's `U` varies
+  across `max_iters` in `{25,...,30}` (6 and 3 distinct values respectively); the new code's
+  `q_hat` and conditioned mean `EC` are each a single value across the same range, for both
+  classes.
+
+- [RESOLVED] **`self.alpha = value` below the floor: warn-and-clip replaced with `ValueError`.**
+  The setter computed the same quantile level as `_q_hat_from_alpha`, clipped it to 1.0 on
+  overflow, and logged a `logger.warning` -- invisible under default logging configuration, which
+  is how the first defect above went unnoticed in practice. It also stored the caller's literal
+  out-of-range `alpha` in `self._state.alpha` while `q_hat` was computed for a different, unstated
+  alpha (`1/(N+1)`), an inconsistency between what `self.alpha` reported and what `predict()`
+  actually used. Now raises `ValueError` naming `N` and the floor. The raise condition compares
+  `alpha` directly against `1/(N+1)` (a single division) rather than checking whether the computed
+  quantile level exceeds 1 -- the level formula's `ceil`/multiply chain can round fractionally
+  above 1 exactly at `alpha == 1/(N+1)` due to floating-point error, which would otherwise wrongly
+  raise on the exact floor value `get_uncertainty` itself returns in the `FLOOR_LIMITED` case;
+  verified by a dedicated test (`tests/core/test_search_status.py::
+  test_alpha_setter_accepts_exact_floor_from_search`) that assigns a real `FLOOR_LIMITED` search's
+  returned alpha back to `self.alpha` and confirms it does not raise.
+
+- [RESOLVED] **Search outcome not surfaced to the caller.** `_search_uncertainty` discarded its own
+  `frozen`/`will_freeze` loop state at return, so nothing about *why* the search stopped where it
+  did (saturated? floor-limited? genuinely converged?) ever reached `get_uncertainty`'s caller.
+  This diagnostic/fix task found no prior record in this repository (`BACKLOG.md`, `MIGRATION.md`,
+  git history) of this being a previously-decided, merely-unrecorded piece of work, despite that
+  being how a later prompt in this task's own history described it -- recorded here as new work,
+  not as catching up a stale record. Fix: `_search_uncertainty` itself now returns an int32 status
+  code alongside `alpha`/`U` (a first pass introduced this under a second name,
+  `_search_uncertainty_with_status`, keeping `_search_uncertainty` as an unchanged 2-tuple wrapper
+  around it, specifically because `tests/core/test_search_uncertainty.py::
+  test_masking_equals_filtering` imports `_search_uncertainty` by name and unpacks exactly two
+  values; a 2026-09-22 correction pass retired the second name once that test's two call sites
+  were themselves authorised to adapt to a 3-value unpack, so there is now one canonical function,
+  under the original name, rather than a name plus a wrapper -- done specifically so a future
+  rebase of `remotes/github/unify-clf-reg-utrace`, which generalizes `_search_uncertainty` itself,
+  cannot end up wired to an unfixed wrapper by accident). The status code is mapped host-side to
+  the new `SearchStatus` enum and exposed as `UncertaintyQuantifier.search_status_` (sklearn-style
+  trailing underscore, matching `cal_score_`/`score_`/`label_dtype_`). A `SearchStatusWarning` (a
+  `UserWarning` subclass, filterable independently) is raised via `warnings.warn` -- not
+  `logger.warning` -- whenever the status is not `CONVERGED`, specifically because a logger call
+  is how the quantile-clip defect above stayed invisible.
+
+Golden baselines (`tests/integration/torch/baselines/`) were regenerated after this fix: of the 20
+golden calls (10 classes x 2 noise levels), the 4 that converge to an interior alpha (classes 0
+and 3) are bit-identical to their pre-fix values in all three baseline files; the 16 that saturate
+upward changed from `alpha ~= 1 - 2**-30` to exactly `1.0` (and `U` correspondingly), a difference
+of order `1e-9` in `alphas`/`uncertainties`, and up to ~0.136 in `coverages` specifically (a
+downstream `predict()` threshold effect of `q_hat` shifting by one order-statistic index at the
+`alpha=1` boundary -- expected, not itself a second defect).
+
+`mean_coverages.npy` moved by up to `0.136` (absolute) in the 8 upward-saturated classes (12 of
+the 16 saturated calls; the other 4 landed on the same coverage value regardless). Mechanism,
+verified directly: `predict()`'s `q_hat` is a discrete order-statistic pick
+(`_masked_quantile_higher`), and at `alpha = 1` exactly the quantile level `(N+1)(1-alpha)/N` is
+exactly `0`, so `_masked_quantile_higher`'s `ceil(q*(n_valid-1))` selects index `0` -- the true
+minimum calibration score. Pre-fix, the returned alpha was `1 - 2**-30` (never exactly `1`), so the
+level was a tiny *positive* number, and `ceil()` of any positive value is at least `1`, selecting
+the SECOND-smallest calibration score instead. A one-order-statistic shift in `q_hat` is not itself
+a second defect (both order statistics are internally consistent with their respective, correctly
+computed alpha; the pre-fix alpha was simply the wrong number, per the defect this fix resolves),
+but it does mean `mean_coverages.npy`'s pre-fix values were never a stable measurement of anything
+at this untrained, near-degenerate model's actual behavior -- they were an artifact of exactly how
+close to `1.0` a 30-iteration bisection happens to land, which the "raise the priority of the
+trained-model golden" entry (`BACKLOG.md`) draws the broader conclusion from. The maintainer
+reviewed this fix and ratified the golden regeneration.
+
