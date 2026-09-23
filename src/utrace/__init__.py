@@ -1,6 +1,10 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from .uncertaintyQuantifier import UncertaintyQuantifier
+from .uncertaintyQuantifier import (
+    SearchStatus,
+    SearchStatusWarning,
+    UncertaintyQuantifier,
+)
 
 try:
     __version__ = version('utrace')
