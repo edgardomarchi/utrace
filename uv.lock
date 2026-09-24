@@ -5,89 +5,89 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
-    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra == 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra == 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra == 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
     "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-6-utrace-examples' and extra != 'group-6-utrace-dev' and extra != 'group-6-utrace-dev-cuda13' and extra != 'group-6-utrace-dev-rocm7'",
 ]
@@ -479,7 +479,7 @@ wheels = [
 
 [[package]]
 name = "jax"
-version = "0.9.2"
+version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jaxlib" },
@@ -488,9 +488,9 @@ dependencies = [
     { name = "opt-einsum" },
     { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/4c/5aca25abd45fa38dd136e5ae2010376518c67950e1f9408e0c5c93fcf77d/jax-0.9.2.tar.gz", hash = "sha256:42b28017b3e6b57a44b0274cc15f5153239c4873959030399ac1afc009c22365", size = 2662784, upload-time = "2026-03-18T23:28:10.471Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/73/eb91d98fcadfa2cbcfdd4e417ab116e47eb20882acc5ee678e47c35d6b57/jax-0.10.2.tar.gz", hash = "sha256:bf77428a8c2e6904c4f46d5ab12aa5cfc6cad2179f07f7e4c0fc75ac86ef0639", size = 2775110, upload-time = "2026-06-17T23:44:57.818Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/9c/e897231c880f69e32251d3b1145894d7a04e4342d9bef8d29644c440d11b/jax-0.9.2-py3-none-any.whl", hash = "sha256:822a8ae155ab42e7bc59f2ae7a28705bcfccb01a7e76abfc8ae996190cdc5598", size = 3099142, upload-time = "2026-03-18T23:25:59.94Z" },
+    { url = "https://files.pythonhosted.org/packages/89/82/5ab5211079a151b6f661529369c0c8e98ec64cabf5c0cf22a0a05af124d8/jax-0.10.2-py3-none-any.whl", hash = "sha256:724d73c4678d8b06f6a6ab4db1b8a2fea8cd4f1e2c2564f99601634ec7b8d1c6", size = 3219515, upload-time = "2026-06-17T23:42:41.259Z" },
 ]
 
 [package.optional-dependencies]
@@ -505,33 +505,33 @@ rocm7-local = [
 
 [[package]]
 name = "jax-cuda13-pjrt"
-version = "0.9.2"
+version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/12/a1ea75d66fce346298638188696a9d9fb1f5d1541ec6c67a5bd5746ce87b/jax_cuda13_pjrt-0.9.2-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:50ea9dcbb66c3bd884686782035e95affe3a08c694c7ba43f64f3a6f78773257", size = 109099455, upload-time = "2026-03-18T23:26:30.443Z" },
-    { url = "https://files.pythonhosted.org/packages/a6/ea/c862ab5b5aae56c09d79af4f5d2829d90fad6f700a48d2a08add5d040be4/jax_cuda13_pjrt-0.9.2-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:b1b0455cf6bdaa3aee51304a656b586389e6102b2d741fa54ccd124a899abb7d", size = 115087575, upload-time = "2026-03-18T23:26:34.654Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/2a/756474bf57cf8cdf200f4120813d0c8db7463c7301d6f394c4ede4737b1f/jax_cuda13_pjrt-0.10.2-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:b28f4940d09405ece084e50c91634f4bb1d43a8497b9d734f40007ee07281aec", size = 119860632, upload-time = "2026-06-17T23:43:13.768Z" },
+    { url = "https://files.pythonhosted.org/packages/55/09/17733fa3ef4f183b70d5e55f7fe7c712017fac7ec7a22e39dab1539acdb8/jax_cuda13_pjrt-0.10.2-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:a97e9cabe0e21d8dbcc70bd909ca1c34cd546d3ce2d94b4cd907a8d4f6179f6a", size = 124395292, upload-time = "2026-06-17T23:43:21.424Z" },
 ]
 
 [[package]]
 name = "jax-cuda13-plugin"
-version = "0.9.2"
+version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax-cuda13-pjrt" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/eb/dc/157b6cd4badf957c43d913f58676d98dc936d643eff4ac28e030c317f44c/jax_cuda13_plugin-0.9.2-cp311-cp311-manylinux_2_27_aarch64.whl", hash = "sha256:f0cda88f70db5877d2bb2f99c456d34e2c904da2a0f783973d4cebdad4ed0c88", size = 5642490, upload-time = "2026-03-18T23:26:37.732Z" },
-    { url = "https://files.pythonhosted.org/packages/a5/2a/7432f92e4591ee2aefb93a348dccd6aed95ae7ab3186c9d0b0325f54c81c/jax_cuda13_plugin-0.9.2-cp311-cp311-manylinux_2_27_x86_64.whl", hash = "sha256:f8d2ea568840f6b76b3a091347bd048117b45c4c985667b8172b060d1ccfcaa7", size = 5644987, upload-time = "2026-03-18T23:26:39.33Z" },
-    { url = "https://files.pythonhosted.org/packages/a7/bc/d5c80b2e073e9d4a89b4f1de80e2c66829d471165c252b68cef31ccd9539/jax_cuda13_plugin-0.9.2-cp312-cp312-manylinux_2_27_aarch64.whl", hash = "sha256:00e1a218ae3443cb93cd3cc69df3eb85b8d9180761a13628f2d07a2f52dea3c5", size = 5637141, upload-time = "2026-03-18T23:26:40.858Z" },
-    { url = "https://files.pythonhosted.org/packages/18/4a/0fc4bde105699a530893e45475a3885b41d401484a53dd32a6b2f96d1edc/jax_cuda13_plugin-0.9.2-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:c9c1462658c468a407db1044cbb2a799bf5c7191766620022a91e650bcc01336", size = 5642400, upload-time = "2026-03-18T23:26:42.454Z" },
-    { url = "https://files.pythonhosted.org/packages/24/a1/109f0c8bf652dad9417e8342f89849fa3a42562a7006f5fdfea97daafccf/jax_cuda13_plugin-0.9.2-cp313-cp313-manylinux_2_27_aarch64.whl", hash = "sha256:b8bd1ad3049cd7aea40c2885699f6ad7e9af17151fa3b13d12858f79513fcf00", size = 5637491, upload-time = "2026-03-18T23:26:43.786Z" },
-    { url = "https://files.pythonhosted.org/packages/0c/8c/d1c529abc02b094ec9a118613345c2781a9bcc1307a47a1b1aa0204bc968/jax_cuda13_plugin-0.9.2-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:0092a2ef890ca115eb713febb7aeb69510c9bfb96efdf65ded293c15765e5881", size = 5642085, upload-time = "2026-03-18T23:26:45.387Z" },
-    { url = "https://files.pythonhosted.org/packages/b1/fe/31319b2defb353adacb3210c25a01f2a252eb29cd07eef43895152bcff7c/jax_cuda13_plugin-0.9.2-cp313-cp313t-manylinux_2_27_aarch64.whl", hash = "sha256:6210f028be3579e1bbe2baef41f094230229a14fedc9d63a945fa8d19d4d60ac", size = 5651737, upload-time = "2026-03-18T23:26:46.673Z" },
-    { url = "https://files.pythonhosted.org/packages/a0/16/1e31bcba3686822292c0926fc32d47bbdb7806021c0fd1048346eb8815e7/jax_cuda13_plugin-0.9.2-cp313-cp313t-manylinux_2_27_x86_64.whl", hash = "sha256:62fbd76e229af83cdb2e845d4f598ba9e03363c342ffabe46b0165eb4c2de9e8", size = 5652072, upload-time = "2026-03-18T23:26:47.938Z" },
-    { url = "https://files.pythonhosted.org/packages/2c/48/831cecec9add9569b3241f2240ffe070063c48a53c526368c067cb23781d/jax_cuda13_plugin-0.9.2-cp314-cp314-manylinux_2_27_aarch64.whl", hash = "sha256:9ea4c378bd4ff9a15927b518dd383a3c8721d7079a40f59f2a51fc3031e17a5b", size = 5637925, upload-time = "2026-03-18T23:26:49.276Z" },
-    { url = "https://files.pythonhosted.org/packages/56/b7/91d8378c3fb5b474956603ab8351740a2fd8799332ebdcf62aa5e5847ed5/jax_cuda13_plugin-0.9.2-cp314-cp314-manylinux_2_27_x86_64.whl", hash = "sha256:5ed2f92d6875b5a66da63d97cd80c7727fe8e12038bfd5f8777cdbb8cb0601e6", size = 5643501, upload-time = "2026-03-18T23:26:50.724Z" },
-    { url = "https://files.pythonhosted.org/packages/fb/32/1280771c04e075e9fa9c532bb5fdbef9fdf53f879bae3f2a11bd6488e973/jax_cuda13_plugin-0.9.2-cp314-cp314t-manylinux_2_27_aarch64.whl", hash = "sha256:79be5ce66fd1ad3a58ece7ae90371c3ebebc8e468a76ae1b8d8730e65d301585", size = 5652313, upload-time = "2026-03-18T23:26:51.991Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/b2/d29a66d1448a9b2ed56de72c94848e758ddf9d43c8e72f910ce775f3aa4c/jax_cuda13_plugin-0.9.2-cp314-cp314t-manylinux_2_27_x86_64.whl", hash = "sha256:73bacf855fb257ea19c52dc4b85f1a6e69bb7f0dea7bf3a0c45af536159ab262", size = 5652377, upload-time = "2026-03-18T23:26:53.54Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/21/187a90838c12eff0f96bcc4f673cf5efb9ea52fdcd6b86328ba73857da1a/jax_cuda13_plugin-0.10.2-cp311-cp311-manylinux_2_27_aarch64.whl", hash = "sha256:9452844e878fd36c414c4ce0e124ad3d89d2844862561a06bcef68bb83679739", size = 7434705, upload-time = "2026-06-17T23:43:24.165Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/24/c5157ec907633759b7935eda5622720bf27d753ce0e6552e4e2acaa53552/jax_cuda13_plugin-0.10.2-cp311-cp311-manylinux_2_27_x86_64.whl", hash = "sha256:4dfbac70e6258c66e9f2c17df170e05cc86580d8fa25ed78d670491084581382", size = 7484417, upload-time = "2026-06-17T23:43:25.768Z" },
+    { url = "https://files.pythonhosted.org/packages/32/93/26900739da476f65e9ce0ae5d23ef236ca9508d64862ef2e39abe95ed45a/jax_cuda13_plugin-0.10.2-cp312-cp312-manylinux_2_27_aarch64.whl", hash = "sha256:5cbcf4f9835c1026d93e6eb8aef33a0f91cfd96004cc2d3c423a6c86bc728434", size = 7429850, upload-time = "2026-06-17T23:43:27.068Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/77/2cdc37266b423927128d6810374a2650572b65c9a0292a5d57ce5cfea752/jax_cuda13_plugin-0.10.2-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:f7df0de38e460befe3d6216bd12bcd9759289759110c5e620baa05d977ae4ccf", size = 7481940, upload-time = "2026-06-17T23:43:30.947Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/f1/623532c25a59b7a7ae56b8f758502ec8a6f03684ff9bfde457072412e589/jax_cuda13_plugin-0.10.2-cp313-cp313-manylinux_2_27_aarch64.whl", hash = "sha256:c8dd182b36f5c5d23285e0878becc6d9961ce1f555d1767ee6f0f8f373765f48", size = 7429777, upload-time = "2026-06-17T23:43:32.305Z" },
+    { url = "https://files.pythonhosted.org/packages/11/92/7e3b6ed7f830deea2069be2497c123839114dab565bf2f160924e90a9235/jax_cuda13_plugin-0.10.2-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:f70672c3961bf55a18badceb793c78d6d7fc782c53e297fdd2e1e8517994f656", size = 7481386, upload-time = "2026-06-17T23:43:33.755Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/53/adb7d565968b655bc352adac2b68e19b6b93b1792e591076ac6bbfa9c0e5/jax_cuda13_plugin-0.10.2-cp313-cp313t-manylinux_2_27_aarch64.whl", hash = "sha256:63d85fc5705e46b4fd192e102df405f54071fd5f3dde1d88b36036f1fd8d2cc7", size = 7444506, upload-time = "2026-06-17T23:43:35.024Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/4f/451386895bf26645b8e0660419fb6495f18bf9d01a4147583f0b4123668c/jax_cuda13_plugin-0.10.2-cp313-cp313t-manylinux_2_27_x86_64.whl", hash = "sha256:37d6f049533004f7a59218cd480c4d31af0e04f6ad13431380c64e4d48eac4f6", size = 7491712, upload-time = "2026-06-17T23:43:36.587Z" },
+    { url = "https://files.pythonhosted.org/packages/68/97/7e917e638ae286ad314be7c8f55170153b0566c65f1de998fcb8fb4786b4/jax_cuda13_plugin-0.10.2-cp314-cp314-manylinux_2_27_aarch64.whl", hash = "sha256:dbc795a2021e07d299cd5d305554c3d5f48c5951fb467e05cb47e1dba02b2167", size = 7430444, upload-time = "2026-06-17T23:43:38.138Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/97/3b1a80c97d1a1aad8133ce601a6cf4f238f41e11c2bd4860a69543a5d365/jax_cuda13_plugin-0.10.2-cp314-cp314-manylinux_2_27_x86_64.whl", hash = "sha256:661d3dd23b9aa8fa86647472e7b1303460f4643ee516fe707912e5ab90dfd3ff", size = 7482446, upload-time = "2026-06-17T23:43:39.53Z" },
+    { url = "https://files.pythonhosted.org/packages/82/de/031ea70db49182330a61753ae421c204459785e700f7439b450dd7ebadce/jax_cuda13_plugin-0.10.2-cp314-cp314t-manylinux_2_27_aarch64.whl", hash = "sha256:0325f77b0cdd9ad083bb0451cf29d4ac6c684b8d1ec2f01d1bebe825bc430c1c", size = 7444795, upload-time = "2026-06-17T23:43:41.27Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/91/585e7f54155cc79375efa679b80465872d57f3aa161730a607ff85fb10b8/jax_cuda13_plugin-0.10.2-cp314-cp314t-manylinux_2_27_x86_64.whl", hash = "sha256:3a14fa5531b1ec3689726714df450d32d09e930a9fe8a6c10bdb095b88ebd9e8", size = 7491871, upload-time = "2026-06-17T23:43:42.797Z" },
 ]
 
 [package.optional-dependencies]
@@ -553,29 +553,29 @@ with-cuda = [
 
 [[package]]
 name = "jax-rocm7-pjrt"
-version = "0.9.2"
+version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/30/670e1b6493480072f56d858b1e781b7aa704323f200ab7a40f6e6aca4978/jax_rocm7_pjrt-0.9.2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:9464b440ae0445823c3bc529fa0bad316037895c30a896fb0465a47281ac3883", size = 133609566, upload-time = "2026-04-30T01:28:41.821Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/7b/04673b3e351fe02c9380b05740f185a10903b9d9fe222df314391c79e71c/jax_rocm7_pjrt-0.10.2-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:2e61678a00bfb72a616c555f1acabccc7cd8e64bb36b90b09d6f991c426b24f0", size = 154379457, upload-time = "2026-06-24T23:29:36.138Z" },
 ]
 
 [[package]]
 name = "jax-rocm7-plugin"
-version = "0.9.2.post1"
+version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax-rocm7-pjrt" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1c/c7/bbf642f0957235ea78407bf5da666030caef6e2b11f4c17432ec71e1d3da/jax_rocm7_plugin-0.9.2.post1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:83977b50bcca6bc2558e5a3ff2b5702a45f54442264bbf344e25fec9191adbc7", size = 7767559, upload-time = "2026-04-30T03:03:34.148Z" },
-    { url = "https://files.pythonhosted.org/packages/84/62/32ca2f850766fb08741f9a0c6ccd8bbb3850b63ac131af66b2622393d5e5/jax_rocm7_plugin-0.9.2.post1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:2dc6505200f5c0be3e1c12a9671da85501beecca10e22b00603d5d0cd0c9daff", size = 7762633, upload-time = "2026-04-30T03:03:36.248Z" },
-    { url = "https://files.pythonhosted.org/packages/1c/00/4641a46c5d5d70db1e716dac1541d9f0a0c61ca88586aca712e1d53e8b50/jax_rocm7_plugin-0.9.2.post1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:82bc9b9ab01cccd01746cb07146fb142d57838193b001b62a59c6bca01cbfdef", size = 7762629, upload-time = "2026-04-30T03:03:38.147Z" },
-    { url = "https://files.pythonhosted.org/packages/aa/54/914757f86e86ba84d43a449d843f6fa1683f6b070e030ce4a3b5052f4fc9/jax_rocm7_plugin-0.9.2.post1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:65598d8cf07a3dba5b9888ab13491a2930daea0fd5bff9f982903d80e150b448", size = 7764262, upload-time = "2026-04-30T03:03:39.917Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/67/3ab4df58b79b9184faa35d3a299fea8037efd617dd3dd6912c17340d2ef6/jax_rocm7_plugin-0.10.2-cp311-cp311-manylinux_2_27_x86_64.whl", hash = "sha256:fc6c3f6641d99916ea1896353a0c27187f1fcddb811768d4607d7e78834571a3", size = 3785890, upload-time = "2026-06-24T23:29:39.48Z" },
+    { url = "https://files.pythonhosted.org/packages/43/84/45ecc8791671df193e289144ce3b98ee4334b1f701564d9f74eb34415a26/jax_rocm7_plugin-0.10.2-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:b3b48436c4536724213bcf152c2706674ef46ef85478b6870b2695d0ef3c69b9", size = 3783747, upload-time = "2026-06-24T23:29:41.052Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/2b/04d492f26fc1018a94aae6a4211501d45594dab0ad4340de12a241da4234/jax_rocm7_plugin-0.10.2-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:aaec2a78a5733bfb58d45d544e9ad533bbda4814e910e8758106ac59500b9bfa", size = 3783780, upload-time = "2026-06-24T23:29:42.713Z" },
+    { url = "https://files.pythonhosted.org/packages/12/56/a3e34c29e4a14d4ec19e6d42623c112946f2f86f3f6ed31a97f10777f17a/jax_rocm7_plugin-0.10.2-cp314-cp314-manylinux_2_27_x86_64.whl", hash = "sha256:674930b9fbe2bee3aeb0ce59c7bc4008537f346d4a756cbc0ffd954192e12929", size = 3784146, upload-time = "2026-06-24T23:29:44.187Z" },
 ]
 
 [[package]]
 name = "jaxlib"
-version = "0.9.2"
+version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ml-dtypes" },
@@ -583,28 +583,28 @@ dependencies = [
     { name = "scipy" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/2c/0ba08670ab04f6094f0cda4cdc89818946007d0d1dfefa636eab6c7d5392/jaxlib-0.9.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:785f177c3eb78cb7dc797c55ed5c4b6312141845c9a686957e484bacbfce5e88", size = 58762159, upload-time = "2026-03-18T23:26:55.405Z" },
-    { url = "https://files.pythonhosted.org/packages/14/ea/cf8186c7f226c5786056ac05fc0d8bf39e9f82b0af80252098556f514502/jaxlib-0.9.2-cp311-cp311-manylinux_2_27_aarch64.whl", hash = "sha256:306de54a1de7386c806c723e356ce332d923ef748f8a72d674fefb748121d4dc", size = 77732197, upload-time = "2026-03-18T23:26:58.944Z" },
-    { url = "https://files.pythonhosted.org/packages/2c/f4/ef9a6ef930c455ccb73daab8da8e25bca1a1b0901280365a5ee6afab9ef8/jaxlib-0.9.2-cp311-cp311-manylinux_2_27_x86_64.whl", hash = "sha256:9ac995b4ba1aaeedae0d69f319987d515dcaecd4505b642b6312f9e15439351f", size = 83299115, upload-time = "2026-03-18T23:27:02.403Z" },
-    { url = "https://files.pythonhosted.org/packages/ef/8b/8e2c2059ebe7894abbf8e35077e2f528c35c499dd710cc89508f941117ee/jaxlib-0.9.2-cp311-cp311-win_amd64.whl", hash = "sha256:501df74472437ffc11aa3bd8f7fc8b1da274f80bd176d33012cf0d604093667d", size = 62816957, upload-time = "2026-03-18T23:27:05.851Z" },
-    { url = "https://files.pythonhosted.org/packages/51/15/ff3d9fde15b5146a0164505085312d8c9c0b0bbd7be5a15218ead2593307/jaxlib-0.9.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:97c2fbe58cbee4a27d94ca735d709d231b299ab6ed8b3b1075f52d864dfd32c1", size = 58770928, upload-time = "2026-03-18T23:27:08.94Z" },
-    { url = "https://files.pythonhosted.org/packages/88/79/699aa47d2256b2edbb75a68a8f1a1ee4d34dfb84b8842a963caeb9a8cb03/jaxlib-0.9.2-cp312-cp312-manylinux_2_27_aarch64.whl", hash = "sha256:fef02d846863b726e72452993883a8596eac325f22a2ec7ea921da0fbc5509b4", size = 77733913, upload-time = "2026-03-18T23:27:12.927Z" },
-    { url = "https://files.pythonhosted.org/packages/33/a0/ddb3a71359c1df61f3edc408936b5bda7ed402e78ae7e9ef6afd438577c6/jaxlib-0.9.2-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:88b276a71f4f2071b1fd2e922abfd67c87c6977a551a1036febcea78d5ef7e22", size = 83318134, upload-time = "2026-03-18T23:27:16.237Z" },
-    { url = "https://files.pythonhosted.org/packages/2d/57/09d6a9e2a8bc8e3ea79eb8e980f8ea2aea2d9dec3793755f5765657f6e11/jaxlib-0.9.2-cp312-cp312-win_amd64.whl", hash = "sha256:c2f0837cc0788746301e68ae9eda468e6a8a7734dc4d529f26a2cb60fb56c657", size = 62846539, upload-time = "2026-03-18T23:27:19.869Z" },
-    { url = "https://files.pythonhosted.org/packages/09/d5/e5416c39e77eb1987479ef3b67930af9e78ecf65e7eb8a6cbe40b2aa0b66/jaxlib-0.9.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:52a0032508f8cf5791c7a7bee142531ee706c3c05518117fb0b6ee8d5e17fde7", size = 58772433, upload-time = "2026-03-18T23:27:23.188Z" },
-    { url = "https://files.pythonhosted.org/packages/56/57/f3d4bda9dcaae11f32fcbb29d7ecda1c36689b289f04b9e6902647876c0c/jaxlib-0.9.2-cp313-cp313-manylinux_2_27_aarch64.whl", hash = "sha256:bef61eef36ed38cec1069ea973f88af9e03335e884f6501ec3fe7f6222a1555b", size = 77736401, upload-time = "2026-03-18T23:27:26.387Z" },
-    { url = "https://files.pythonhosted.org/packages/a5/52/203497d40f365a6b4f924ad49d93d226d6853b3ada198623c96c11500027/jaxlib-0.9.2-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:b6d5003e3add5c346a34ae9edc47058cbc2db60c8ed5c50096522176daf01c9f", size = 83319274, upload-time = "2026-03-18T23:27:30.025Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/25/2d585ecf7cb4c982387b4f35ae6da8beb09d05665370bbff56b772e22925/jaxlib-0.9.2-cp313-cp313-win_amd64.whl", hash = "sha256:2d445dab57debd8c26b416c8bc91a4704ba6d7169788a961e4b15419bc3f4254", size = 62847296, upload-time = "2026-03-18T23:27:33.362Z" },
-    { url = "https://files.pythonhosted.org/packages/38/a9/a458a576f14c61de7a53105aa292acdb2f510352b44278dfe24b926f6d4a/jaxlib-0.9.2-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:6ffb22eccf07bfc8c9760bfbcdaa268df9b3745739e8397bfce5daee5d79cb51", size = 58880385, upload-time = "2026-03-18T23:27:36.297Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/10/7eb27c376691f7864becf27844b3c818f015e86e9f8390614c0048c2e62e/jaxlib-0.9.2-cp313-cp313t-manylinux_2_27_aarch64.whl", hash = "sha256:6949d7ecd869c117e7ea8361866e60cf229c3cd9d6afdc37425a43cf83fc89e9", size = 77849690, upload-time = "2026-03-18T23:27:39.943Z" },
-    { url = "https://files.pythonhosted.org/packages/80/e0/0bc84ff53bbc599a9925fa7017a226c646de6569ba1871b36694af8e200a/jaxlib-0.9.2-cp313-cp313t-manylinux_2_27_x86_64.whl", hash = "sha256:e8e8165f0f647933f0ff9e1e4d9937d541841d3672a20db73f5ccb5e842b0edc", size = 83427722, upload-time = "2026-03-18T23:27:43.391Z" },
-    { url = "https://files.pythonhosted.org/packages/75/06/aa1e2c36db1ed893ea4a89528a9cc8617a31919ffe7307c4f56aaa87e5cc/jaxlib-0.9.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:bab168d25555464461bd077323484f690c471e69ce8b0c39a39fb81b3e3a8bf0", size = 58776023, upload-time = "2026-03-18T23:27:46.907Z" },
-    { url = "https://files.pythonhosted.org/packages/e5/ed/7f2cd3c9d91c95457f503311be4bc648b3a4aa79bfe1c874b16fa54c2207/jaxlib-0.9.2-cp314-cp314-manylinux_2_27_aarch64.whl", hash = "sha256:be4627c42d44add7fe17d284ef579ff8d159e3cb6947f6437758f34177e878e6", size = 77748670, upload-time = "2026-03-18T23:27:50.009Z" },
-    { url = "https://files.pythonhosted.org/packages/c0/a1/461f25959e9eb0a46722d00c01cfb1dd82e8889dfa1c228f13e0cfbe948d/jaxlib-0.9.2-cp314-cp314-manylinux_2_27_x86_64.whl", hash = "sha256:3d7151140a4936f3218b2d1b1343dd237bd2865cf51442884b6d82fe884a3de7", size = 83330703, upload-time = "2026-03-18T23:27:54.578Z" },
-    { url = "https://files.pythonhosted.org/packages/21/98/34a9d156f61777abd9d4e74781fcd99fcf1bb77533e617c2d0ee1c5602fe/jaxlib-0.9.2-cp314-cp314-win_amd64.whl", hash = "sha256:87bd42c9f18c9cc9a45371d02ecdbdb574ea1e2277149601a92e14a24c4bbc86", size = 65247657, upload-time = "2026-03-18T23:27:57.855Z" },
-    { url = "https://files.pythonhosted.org/packages/ea/c9/5653eb4be25a3235be2606e1e8fb28fb8c6f0f48b33b947e47f0dc7e7ec0/jaxlib-0.9.2-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:b8998f9fa6e67bf956044c310023f6a7bbfaa0d8955f11d928404c8f6eb02fcf", size = 58882789, upload-time = "2026-03-18T23:28:00.834Z" },
-    { url = "https://files.pythonhosted.org/packages/41/8d/ef12f6a2f158d47480cded343c85078a02e9fc7d4952dafcd95dab6f9127/jaxlib-0.9.2-cp314-cp314t-manylinux_2_27_aarch64.whl", hash = "sha256:35b473df72dbc2cfda0cb1b3de7521a2150a0aa5ef57ed7583eeceb012dc17c0", size = 77850880, upload-time = "2026-03-18T23:28:04.063Z" },
-    { url = "https://files.pythonhosted.org/packages/c9/6a/6dff1e6e3f9d918bc777e087091bdefbd7d33328c1d1b152429c6cdcf723/jaxlib-0.9.2-cp314-cp314t-manylinux_2_27_x86_64.whl", hash = "sha256:bbe59bdef668ff5fd998c6d88e8df9a32ab95bec0dea3d2b5f7a11b86a9a6788", size = 83425685, upload-time = "2026-03-18T23:28:07.906Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/2c/7038fc73154307389631b5b2dbe5ac529e1918eecc19a27e6644ad114bbf/jaxlib-0.10.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:5a98873fc867623b81f2bee15d554b8edd6588a183d01fa50d21b1e3db96ff2b", size = 61429039, upload-time = "2026-06-17T23:43:44.858Z" },
+    { url = "https://files.pythonhosted.org/packages/66/c6/d69a0a33046f84930b89387861c061996d5207671b35080898679ca9960a/jaxlib-0.10.2-cp311-cp311-manylinux_2_27_aarch64.whl", hash = "sha256:d44565dcfd1b4f60f76d911c6512118a8a4fc764bdef92663fecb8bfccd54f23", size = 81079180, upload-time = "2026-06-17T23:43:48.245Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/27/fb54e3265c0ffcb687f93e9fb761c589acebbe958c3fed1b2c74c3f0e782/jaxlib-0.10.2-cp311-cp311-manylinux_2_27_x86_64.whl", hash = "sha256:1faca3c5d4662cb4a6130a68105d68bb520764817e165d6eebfd6786c0d1f30f", size = 85448560, upload-time = "2026-06-17T23:43:51.724Z" },
+    { url = "https://files.pythonhosted.org/packages/21/bc/31fbb3d892c3cb97c73af9226eca63d60d8e224017145bdb6871d1d24da6/jaxlib-0.10.2-cp311-cp311-win_amd64.whl", hash = "sha256:e7a9214e6b0b9e0825d905573d1bbf2253c20e9d7464a63e085b60519975553f", size = 65867603, upload-time = "2026-06-17T23:43:54.939Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/93/ee9cc8743191544f65d26ab7eeb82d65968fe60905662d1a5554d056654b/jaxlib-0.10.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:47bb7c011515ea862be7e8313f40f9c56cbec09dc98a0fcb5016785fcd454c01", size = 61434612, upload-time = "2026-06-17T23:43:57.808Z" },
+    { url = "https://files.pythonhosted.org/packages/11/06/8cc36021bf74d617c312eeed94c280282bb1bcbb32b63f2a42b10ae41575/jaxlib-0.10.2-cp312-cp312-manylinux_2_27_aarch64.whl", hash = "sha256:53b72977ae582c03a9e8e1cdee1efbf8ebc1418270965b0e69eade57acf40331", size = 81085366, upload-time = "2026-06-17T23:44:01.067Z" },
+    { url = "https://files.pythonhosted.org/packages/48/17/38b718af2353dba7753300871e83fbb64a88a772e12727ae27373ab675ce/jaxlib-0.10.2-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:fe88ec443714c4379968b6c109f9fa617c7ad19b802828e4d7bf861cd66da4b7", size = 85467828, upload-time = "2026-06-17T23:44:04.238Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/c2/d41d13826ebdfe62e56cd87ba70fab3bb9fcbea4a6c9086739a91667e5bf/jaxlib-0.10.2-cp312-cp312-win_amd64.whl", hash = "sha256:4b08f5fbc596b83f76308181863996f93d901d1f09cfd4e130a65c1998e1b371", size = 65900139, upload-time = "2026-06-17T23:44:07.476Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/68/eaa4cebe253359196a8e80a33b242959e27d8d2a6ae3d09339f21da2acb8/jaxlib-0.10.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:4df530afa354a22dc1747a5d560640450cbb895d49889338a3f58c76a4c76c8e", size = 61434805, upload-time = "2026-06-17T23:44:10.511Z" },
+    { url = "https://files.pythonhosted.org/packages/25/c1/4b884ea5962b6beb3c0f93742db54246bbf8b3274e48b0aca47908e454be/jaxlib-0.10.2-cp313-cp313-manylinux_2_27_aarch64.whl", hash = "sha256:45b28b0238697ab74bbcf20411aafb6db42acc31836cc2fd711e5cf056bf9556", size = 81084260, upload-time = "2026-06-17T23:44:14.065Z" },
+    { url = "https://files.pythonhosted.org/packages/36/ac/4ee28c65861605945223145fbcd3c9362ec2255ddf7d917574e205548c82/jaxlib-0.10.2-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:9e4818b4a8756fd3918766ca2aa5342125809f4f08a6fe46026d4386e7c23644", size = 85467706, upload-time = "2026-06-17T23:44:17.471Z" },
+    { url = "https://files.pythonhosted.org/packages/79/54/9918b0f77a25a1299818c0610305ca2bea38ed90584f4489b60357e2dd39/jaxlib-0.10.2-cp313-cp313-win_amd64.whl", hash = "sha256:c75d6f1df1c9cff08e110b4a21c79560fdc502f4288972d6b117d25dafd44352", size = 65897894, upload-time = "2026-06-17T23:44:21.153Z" },
+    { url = "https://files.pythonhosted.org/packages/56/5b/70df11da52a8b1a826184cccc05a3fec8aed76058a980021873fba3069cb/jaxlib-0.10.2-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:4c202d8ff7c1f3b5049dbd8f1e30e52759cd4e0a5835f0b3c7ae076a05818e28", size = 61564746, upload-time = "2026-06-17T23:44:24.421Z" },
+    { url = "https://files.pythonhosted.org/packages/23/5c/184a648ea5db6c8b1a08fc5784c157b4c557255e009fb56091393df3c6de/jaxlib-0.10.2-cp313-cp313t-manylinux_2_27_aarch64.whl", hash = "sha256:b7b029bb95d981566750475b9719a9d6b66ed5dd2748851667899b6cfe075299", size = 81204888, upload-time = "2026-06-17T23:44:27.57Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/5c/539596a55265711d74147913278bcdc38412980be7d74d9c9d860297c486/jaxlib-0.10.2-cp313-cp313t-manylinux_2_27_x86_64.whl", hash = "sha256:e8b126097d609b0c6e6786e89f6dd6978adc02ebd5f63a1c61293fbac7821305", size = 85583810, upload-time = "2026-06-17T23:44:30.962Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/0d/27471ec9f1d04674f6e62de809412371e097aed3eca7d9483e677c54c214/jaxlib-0.10.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:72eba28b12fee02616fa42aa4b881b4ab62d7757c7843c462401d3fb34a27be4", size = 61446097, upload-time = "2026-06-17T23:44:34.196Z" },
+    { url = "https://files.pythonhosted.org/packages/af/c8/941a7f7f37510f51290a5bd1a413aeef977fb8ba8adc0cfe8391233a764c/jaxlib-0.10.2-cp314-cp314-manylinux_2_27_aarch64.whl", hash = "sha256:f18f56fee90699cfba9b6627045a7a299702cb0e2af82ce180d9a6a7c8048093", size = 81096546, upload-time = "2026-06-17T23:44:37.486Z" },
+    { url = "https://files.pythonhosted.org/packages/69/77/ac054882c220872512df28d16aeb648fe0e651efbb5be4fd7c4817fd88b0/jaxlib-0.10.2-cp314-cp314-manylinux_2_27_x86_64.whl", hash = "sha256:ca34f363197fb0ac4082582ca755007910369e33f8a8ba3d35ed94b71070107d", size = 85472993, upload-time = "2026-06-17T23:44:40.904Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/7d/c592d1fa69c210be0d2743fffc598dfc2f54efa9671c5f6f5d1e151c6f4a/jaxlib-0.10.2-cp314-cp314-win_amd64.whl", hash = "sha256:99818b0a18adc0b899abf4873795e8d65169441d87ab2e5cbb228e73d0f25808", size = 68376553, upload-time = "2026-06-17T23:44:44.968Z" },
+    { url = "https://files.pythonhosted.org/packages/54/9b/91b00ec74985d29708b50420b4103c1f651c8f1c253d4fcb49d1bbb532cd/jaxlib-0.10.2-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:fc62997fce8831819551a2a5469a818169b09582b5b648c102d11ac7205bb812", size = 61564620, upload-time = "2026-06-17T23:44:48.217Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/c7/49d2b19c3b3105c30e1d3af2062e82e1977fb239d3dc3cbb583ef676dda7/jaxlib-0.10.2-cp314-cp314t-manylinux_2_27_aarch64.whl", hash = "sha256:a24d6e3cba263978293eae8b41330d5ccf24d6cdd1a6bcd4e82aff34e767620d", size = 81206365, upload-time = "2026-06-17T23:44:51.419Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/99/006cedf443f4a01f2088651facce79b2105bfb4905bfe9162eb0920a6dfb/jaxlib-0.10.2-cp314-cp314t-manylinux_2_27_x86_64.whl", hash = "sha256:5a2ac7aed7c4e661f67600bbcdec9e589151c1efec91f4cdb8d484af1a45c895", size = 85584458, upload-time = "2026-06-17T23:44:55.377Z" },
 ]
 
 [[package]]
@@ -1879,18 +1879,18 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
-    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version < '3.12' and sys_platform == 'darwin'",
 ]
 dependencies = [
@@ -1941,13 +1941,13 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
@@ -1994,13 +1994,13 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
@@ -2046,13 +2046,13 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
@@ -2105,13 +2105,13 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
@@ -2146,13 +2146,13 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
@@ -2187,13 +2187,13 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
