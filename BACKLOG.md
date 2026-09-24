@@ -165,7 +165,7 @@ Out of scope for the current script-migration work. Recorded here so the context
   range in `pyproject.toml`; add a CI matrix covering both the locked version and latest-on-PyPI;
   both. Not changed by this task (dependency changes were out of scope).
 
-- **`SearchStatus` in `get_uncertainty`'s return value — candidate for 0.2.0.** The 2026-09-22 fix
+- **`SearchStatus` in `get_uncertainty`'s return value — candidate for a future minor release.** The 2026-09-22 fix
   added `search_status_` as a side-effect attribute specifically because changing
   `get_uncertainty`'s return signature (`(U, alpha)` today) is a breaking change, out of scope for
   a patch-level fix. Returning `(U, alpha, status)` directly would be more discoverable than a

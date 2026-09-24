@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-24
+
+Upgrading from 0.1.x: two changes can break existing code. `predict()` no longer accepts
+`force_non_empty_sets` — remove the argument if you pass it; it already had no effect. Assigning
+`alpha` below `1/(N+1)` now raises `ValueError` instead of silently clipping — assign `1/(N+1)`
+explicitly instead.
+
 ### Fixed
 - `get_uncertainty` no longer crashes when passed a device-resident (e.g. GPU) label array while
   the softmax argument is also device-resident. The label array is now routed through the same
@@ -59,3 +66,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and outcomes above.
 - A documentation correction pass brought several project documents back in line with the current
   state of the repository.
+
+## [0.1.0] - 2026-08-21
+
+Initial release.
+
+[Unreleased]: https://github.com/edgardomarchi/utrace/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/edgardomarchi/utrace/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/edgardomarchi/utrace/releases/tag/v0.1.0
