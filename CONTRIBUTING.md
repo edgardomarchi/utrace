@@ -189,6 +189,59 @@ accuracy, building arrays for matplotlib. Only avoid it on the path into
   (group-conditional coverage); `classes=None` calibrates marginally. Multiple classes are fully
   supported under these semantics.
 
+## Departures from the published paper (do NOT "fix" without confirming)
+
+None of the three items below were documented anywhere in this repository before the
+2026-09-22 alpha-search fix added this
+section -- `git grep` for "departure" and "paper" across the prior state of every tracked `.md`
+file and `src/` returns nothing. They are recorded here now specifically so the next person does
+not have to rediscover them, or "fix" them into matching the paper without realizing the mismatch
+is deliberate.
+
+- **Search criterion.** The paper (§3.2) locates alpha as the smallest value for which the
+  *conditioned* average output set size equals 1, that is `E[1/|C(X)| | y in C(X)] = 1`. This code
+  searches instead on the *unconditional* mean set size crossing 1
+  (`_search_uncertainty`/`_evaluate_alpha` in `uncertaintyQuantifier.py`: `setsize = sum(set_sizes
+  over valid samples) / n_valid`, no conditioning on coverage). The reason is numerical, not a
+  change of definition: conditioning on coverage forces `|C| >= 1`, so the conditioned quantity is
+  bounded above by 1 and becomes flat once every covering set is a singleton. An equality criterion
+  on a plateau cannot be attacked by bisection. The unconditional mean crosses 1 monotonically and
+  can. The bound U itself is unchanged: it is eq. (6) of the paper, computed with the conditioned
+  expectation over covered tuning samples -- verified directly against
+  `_evaluate_alpha`'s `EC` (`uncertaintyQuantifier.py`, `is_covered`/`mask_succ` gating `inv_succ`
+  on samples where the true label is actually in the prediction set) and the `U_out = 1.0 - EC_out
+  * (1.0 - alpha_out)` line in `_search_uncertainty`. Since eq. (5) holds for any alpha, the proxy
+  affects how tight the bound is, never whether it is valid. Do not "restore" the conditioned
+  criterion in the search without first deriving a criterion that actually crosses.
+
+- **Quantile index: one order statistic above the canonical split-conformal quantile.**
+  `_masked_quantile_higher` (`utils/utils_jax.py`) computes `idx = ceil(q * (n_valid - 1))` with
+  `q = k/n_valid`, `k = ceil((n_valid+1)(1-alpha))` (the level `_q_hat_from_alpha` passes in).
+  Algebraically, for every integer `k` with `0 < k < n_valid` (excludes the boundary `k=n_valid`,
+  where it does coincide with the canonical index): `k/n_valid` is never an integer, so
+  `pos = k(n_valid-1)/n_valid = k - k/n_valid` lies strictly between `k-1` and `k`, and
+  `ceil(pos) = k` exactly, deterministically -- no rounding-dependent edge case. Since arrays are
+  0-indexed, `idx = k` selects the `(k+1)`-th smallest score in 1-based counting, one above the
+  canonical split-conformal `k`-th smallest score (0-indexed `k-1`). Verified directly from the
+  formula above, not merely asserted. This makes `q_hat` -- and therefore prediction sets, and the
+  reported `U` -- consistently one grid step more conservative than the canonical rule: the
+  coverage guarantee still holds (more conservatively), and the effect is negligible at large `N`
+  but can matter at the small `N` this task's alpha-search fix is specifically about. Recorded as
+  a documented departure, not a defect to fix now: changing it would move every golden value and
+  every previously published number derived from this codebase.
+
+- **Search domain and outcomes (2026-09-22 fix).** The alpha search (`_search_uncertainty`)
+  operates on `[1/(N+1), 1]`, not `[0, 1]`; see `SearchStatus`
+  for the three possible outcomes. In the `FLOOR_LIMITED` case, the returned alpha is exactly the
+  floor `1/(N+1)` -- **not** whatever smaller alpha the paper's own definition of the search target
+  would imply, if that value lies below what this calibration set's size can resolve. Below the
+  floor, no quantile level in an `N`-score calibration set can express a smaller alpha (the level
+  formula would need to exceed 1); returning the floor, with `U` evaluated at that same point, is
+  the tightest claim this calibration set can back. This replaces the coverage-guarantee argument
+  the pre-fix code relied on (it silently clipped the quantile
+  level instead, without adjusting the returned alpha to match, voiding the guarantee below the
+  floor).
+
 ## Architecture: agnostic core, backend-specific integrations
 
 "Backend-agnostic" applies to the CORE, not to the whole package. The package legitimately
