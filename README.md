@@ -150,7 +150,7 @@ This project is licensed under the MIT License.
 title = {U-TraCE},
 author = {Edgardo Marchi and Maik Liebl},
 year = {2025},
-version = {0.1.0},
+version = {0.2.0},
 howpublished = {\url{https://github.com/edgardomarchi/utrace}}
 }
 ```
