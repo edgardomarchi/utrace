@@ -42,7 +42,11 @@ def _reference_filtered(y, p, valid, cs_padded, n_cs, max_iters, score_fn):
     y_f = jnp.asarray(y[valid])
     p_f = jnp.asarray(p[valid])
     mask_f = jnp.ones(y_f.shape[0], dtype=bool)  # todos válidos tras filtrar
-    return _search_uncertainty(y_f, p_f, mask_f, cs_padded, n_cs, max_iters, score_fn)
+    # _search_uncertainty now also returns a status code (see SearchStatus);
+    # this helper's own callers still expect the original 2-tuple, so it is
+    # unpacked and ignored here rather than propagated.
+    alpha, U, _status = _search_uncertainty(y_f, p_f, mask_f, cs_padded, n_cs, max_iters, score_fn)
+    return alpha, U
 
 
 def test_masking_equals_filtering():
@@ -70,7 +74,7 @@ def test_masking_equals_filtering():
     y_pad[:B] = y; p_pad[:B] = p; m_pad[:B] = valid
     y_safe = np.where(m_pad, y_pad, 0)
 
-    a_mask, U_mask = _search_uncertainty(
+    a_mask, U_mask, _status = _search_uncertainty(
         jnp.asarray(y_safe), jnp.asarray(p_pad), jnp.asarray(m_pad),
         cs, n_cs_j, 30, lac)
 

@@ -165,14 +165,22 @@ dataloader never moves them. So on a machine where `torch.cuda.is_available()` i
 devices. `to_jax`'s own docstring states it does "NOT reconcile mismatches between two genuine
 tensors on different devices... that remains the caller's responsibility."
 
-This is an inference from reading the code, not an observation: every machine used in this
-refactor has been CPU-only, where all placements coincide and the mismatch cannot appear. No
-test covers it.
+This was an inference from reading the code, not an observation, when written: every machine used
+in this refactor up to that point had been CPU-only, where all placements coincide and the
+mismatch cannot appear.
 
-[UNVERIFIED] Whether an array is committed to a particular device, and whether two arguments
-reaching the same jitted call agree, is not observable on a CPU backend — every device is the
-same device there. This needs the RTX 3070, which is on a machine that has not been available
-during this work.
+**[ESTABLISHED, confirmed and fixed]** The RTX 3070 has since been available and answered this
+directly. `.reports/2026-08-20_gpu_verification_3070.md` (Q1) reproduced the crash exactly as
+predicted, both synthetically and against the real ACDC model and data: `calibrate()` raised
+`ValueError: Received incompatible devices for jitted computation` on the first calibration
+batch when probabilities are GPU-resident and labels are host-resident. It fails loud, not
+silently — no wrong numbers were produced. The fix landed in `calibrate()` in commit `7f140ea`
+("Reconcile argument devices in calibrate", see `.reports/2026-08-21_stepE_device_coherence.md`),
+and the analogous defect in `get_uncertainty` (found by the 2026-08-21 docs audit, H4b) was fixed
+separately in Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`). `predict` takes no `y` and
+was never exposed. Both fixes have GPU-only regression tests
+(`tests/core/test_calibrate_device_reconciliation.py`,
+`tests/core/test_get_uncertainty_device_reconciliation.py`).
 
 ### Convention: performance figures carry their machine
 
@@ -183,16 +191,23 @@ figures (the isolated-section comparison, the call-count sweep, and the golden-r
 taken on a Ryzen 7 5700G workstation; the ACDC step-C figures were taken on a Ryzen AI 7 350
 laptop.
 
-The defer-sort win (~357x, 7.2s → 20ms, in the Backlog "defer-sort" entry below) keeps its
+The defer-sort win (~357x, 7.2s → 20ms, the defer-sort entry below, in this document) keeps its
 existing attribution to an RTX 3070. The `to_jax` direct-vs-indirect figures under "What is
 unverified" below were measured on the 5700G; see
 `.reports/2026-07-29_phase6_step7_diagnostic_labels_hostcopy_5700G.md`.
 
-[UNVERIFIED] All measurements to date are CPU backend, except the RTX 3070 defer-sort figure
-noted above. The open GPU questions — the device-to-host-to-device ratio, whether np.asarray
-rejects a torch CUDA tensor, whether the jnp padding pays inside a jit trace, and now the
-device-commitment risk from step C — require an RTX 3070 on a third machine. This is a
-constraint on where, not only on when.
+[UPDATED] Most measurements were CPU backend at the time this was written; the RTX 3070 has since
+produced several reports (`.reports/2026-08-20_gpu_verification_3070.md`,
+`.reports/2026-08-20_gpu_packaging_fixes.md`, `.reports/2026-08-21_stepE_device_coherence.md`,
+`.reports/2026-08-21_gpu_main_verification.md`, `.reports/2026-08-21_gpu_measurements_acdc.md`).
+Of the open GPU questions listed here: the device-to-host-to-device ratio is now measured
+(`2026-08-20_gpu_verification_3070.md`, Q3: 32.03x at 2M elements for CUDA-origin tensors, not
+the CPU-measured 175x — a different comparison; the direct `to_jax` path is not flat on GPU
+either, unlike on CPU); whether `np.asarray` rejects a CUDA tensor is confirmed yes (same report,
+Q2, `TypeError`); and the device-commitment risk from step C is confirmed real and has since been
+fixed (see "Step C: device-commitment risk" above). [UNVERIFIED] still open: whether the jnp-native
+padding measured as a CPU regression under "Measured negative result: jnp-native padding" in
+MIGRATION.md pays off inside a jit trace on GPU — no report has measured this specific question.
 
 ### Forwarding accessors: temporary scaffolding (removed)
 
@@ -232,26 +247,34 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   0.0852 ms and 6.98 ms respectively, a 175x ratio at ACDC pixel scale. The flatness is
   consistent with genuine DLPack zero-copy doing no data movement.
   On a GPU backend the data must reach the device regardless, so the relevant comparison is
-  device→host→device versus device→device, which is a DIFFERENT ratio and has not been
-  measured on any GPU backend. Do not read a CPU ~175x figure as applying to GPU hardware.
-- [UNVERIFIED] Whether `np.asarray()` on a torch CUDA tensor raises, and therefore whether the
-  current `calibrate` rejects GPU-resident labels outright rather than merely
-  copying them inefficiently. This is the strongest single argument for step A if true, and it
-  is an inference from known torch behaviour that nobody has run. No CUDA device was available
-  in this (or any prior) diagnostic environment.
+  device→host→device versus device→device — a DIFFERENT ratio. **[ESTABLISHED]** now measured:
+  `.reports/2026-08-20_gpu_verification_3070.md` (Q3) found 32.03x at 2M elements for
+  CUDA-origin tensors (5.34x for CPU-origin tensors at the same size) — do not read the CPU
+  ~175x figure as applying to GPU hardware; the direct `to_jax` path's flatness does not hold on
+  GPU either, it scales mildly with size.
+- **[ESTABLISHED]** Whether `np.asarray()` on a torch CUDA tensor raises, and therefore whether
+  the pre-step-A `calibrate` would have rejected GPU-resident labels outright rather than merely
+  copying them inefficiently. Confirmed yes: `.reports/2026-08-20_gpu_verification_3070.md` (Q2)
+  — `np.asarray(t_cuda)` raises `TypeError: can't convert cuda:0 device type tensor to numpy`.
+  The current DLPack-based path correctly accepts CUDA-resident labels when they agree with the
+  probability tensor's device (mismatched devices raise instead — see "Step C:
+  device-commitment risk" above).
 - [UNVERIFIED] Whether the real cost is the copy or the per-batch device→host synchronisation
   that `np.asarray()` on a jax array forces. In the ACDC streaming pattern this would be a sync
   barrier per batch, which an isolated microbenchmark cannot see because it calls
   `block_until_ready` anyway.
-- [ESTABLISHED, was UNVERIFIED] Whether jitting `_calibrate_impl` pays at all, independent of
-  vmap, is answered on CPU for the marginal (`classes=None`) slice only — see "Step D, marginal
-  slice" in MIGRATION.md for the full numbers, machine, and design findings. Short version: yes, it pays,
-  from the very first call, at the batch sizes MNIST-family scripts use (~2-3x end-to-end through
-  the public `calibrate()`, more in isolation); the win shrinks to near-parity (~1.08x) at ACDC
-  pixel scale, where it remains genuinely open pending GPU measurement. The class-conditional path
-  (with vmap not yet in the picture) is untested and untouched — this item's "independent of
-  vmap" framing is answered only for the branch that has no class filter to interact with vmap in
-  the first place.
+- [ESTABLISHED] Whether jitting `_calibrate_impl` pays at all, independent of vmap, for the
+  marginal (`classes=None`) slice — see "Step D, marginal slice" in MIGRATION.md for the full
+  numbers, machine, and design findings. On CPU: yes, it pays, from the very first call, at the
+  batch sizes MNIST-family scripts use (~2-3x end-to-end through the public `calibrate()`, more
+  in isolation), shrinking to near-parity (~1.08x) at ACDC pixel scale. **Since answered on GPU
+  too**: `.reports/2026-08-20_gpu_verification_3070.md` (Q4/Q5) measured the same marginal-write
+  jit on an RTX 3070 and found the win does not shrink to parity there — it stabilizes around
+  ~1.3x even at pixel scale (B=2,000,000; ~1.3-1.5x depending on whether measured as a per-call
+  steady-state ratio or total streaming wall-clock), a real, resolved separation, not overlapping
+  noise. The class-conditional path (with vmap not yet in the picture) remains untested and
+  untouched on both backends — this item's "independent of vmap" framing is answered only for
+  the branch that has no class filter to interact with vmap in the first place.
 - [UNVERIFIED] Whether returning jnp scalars instead of numpy scalars from
   `get_uncertainty` breaks any script. `float()`, `np.isnan()` and pandas all accept
   jnp scalars, so this is expected to be soft, but it must be checked against the scripts
@@ -344,7 +367,12 @@ reader:
   pandas deferred out of `import utrace`" below) — the annotation cannot name `plt` unquoted,
   since `plt` is not bound at module scope until the function body runs.
 - `pytest-expecter`'s `expect(x) == y` performs its assertion as a side effect inside `__eq__`, so
-  the bare comparison expression IS the intended API, not a mistake.
+  the bare comparison expression IS the intended API, not a mistake. **No longer live**: this
+  suppressed a per-file ignore for `src/utrace/tests/test_utils.py`, the only file that used the
+  idiom. Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`) removed that file, its per-file
+  ignore, and the `pytest-expecter` dependency itself as dead — `pyproject.toml`'s
+  `[tool.ruff.lint.per-file-ignores]` now names only `__init__.py`. Left here as a record of a
+  suppression that once existed, not a description of the current file.
 - `__init__.py` re-exports get a per-file `F401` ignore — the standard convention for a package's
   public-API surface, not a suppression of a real finding.
 
@@ -384,9 +412,17 @@ invocation including the canonical `--no-cov` one. Leaving `pytest-cov` behind i
 made the new `test` group unusable for its only purpose. `coveragespace`, which uploads coverage
 reports rather than hooking into `pytest` itself, stays in `dev`.
 
-[ESTABLISHED] A clean environment synced with the `test` group and the `viz` extra — no `dev`
-group, no torch — runs `tests/core/` at 113 passed, 1 skipped; the skip is the one test that asks
-for torch and does not find it (`pytest.importorskip("torch")`, by design).
+[ESTABLISHED, re-measured 2026-09-02] A clean environment synced with the `test` group and the
+`viz` extra — no `dev` group, no torch — runs `tests/core/` at 113 passed, 5 skipped: the one
+test that asks for torch and does not find it (`pytest.importorskip("torch")`, by design), plus
+two GPU-only tests in each of `test_calibrate_device_reconciliation.py` and
+`test_get_uncertainty_device_reconciliation.py`, inert without GPU-backed jax hardware. The
+figure was already stale before Batch 1: `test_calibrate_device_reconciliation.py` (2 skips)
+predates it, added by `7f140ea` ("Reconcile argument devices in calibrate"), which landed after
+this "113 passed, 1 skipped" line was written. Batch 1
+(`.reports/2026-08-21_batch1_defect_fixes.md`) added the other file, the remaining 2 skips. The
+passed count (113) is unchanged throughout — none of the four device-reconciliation tests run on
+a backend without GPU-backed jax.
 
 ### scripts/ lint cleanup
 
@@ -678,12 +714,12 @@ Mapping to paper figures (Marchi & Liebl 2026, Mach. Learn.: Sci. Technol. 7 015
 
 | Script | Paper figures | Legacy methods used | Status |
 |---|---|---|---|
-| `MNIST_class_conditional_example.py` | 11, 12 | calibrate, get_uncertainty_jit, predict | Directly migratable (Phase 4) |
+| `MNIST_class_conditional_example.py` | 11, 12 | calibrate, get_uncertainty_jit, predict | Migrated (Phase 4) |
 | `MNIST_example.py` | 9, 10 | calibrate, get_uncertainty_opt, predict | Migrated (Phase 4) |
-| `ACDC_example.py` | 13–16, tables B1/B2 | calibrate, get_uncertainty, predict | Migratable (per-class, pixels) |
-| `convergence_analysis.py` | 7(b) | fit, get_uncertainty | Rewrite |
+| `ACDC_example.py` | 13–16, tables B1/B2 | calibrate, get_uncertainty, predict | Migrated (Phase 4; pending numerical validation against the paper) |
+| `convergence_analysis.py` | 7(b) | fit, get_uncertainty | Migrated (Phase 4) |
 | `data_size_analysis.py` | 7(a,c) | fit, get_uncertainty_opt | Migrated (Phase 4) |
-| `setsize_analysis.py` | 4, 5 | fit, get_uncertainty, predict | Rewrite |
+| `setsize_analysis.py` | 4, 5 | fit, get_uncertainty, predict | Migrated (Phase 4) |
 | `MNIST_test_coverage.py` | Appendix A | fit_opt, get_uncertainty_opt, predict_opt | Migrated (Phase 4) |
 | `MNIST_test_convergence.py` | Appendix A | fit, get_uncertainty_opt, predict | Migrated (Phase 4) |
 | `btorch_MNIST_test.py` | Appendix C | (none — bayesian-torch) | DO NOT TOUCH |
@@ -703,4 +739,104 @@ What the figure asserts is that the prediction-set size distribution follows the
 - For reproducible figures, fix BOTH seeds: the model (torch.manual_seed beforeinstantiation + train-loader generator) and the random_split. Same model seed
   -> identical weights hash.
 - convergence_analysis (paper fig 7b): validates that U converges to the empirical error (1 - accuracy) as calibration size grows. Noisy at small calibration (expected), settles onto the flat 1-Cov / Ue lines at large calibration. Reference: post-fix run converges to U ~ 0.05 / 0.50 / 0.75 / 0.81 for sigma_n = 0 / 0.75 / 1.25 / 2.0. Requires both core fixes (sort + _N).
+
+## Alpha search: floor, feasible-alpha return, status propagation (2026-09-22 fix)
+
+Both defects below were confirmed by direct
+reproduction against this repository's own code before being fixed, not assumed from what was
+found during use of the package.
+
+- [RESOLVED] **Quantile-level clipping below `alpha = 1/(N+1)` voided the coverage guarantee.**
+  `_q_hat_from_alpha` clips the quantile level to 1.0 whenever `alpha < 1/(N+1)`, silently (inside
+  `@jit`, no warning possible); the pre-fix search had no floor on its `[0,1]` domain, so for a
+  well-separated calibration/tuning distribution with a small `N`, it would walk straight to
+  `alpha = 2**-max_iters` and return that as the answer. Reproduced exactly: synthetic
+  highly-confident softmax at N=96/50/42 returned `alpha = 9.313226e-10 = 2**-30`, matching the
+  value found during use of the package bit-for-bit, under both this repo's locked JAX 0.9.2 and
+  an isolated JAX 0.11.1 (identical in both). Fix: the search now operates on `[1/(N+1), 1]`;
+  below the floor the clip is unchanged (and now provably harmless -- see
+  `_q_hat_from_alpha`'s docstring) because a sub-floor evaluation can no longer be the value
+  returned. `SearchStatus.FLOOR_LIMITED` names this outcome explicitly.
+
+- [RESOLVED] **The search returned the last loop iterate, not the last iterate meeting its own
+  criterion.** `_search_uncertainty`'s `fori_loop` always overwrote `setsize`/`EC_yt` with the
+  current iteration's values (whenever not frozen), regardless of whether that iteration's mean
+  set size actually met the target (`<= 1.0`). Because the criterion is a step function (jumps at
+  the quantile's discrete order-statistic grid -- see CONTRIBUTING.md, "Departures from the
+  published paper", for the exact grid), bisection near convergence can land on either side of a
+  jump depending on `max_iters`' parity. Verified on this repo's own golden configuration
+  (untrained CNN, classes 0 and 3, N=18/26): stopping one iteration earlier than the checked-in
+  `max_iters=30` changed the returned `U` by up to ~0.097 -- an ordinary, non-saturated case, not
+  only the sub-floor regime. Separately, 16 of the golden suite's 20 configurations never visit a
+  feasible iterate at all in 30 steps (the mean set size stays `> 1` throughout, even approaching
+  `alpha = 1`) -- a third, previously-unnamed regime, distinct from the oscillation case. Fix: the
+  search now explicitly tracks the smallest feasible alpha visited (and the conditioned mean at
+  that same alpha) through the loop, selecting among three outcomes after it --
+  `SearchStatus.CONVERGED` / `FLOOR_LIMITED` / `INFEASIBLE` -- instead of reading off whatever the
+  final iterate happened to be. Verified directly against the pre-fix `_search_uncertainty`
+  (loaded from git, unmodified) on the real golden class-0/class-3 data: the old code's `U` varies
+  across `max_iters` in `{25,...,30}` (6 and 3 distinct values respectively); the new code's
+  `q_hat` and conditioned mean `EC` are each a single value across the same range, for both
+  classes.
+
+- [RESOLVED] **`self.alpha = value` below the floor: warn-and-clip replaced with `ValueError`.**
+  The setter computed the same quantile level as `_q_hat_from_alpha`, clipped it to 1.0 on
+  overflow, and logged a `logger.warning` -- invisible under default logging configuration, which
+  is how the first defect above went unnoticed in practice. It also stored the caller's literal
+  out-of-range `alpha` in `self._state.alpha` while `q_hat` was computed for a different, unstated
+  alpha (`1/(N+1)`), an inconsistency between what `self.alpha` reported and what `predict()`
+  actually used. Now raises `ValueError` naming `N` and the floor. The raise condition compares
+  `alpha` directly against `1/(N+1)` (a single division) rather than checking whether the computed
+  quantile level exceeds 1 -- the level formula's `ceil`/multiply chain can round fractionally
+  above 1 exactly at `alpha == 1/(N+1)` due to floating-point error, which would otherwise wrongly
+  raise on the exact floor value `get_uncertainty` itself returns in the `FLOOR_LIMITED` case;
+  verified by a dedicated test (`tests/core/test_search_status.py::
+  test_alpha_setter_accepts_exact_floor_from_search`) that assigns a real `FLOOR_LIMITED` search's
+  returned alpha back to `self.alpha` and confirms it does not raise.
+
+- [RESOLVED] **Search outcome not surfaced to the caller.** `_search_uncertainty` discarded its own
+  `frozen`/`will_freeze` loop state at return, so nothing about *why* the search stopped where it
+  did (saturated? floor-limited? genuinely converged?) ever reached `get_uncertainty`'s caller.
+  This diagnostic/fix task found no prior record in this repository (`BACKLOG.md`, `MIGRATION.md`,
+  git history) of this being a previously-decided, merely-unrecorded piece of work, despite that
+  being how a later prompt in this task's own history described it -- recorded here as new work,
+  not as catching up a stale record. Fix: `_search_uncertainty` itself now returns an int32 status
+  code alongside `alpha`/`U` (a first pass introduced this under a second name,
+  `_search_uncertainty_with_status`, keeping `_search_uncertainty` as an unchanged 2-tuple wrapper
+  around it, specifically because `tests/core/test_search_uncertainty.py::
+  test_masking_equals_filtering` imports `_search_uncertainty` by name and unpacks exactly two
+  values; a 2026-09-22 correction pass retired the second name once that test's two call sites
+  were themselves authorised to adapt to a 3-value unpack, so there is now one canonical function,
+  under the original name, rather than a name plus a wrapper -- done specifically so a future
+  rebase of `remotes/github/unify-clf-reg-utrace`, which generalizes `_search_uncertainty` itself,
+  cannot end up wired to an unfixed wrapper by accident). The status code is mapped host-side to
+  the new `SearchStatus` enum and exposed as `UncertaintyQuantifier.search_status_` (sklearn-style
+  trailing underscore, matching `cal_score_`/`score_`/`label_dtype_`). A `SearchStatusWarning` (a
+  `UserWarning` subclass, filterable independently) is raised via `warnings.warn` -- not
+  `logger.warning` -- whenever the status is not `CONVERGED`, specifically because a logger call
+  is how the quantile-clip defect above stayed invisible.
+
+Golden baselines (`tests/integration/torch/baselines/`) were regenerated after this fix: of the 20
+golden calls (10 classes x 2 noise levels), the 4 that converge to an interior alpha (classes 0
+and 3) are bit-identical to their pre-fix values in all three baseline files; the 16 that saturate
+upward changed from `alpha ~= 1 - 2**-30` to exactly `1.0` (and `U` correspondingly), a difference
+of order `1e-9` in `alphas`/`uncertainties`, and up to ~0.136 in `coverages` specifically (a
+downstream `predict()` threshold effect of `q_hat` shifting by one order-statistic index at the
+`alpha=1` boundary -- expected, not itself a second defect).
+
+`mean_coverages.npy` moved by up to `0.136` (absolute) in the 8 upward-saturated classes (12 of
+the 16 saturated calls; the other 4 landed on the same coverage value regardless). Mechanism,
+verified directly: `predict()`'s `q_hat` is a discrete order-statistic pick
+(`_masked_quantile_higher`), and at `alpha = 1` exactly the quantile level `(N+1)(1-alpha)/N` is
+exactly `0`, so `_masked_quantile_higher`'s `ceil(q*(n_valid-1))` selects index `0` -- the true
+minimum calibration score. Pre-fix, the returned alpha was `1 - 2**-30` (never exactly `1`), so the
+level was a tiny *positive* number, and `ceil()` of any positive value is at least `1`, selecting
+the SECOND-smallest calibration score instead. A one-order-statistic shift in `q_hat` is not itself
+a second defect (both order statistics are internally consistent with their respective, correctly
+computed alpha; the pre-fix alpha was simply the wrong number, per the defect this fix resolves),
+but it does mean `mean_coverages.npy`'s pre-fix values were never a stable measurement of anything
+at this untrained, near-degenerate model's actual behavior -- they were an artifact of exactly how
+close to `1.0` a 30-iteration bisection happens to land, which the "raise the priority of the
+trained-model golden" entry (`BACKLOG.md`) draws the broader conclusion from. The maintainer
+reviewed this fix and ratified the golden regeneration.
 

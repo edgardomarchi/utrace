@@ -4,9 +4,37 @@ Open work only. Split out of MIGRATION.md on 2026-08-19 (see `.reports/2026-08-1
 
 ## Backlog (does not block the phases)
 
+- **Golden test with a trained model — priority raised, 2026-09-22 correction pass.** Was a
+  one-line note ("current ones use an untrained model: reproducible but in a degenerate regime,
+  unstable alphas"); raised here with the evidence the alpha-search fix produced. Of the golden
+  suite's 20 `get_uncertainty` calls (10 classes x 2 noise levels), **16 never reach a feasible
+  alpha at all** — the untrained CNN's near-uniform output keeps the mean prediction-set size `>
+  1` across the entire searched domain, so `SearchStatus.INFEASIBLE` is the common case, not the
+  exception, for this golden. The current golden therefore mostly measures the `INFEASIBLE`/
+  upward-saturation regime, not ordinary convergence — and that is precisely why a `0.136`
+  absolute change in `mean_coverages.npy` (see FINDINGS.md, "Alpha search..." entry) could be
+  accepted as an expected, mechanically-explained consequence of this fix without the golden
+  itself teaching anyone whether the FIX's actual target regime (interior, `CONVERGED` alphas at
+  ordinary `N`) works correctly across a range of models/data: only 4 of the 20 calls exercise
+  that regime at all. A trained-model golden would shift the suite's own coverage toward the
+  regime the package is meant to be used in.
 - `get_uncertainty_grid_from_proba`: alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
 - `tuning_stability(probs, y, n_splits)`: diagnostic for tuning-set size adequacy (runs the search on disjoint subsets and reports spread). This is the formalization of the "L random splits" scheme from the paper.
-- Golden test with a trained model (current ones use an untrained model: reproducible but in a degenerate regime, unstable alphas).
+- **A torch-free version of the max_iters-stability regression test (2026-09-22).** The only guard
+  for "the search's returned `q_hat`/conditioned mean are independent of `max_iters`" currently
+  lives in `tests/integration/torch/test_search_max_iters_stability.py`, behind the `examples`/
+  torch extra. A synthetic, `tests/core/`-compatible equivalent was attempted first (4,320
+  `(N,B,K,seed)` Dirichlet-based combinations tried) and none reproduced the exact grid alignment
+  that makes the property non-trivial to check (any case that merely "converges" already satisfies
+  it under the fixed code, by construction — the point of a regression test is one where the OLD
+  code would have failed, which requires the feasibility crossing to fall very close to a quantile
+  grid point `k/(N+1)`, a specific alignment, not a generic property of random data). The right
+  construction is analytic, not searched-for: choose `N` and a target grid index `k` (`0 < k <
+  N`), then craft calibration scores and a handful of tuning-sample scores so that the mean
+  set-size-vs-alpha curve is engineered to cross 1 within the same narrow window bisection resolves
+  around `alpha = k/(N+1)` — by placing at least one tuning sample's own conformity score strictly
+  between the two calibration scores at order-statistic indices `k-1` and `k`, so that whichever of
+  the two gets selected as `q_hat` changes that sample's set membership. Not designed further here.
 - **sklearn as a test dependency, reported not acted on.** `scikit-learn` is declared in all
   three dependency groups (`dev`, `dev-cuda13`, `dev-rocm7`), and its only reachable use anywhere
   in `src/`, `tests/` or `scripts/` is
@@ -26,7 +54,6 @@ anymore` comment on that import is stale and actively misleading — it produced
 backlog item already. Removing the comment, not the import, is the correct follow-up.
 - Performance benchmark per phase.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
-- force_non_empty_sets is silently ignored in the new prediction path. The jit _predict_sets does not implement it, and predict (renamed from predict_from_proba by the rename batch) accepts the parameter but does not pass it through. The legacy _predict_sets (initial commit) honored it (y_sets[arange, y_pred] = True). This is behavior lost in the jit migration. Harmless for callers passing False, but a latent bug for any script relying on force_non_empty_sets=True.
 
 ### TODO: make device handling in to_jax() explicit (deferred)
 
@@ -41,7 +68,20 @@ When addressing device handling (separate task, own branch / design discussion):
 
 Out of scope for the current script-migration work. Recorded here so the context is not lost.
 
-- [Phase 6] Zero-copy in tuning: `get_uncertainty`'s (renamed from `get_uncertainty_from_proba`) body does `np.asarray(to_jax(...))`, forcing a host copy and negating DLPack zero-copy on the tuning path; `calibrate` / `predict` (renamed from `calibrate_from_proba` / `predict_from_proba`) keep zero-copy. Make tuning consume the jnp array directly (see the adjacent bare `# TODO: ... espera numpy` comment — no symbol name to anchor to; that comment and the call sit at `uncertaintyQuantifier.py:435-436` as of HEAD `53b1e8d`, but re-verify by symbol/grep rather than trusting that number after further commits — it has now moved twice, from `417-418` as of `ebc5ddb`, to `355-356` as of `a0ea8f6`, to `435-436` as of `53b1e8d` (the B.5 state-extraction commit added ~150 lines earlier in the file), each time purely from unrelated line-count changes, never from this call site itself being touched. Re-confirmed still present as of this pass; perf impact is UNMEASURED (the RTX 3070 GPU benchmark in FINDINGS.md measured the calibration path, not the tuning/uncertainty path).
+- [Phase 6] Zero-copy in tuning: `get_uncertainty`'s (renamed from `get_uncertainty_from_proba`) body does `np.asarray(to_jax(...))` on both its `softmax` and `y` arguments — anchor by the adjacent bare `# TODO: _get_uncertainty_jit_impl espera numpy (lo convierte a jnp adentro)` comment and by the `np.asarray(to_jax(...))` calls themselves, not by line number: this entry already tracked three prior line-number drifts (`417-418` → `355-356` → `435-436`) before Batch 1 caused a fourth, to `507-508` — each drift came from unrelated line-count changes elsewhere in the file, never from this call site being touched, so recording a fifth number would just repeat the pattern that made the first three stale. Forces a host copy and negates DLPack zero-copy on the tuning path; `calibrate` / `predict` (renamed from `calibrate_from_proba` / `predict_from_proba`) keep zero-copy. Make tuning consume the jnp array directly. Perf impact is UNMEASURED (the RTX 3070 GPU benchmark in FINDINGS.md measured the calibration path, not the tuning/uncertainty path).
+
+  **Device-reconciliation coupling — read before implementing.** Found by the 2026-08-21 docs
+  audit (H4) and confirmed by Batch 1's own fix. `_get_uncertainty_jit_impl` currently rebuilds
+  fresh host numpy arrays internally regardless of the caller's device, which is exactly what
+  makes the two outer `np.asarray` calls removable today without reopening a device-mismatch
+  crash on their own. Implementing "make tuning consume the jnp array directly" as literally
+  described means rewriting that internal host padding to preserve device residency too — and
+  once it does, `get_uncertainty` needs the same device-reconciliation logic `calibrate()` gained
+  in commit `7f140ea` (see "Step C: device-commitment risk" in FINDINGS.md) and `get_uncertainty`
+  itself gained in Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`), or this item will
+  reopen the exact `ValueError: Received incompatible devices for jitted computation` crash those
+  two fixes closed — this time inside `_search_uncertainty`. Not implemented by this entry as
+  currently scoped; recorded so the next person to pick it up does not have to rediscover it.
 
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
@@ -50,6 +90,86 @@ Out of scope for the current script-migration work. Recorded here so the context
 - User-configurable target device for to_jax (like torch's device=): host arrays currently go to JAX's default compute device; a future API should let the user choose. The current fix is written so the default-device path is the single point a future device= would generalize.
 
 - Noise-sweep scripts rebuild the dataset (and DataLoader) inside the iteration loop, partly to reshuffle the split per iteration and partly to change the noise level. Reconstructing the full dataset per iteration is wasteful — only the noise (and the split) need to change, not the 60000-sample base. Optimization: instantiate the base dataset (and loader) ONCE outside the loop, and inside the loop either mutate the transform's sigma (transform.std sigma — valid because AddGaussianNoise reads self.std in __call__, not __init__) or reassign it (dataset.transform = AddGaussianNoise(0., sigma)). IMPORTANT: the random_split must STAY inside the loop (with a varying generator) to preserve per-iteration reshuffling — only the dataset/loader construction moves out. Caveat: mutating transform.std from the main process only propagates with num_workers=0; with spawn/fork workers, each worker holds its own copy and the loader would need rebuilding (ties into the num_workers decision). Applies to several sweep scripts (MNIST_class_conditional, and others with a noise sweep). Behavior-adjacent — revalidate numbers after the change. Its own diagnostic + commit.
+
+- **Classifier/Regressor split: decided in principle, not designed.** A future split of the
+  public `UncertaintyQuantifier` into `UncertaintyQuantifierClassifier` and
+  `UncertaintyQuantifierRegressor` is anticipated (regression support is the basis for the second
+  publication referenced under "Research questions" below, and the current public API —
+  `calibrate`, `predict`, `get_uncertainty` — was already named task-agnostically for this, per
+  "Naming convention now in force" in FINDINGS.md), but this decision is recorded in no document
+  as of this entry — confirmed by `git grep`, zero matches for either class name or the phrase
+  "classifier/regressor" anywhere in `src/`, `tests/`, `scripts/`, or the other five documents,
+  except FINDINGS.md's own passing mention (see "Two further rungs were measured and deliberately
+  not taken" under "ruff adoption, rung 1"), which cites "Architecture / design direction" in
+  MIGRATION.md as if it documents the split — it does not; that section is entirely about
+  jit/vmap/state-PyTree design for the existing single class. Recording only: the split has been
+  decided in principle. Not decided: the module layout, the API surface each subclass exposes, or
+  the definition of the regression uncertainty measure itself (the classification measure is
+  `1 - P(ŷ = y_t)`; regression has no analogous definition here yet). None of that is designed by
+  this entry.
+
+  **2026-09-22 update, from the alpha-search fix.** The base class this split introduces must own
+  the *fixed* search (`_search_uncertainty` — as of the 2026-09-22 correction pass this is once
+  again the ONE canonical entry point, returning `(alpha, U, status)`; there is no separate
+  `_with_status` name to keep in sync — and its `SearchStatus`/`SearchStatusWarning` machinery, see
+  FINDINGS.md, "Alpha search: floor, feasible-alpha return, status propagation"), not the pre-fix
+  `[0,1]`-domain, last-iterate-return version — designing the shared base class around the old
+  search would relocate both defects into two call sites (classification and regression) instead
+  of one. `remotes/github/unify-clf-reg-utrace` (inspected read-only, not merged) already
+  generalizes `_search_uncertainty` toward a shared `risk_fn`-parameterized version used by both
+  tasks, with the two pre-fix defects present verbatim in it (byte-identical `_q_hat_from_alpha`
+  clip; the same discarded-`frozen`, last-iterate `return alpha_f, U`) — that branch should rebase
+  onto this fix rather than the fix being ported to it separately, since its generalization wraps
+  around the exact lines this fix touches without rewriting them, and it already generalizes
+  `_search_uncertainty` itself (the same name this fix now returns three values from directly, no
+  second name involved) rather than a wrapper around it. The rebase specifics are recorded above
+  in this entry.
+
+- **Order-statistic search (candidate design for the Classifier/Regressor base class).** The
+  search criterion depends on alpha only through `q_hat`, which itself takes only `N` distinct
+  values (one per calibration-buffer order statistic) — the search could run directly on the
+  integer order-statistic index instead of on continuous alpha via `fori_loop` bisection:
+  integer bisection over `{0, ..., N-1}` in `ceil(log2 N)` steps, with no oscillation and no
+  `max_iters`-parity dependence, because there is no continuous step function to straddle. Recorded
+  as a candidate for the shared search the Classifier/Regressor base class (above) would own — not
+  designed here, not started.
+
+- **Quantile-index departure: canonical order statistic or keep the conservative one?**
+  `_masked_quantile_higher` returns one order statistic above the canonical split-conformal
+  quantile for every `alpha` strictly above the floor — see CONTRIBUTING.md, "Departures from the
+  published paper", for the exact derivation (verified algebraically by the 2026-09-22 fix, not
+  merely asserted). Decision pending on whether to move to the canonical `k`-th order statistic.
+  Consequences of moving: every golden value changes; every previously published number derived
+  from this codebase becomes non-reproducible against the version that produced it; the coverage
+  guarantee still holds either way (the canonical rule is exact, not merely "less conservative"),
+  so the only real question is reproducibility cost vs. tightening `U` by one grid step — negligible
+  at large `N`, more visible at the small `N` this task's alpha-search fix is specifically about.
+
+- **Verification of published results against the alpha-search fix.** Investigation
+  found no configuration in this repository's own golden test or reproduction scripts (run at
+  reduced scope) that triggered the quantile-clipping defect
+  (Hypothesis 1), but DID find the last-iterate defect (Hypothesis 2) in a realistic trained-model
+  class-conditional configuration at ordinary `N` (164–253), unrelated to the floor. Whether this
+  changed any number actually reported in the published paper has not been checked — that requires
+  running the paper's reproduction scripts (`scripts/MNIST_class_conditional_example.py` and
+  friends) at full scale (full noise sweep, full `IT` iteration count, trained model) with both the
+  pre-fix and post-fix search, and comparing against the published figures. Recording the
+  procedure; not run by this task (out of scope for this fix).
+
+- **JAX version gap: `pyproject.toml` declares `jax` with no version bound.** The lockfile
+  (`uv.lock`) pins `jax==0.9.2`, validated by the test suite; a `pip`/`uv` install from git with no
+  lock gets whatever is current on PyPI (0.11.2 at the time of the 2026-09-22 diagnostic; the
+  alpha-search defects were found during use of the package under 0.11.1). The diagnostic
+  confirmed the alpha-search defects reproduce identically under both versions, so this gap did NOT
+  explain those defects — but the gap itself is still real and unaddressed. Options: pin a version
+  range in `pyproject.toml`; add a CI matrix covering both the locked version and latest-on-PyPI;
+  both. Not changed by this task (dependency changes were out of scope).
+
+- **`SearchStatus` in `get_uncertainty`'s return value — candidate for a future minor release.** The 2026-09-22 fix
+  added `search_status_` as a side-effect attribute specifically because changing
+  `get_uncertainty`'s return signature (`(U, alpha)` today) is a breaking change, out of scope for
+  a patch-level fix. Returning `(U, alpha, status)` directly would be more discoverable than a
+  side-effect attribute; recorded as a candidate for the next breaking-change release, not decided.
 
 ### GPU / scalability (example scripts)
 
@@ -61,7 +181,13 @@ Out of scope for the current script-migration work. Recorded here so the context
 
 1. U-vs-alpha for the two Appendix-A scripts (`MNIST_test_coverage.py`, `MNIST_test_convergence.py`): both now use `U` (not the tuned alpha) on BOTH the prediction threshold (`cp.alpha = U`) and the BetaBinom null parameter (`a_p = U_mean`), per the `uq.alpha = U` decision in CONTRIBUTING.md ("Decisions to respect"). Whether the tuned alpha is preferable instead is an open question — revisit once, for both scripts together, not independently.
 2. BetaBinom null fragility: in both Appendix-A scripts, `Nr` (= `Nv`) is taken from only the last loop iteration's test-set size, while per-iteration sizes vary by ~1 sample due to `random_split`'s remainder rounding. The null distribution's trial count is therefore a (very close) approximation, not exact, across all recorded iterations.
-3. GPU validation for per-class calibration: the per-class calibration path (classes=[...]) has not been fully validated on a GPU backend end-to-end; only the global path (classes=None, MNIST_example) has a clean GPU run. MNIST_class_conditional ran on GPU only with ad-hoc batch tuning (a probe, not the final structure). This remains an open GPU-validation item.
+3. [RESOLVED] GPU validation for per-class calibration: was open when written (only the global
+   `classes=None` path had a clean GPU run at the time). Since exercised end-to-end on an RTX
+   3070 with real per-class (`classes=[C]`) `UncertaintyQuantifier` instances against real ACDC
+   data: `.reports/2026-08-21_stepE_device_coherence.md` (real model, real data, real per-class
+   streaming-calibration pipeline, 4 classes) and `.reports/2026-08-21_gpu_measurements_acdc.md`
+   (36-batch streaming loops per class, 4 classes, ~3.1M total scores written, summed wall-clock
+   and peak-memory figures reported per class).
 
 ## Research questions (candidates for a second publication — NOT implementation tasks)
 
