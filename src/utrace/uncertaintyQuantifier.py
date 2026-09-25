@@ -193,7 +193,7 @@ def reg_risk_fn(y: jnp.ndarray, y_hat: jnp.ndarray, q_hat: jnp.ndarray,
     # For regression, steering metric and efficiency metric are both ratio
     return ratio, ratio 
 
-@partial(jit, static_argnames=["score_fn"])
+@partial(jit, static_argnames=["score_fn", "risk_fn"])
 def _evaluate_alpha(
     alpha: jnp.ndarray,
     y: jnp.ndarray,
@@ -202,43 +202,56 @@ def _evaluate_alpha(
     cs_padded: jnp.ndarray,
     n_cs: jnp.ndarray,
     score_fn: Callable,
+    risk_fn: Callable,
+    aux_data: tuple
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Evaluates the search's feasibility predicate and conditioned efficiency
-    at a single alpha.
+    at a single alpha by deferring to the task-specific risk function.
 
-    Factored out of `_search_uncertainty`'s loop body so the exact
-    same evaluation (q_hat -> prediction sets -> mean set size / conditioned
-    mean 1/|C|) runs both once at the domain floor `1/(n_cs+1)` and, unchanged,
-    on every bisection iterate -- the floor check and the loop must agree on
-    what "feasible" means.
+    Factored out of `_search_uncertainty`'s loop body so the exact same evaluation 
+    (q_hat -> prediction sets -> task metric / conditioned efficiency) runs both 
+    once at the domain floor `1/(n_cs+1)` and, unchanged, on every bisection iterate -- 
+    the floor check and the loop must agree on what "feasible" means.
+
+    Parameters:
+    ----------
+        alpha : jnp.ndarray
+            The candidate alpha level.
+        y : jnp.ndarray
+            Target labels or values.
+        smx : jnp.ndarray
+            Softmax output (classification) or predicted point estimates (regression).
+        valid_mask : jnp.ndarray
+            Boolean array of valid samples to compute the metric over.
+        cs_padded : jnp.ndarray
+            Padded array of calibration conformity scores.
+        n_cs : jnp.ndarray
+            Number of valid conformity scores.
+        score_fn: Callable
+            The conformity scoring function used to construc sets/intervals.
+        risk_fn : Callable
+            The task-specific risk function (`clf_risk_fn` or reg_risk_fn`).
+        aux_data : tuple
+            Auxiliary data for the risk function (e.g., tolerance bounds).
 
     Returns
     -------
-    setsize : jnp.ndarray
-        Mean prediction-set size over `valid_mask` samples. Feasible means
-        `setsize <= 1.0`; this is the criterion the search steers by
-        (unconditional mean set size vs. 1, not the paper's conditioned
-        criterion (Section 3.2) -- see CONTRIBUTING.md, "Departures from the
-        published paper", for why).
-    EC : jnp.ndarray
-        Mean of `1/|C|` over valid, covered samples -- the efficiency term
-        `U = 1 - EC * (1 - alpha)` is built from.
+        setsize : jnp.ndarray
+            The sttering metric to compare against `target_ratio` (mean set size 
+            for classification, overla ratio for regression).
+            
+            Mean prediction-set size over `valid_mask` samples. Feasible means
+            `setsize <= 1.0`; this is the criterion the search steers by
+            (unconditional mean set size vs. 1, not the paper's conditioned
+            criterion (Section 3.2) -- see CONTRIBUTING.md, "Departures from the
+            published paper", for why).
+
+        EC : jnp.ndarray
+            The efficiency term used to construct the U-TraCE bound
+            `U = 1 - EC * (1 - alpha)`.
     """
-    n_valid = jnp.maximum(valid_mask.sum(), 1)
     q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
-    _, prediction_sets = _predict_sets(smx, q_hat, score_fn=score_fn)
-
-    set_sizes = prediction_sets.sum(axis=1)
-    setsize = jnp.where(valid_mask, set_sizes, 0.0).sum() / n_valid
-
-    is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
-    mask_succ = is_covered & (set_sizes > 0) & valid_mask
-    safe_sizes = jnp.where(mask_succ, set_sizes, 1)
-    inv_succ = jnp.where(mask_succ, 1.0 / safe_sizes, 0.0)
-    n_succ = mask_succ.sum()
-    EC = inv_succ.sum() / jnp.maximum(n_succ, 1)
-
-    return setsize, EC
+    return risk_fn(y, smx, q_hat, valid_mask, score_fn, aux_data)
 
 @partial(jit, static_argnames = ["risk_fn", "score_fn", "max_iters"])
 def _search_uncertainty( 
@@ -254,97 +267,112 @@ def _search_uncertainty(
     risk_fn: Callable = clf_risk_fn,
     direction: float = 1.0          # +1.0 if metric decreases w/alpha (clf), -1.0 if it increases (reg)  
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Binary search for the alpha whose mean prediction-set size (over
-    `valid_mask` samples) equals 1, on the domain `[1/(n_cs+1), 1]`.
+    """Binary search for the optimal alpha that meets the target metric ratio
+    on the domain `[1/(n_cs+1), 1]`.
 
-    Fixes two defects a 2026-09-22 diagnostic confirmed in the previous,
-    domain-`[0,1]` version of this search:
+    Extends the 2026-09-22 search implementation to unify classification and 
+    regession worksflows. The search direction and feasibility criteria are
+    dictated by the task's monotonicity:
+    - Classification (`direction=1.0`): metric is average set size. Feasible 
+    when `metric <= target_ration = 1.0`. As alpha increases, sets shrink.
+    - Regression (`directioin=-1.0`): metric is overlap ratio. Feasible when
+    `metric >= target_ratio`. As alpha decreases, intervals expand and overlap
+    grows.
 
-    1. Below `1/(n_cs+1)` the quantile level `_q_hat_from_alpha` computes
-       exceeds 1 and is clipped, so `q_hat` saturates at the maximum
-       calibration score and stops responding to alpha -- the old search had
-       no floor and would walk straight to `2**-max_iters` in that regime,
-       returning a U that is not a valid bound (coverage there is actually
-       `n_cs/(n_cs+1)`, not `1-alpha`; see the diagnostic, Hypothesis 1).
-    2. The old search returned whatever the *last* loop iterate happened to
-       be, feasible or not. Because the criterion is a step function (jumps
-       at the quantile's discrete order-statistic grid), bisection can
-       oscillate across the jump near convergence, and whether the final
-       iterate lands on the feasible or infeasible side depends on
-       `max_iters`' parity -- observed to shift U by up to ~0.1 on this
-       repo's own golden configuration, in ordinary (non-saturated) cases,
-       not only the sub-floor regime (diagnostic, Hypothesis 2).
+    Fixes two defects a 2026-09-22 diagnostic confirmed in earlier versions:
 
-    **The evaluated sequence of alphas the loop visits is bit-for-bit
-    unchanged from the old search** (same `sign`/`alpha_proposed`/
-    `out_of_bounds`/`will_freeze` update, still bisecting nominally over
-    `[0,1]`, not an explicit bracket on `[1/(n_cs+1),1]`) -- sub-floor
-    iterates are now harmless (see `_q_hat_from_alpha`'s docstring) because
-    they can never be the value this function returns; only what gets
-    *selected* as the final answer changes. This is deliberate: reformulating
-    the loop as bisection directly on `[1/(n_cs+1),1]` would change every
-    evaluated midpoint and move every golden value for no statistical gain.
+    1. Below `1/(n_cs+1)`, `q_hat`saturates at the maximum calibration score.
+       The old search had no floor and would walk to `2**-max_iters`, returning
+       an invalid bound.
 
+    2. The old search returned whatever the *last* loop iterate happened to be, 
+       feasible or not, which oscillated across the metric step function jump
+       depending on `max_iters` parity. 
+
+    **The evaluated sequence of alphas the loop visits is bit-for-bit unchanged**
+    from the original `[1.0, 0.5, ...]` bisection sequence. A dummy initialization
+    guarantees the first delta step is always `-0.5' regardless of the task
+    or initial metric. Sub-floor iterates evaluate safely but are never returned.
+    
     Three mutually exclusive outcomes (see `SearchStatus`), decided in this
     priority order:
 
-    1. `FLOOR_LIMITED` -- the predicate is already feasible (mean set size
-       `<= 1`) at the floor `1/(n_cs+1)` itself. By monotonicity of `q_hat`
-       in alpha (`_q_hat_from_alpha`'s level is non-increasing in alpha, so
-       mean set size is non-increasing in alpha too), the floor is then the
-       smallest feasible alpha in the whole domain. Returns `alpha = floor`,
-       `U` evaluated at that same alpha.
-    2. `CONVERGED` -- otherwise: the loop visited at least one feasible
-       alpha. Returns the *smallest* feasible alpha visited (tracked
-       explicitly through the loop, not read off the final iterate) and `U`
-       evaluated at that same alpha.
+    1. `FLOOR_LIMITED` -- the predicate is already feasible  at the floor `1/(n_cs+1)`. 
+        By monotonicity of `q_hat` in alpha, the floor is the smallest feasible 
+        alpha in the whole domain. Returns `alpha = floor`,
+    2. `CONVERGED` -- the loop visited at least one feasible alpha. Returns the 
+        *smallest* feasible alpha visited (tracked explicitly through the loop, 
+        not read off the final iterate). 
     3. `INFEASIBLE` -- the loop never visited a feasible alpha. Returns
-       `alpha = 1.0`, `U = 1.0` exactly -- the value the `U` formula itself
-       gives at the domain's upper boundary (`(1 - alpha)` is exactly zero
-       there), not an ad hoc sentinel.
+       `alpha = 1.0`, `U = 1.0` exactly -- the trivial bound value.
 
+    Parameters:
+    -----------
+        y : jnp.ndarray
+            Target labels or values, shape (n,).
+        smx :  jnp.ndarray
+            Softmax output or predicted values, shape (n, K) or (n,).
+        valid_mask : jnp.ndarray
+            Boolean mask of valid samples to evaluate the metric over, shape (n,).
+        cs_padded : jnp.ndarray
+            Padded calibration scores, shape (m,).
+        n_cs ; jnp.ndarray
+            Number of valid calibration scores in `cs_padded'.
+        max_iters: int
+            Maximum number of bisection loop iterations.
+        score_fn: Callable
+            Conformity scoring function.
+        target_ratio : float, default=1.0
+            The metric target. 1.0 for classification (mean set size = 1); generally
+            0.9, 1.0 for regression (overlap ratio).
+        aux_data : tuple, default = ()
+            Auxiliary data for the risk function (e.g., tolerance bounds).
+        risk_fn: Callable, default=clf_risk_fn
+            Risk function evaluating the task-specific metric and efficiency.
+        direction : float, default = 1.0
+            +1.0 if the metric decreases as alpha increases (classification).
+            -1.0 if the metric increases as alpha increases (regression).
     Returns
     -------
-    alpha : jnp.ndarray
-    U : jnp.ndarray
-    status : jnp.ndarray
-        int32 code; see `_STATUS_CODE_TO_ENUM` for the mapping to
-        `SearchStatus`, applied host-side by `_get_uncertainty_jit_impl`
-        (jit cannot return a Python `str`/`Enum`).
-    """
-
-    """RAY
-     init_alpha = jnp.asarray(0.5, dtype = jnp.float64)
-        init_q_hat = _q_hat_from_alpha(cs_padded, n_cs, init_alpha)
-        init_metric, init_E = risk_fn(y, preds, init_q_hat, valid_mask, score_fn, aux_data)
-        init_state = (
-    
-            init_alpha,
-            #jnp.asarray(0.5),   # alpha.
-            jnp.asarray(0.5),   # delta.
-            #jnp.asarray(0.0),   # metric: setsize for clf, ratio for reg.
-            init_metric,
-            #jnp.asarray(0.0),   # E_curr: eficiency metric EC_yt for clf, ratio for reg.
-            init_E,
-            jnp.asarray(False), # frozen: alpha is out from [0, 1]   
-        )
+        alpha : jnp.ndarray
+            The selected conformal alpha.
+        U : jnp.ndarray
+            The U-TraCE estimated uncertainty bound `1-EC*(1-alpha)`.
+        status : jnp.ndarray
+            int32 code mapping to `SearchStatus` (`0=CONVERGED`, `1=FLOOR_LIMITED`,
+            `2=INFEASIBLE`), decoded host-side by `_get_uncertainty_jit_impl`.
     """
 
     floor = 1.0 / (n_cs.astype(jnp.float64) + 1.0)
     setsize_floor, EC_floor = _evaluate_alpha(
-            floor, y, smx, valid_mask, cs_padded, n_cs, score_fn
+            floor, y, smx, valid_mask, cs_padded, n_cs, score_fn, risk_fn, aux_data
     )
-    floor_feasible = setsize_floor <= 1.0
+
+    # Task-dependent feasibility:
+    # Classification (dir > 0): wants set size <= target
+    # Regression (dir < 0): wants overlap ratio >= target
+
+    floor_feasible = jnp.where(
+        direction > 0, 
+        setsize_floor <= target_ratio + 1e-6,
+        setsize_floor >= target_ratio - 1e-6
+    )
+
+    # Dummy initialization to force alpha_proposed = 0.5 on the very first step,
+    # satisfying the docstring's strict requirement for an unchanged alpha sequence.
+    # Clf needs sign = -1 (requires setsize < target) -> uses 0.0
+    # Reg needs sign = -1 (requires setsize >= target) -> uses 1.0
+    init_setsize = jnp.where(direction > 0, 0.0, 1.0)
 
     init_state = (
-        jnp.asarray(1.0),       # alpha: last committed iterate (drives 'sign', unchange role)
-        jnp.asarray(1.0),       # delta
-        jnp.asarray(0.0),       # setsize: last commited iterate's mean set size
-        jnp.asarray(0.0),       # Ec_yt: last committed iterate's conditioned mean
-        jnp.asarray(False),     # frozen: alpha is out from [0,1]
-        jnp.asarray(jnp.inf),   # best_alpha: smallest feasible alpha visited so far
-        jnp.asarray(0.0),       # best_EC: EC_yt evaluated at best_alpha
-        jnp.asarray(False),     # any_feasible: whether any iterate has been feasible.
+        jnp.asarray(1.0),                # alpha: last committed iterate (drives 'sign', unchange role)
+        jnp.asarray(1.0),                # delta
+        jnp.asarray(init_setsize),       # setsize: last commited iterate's mean set size
+        jnp.asarray(0.0),                # Ec_yt: last committed iterate's conditioned mean
+        jnp.asarray(False),              # frozen: alpha is out from [0,1]
+        jnp.asarray(jnp.inf),            # best_alpha: smallest feasible alpha visited so far
+        jnp.asarray(0.0),                # best_EC: EC_yt evaluated at best_alpha
+        jnp.asarray(False),              # any_feasible: whether any iterate has been feasible.
     )
 
     def body(i, state):
@@ -352,7 +380,12 @@ def _search_uncertainty(
 
         # Update -- IDENTICAL to the pre-fix search; do not change (see docstring).
         delta_new = delta/2.0
-        sign = jnp.where(setsize > 1.0, 1.0, -1.0)
+
+        # Universal step decision (handle both tasks + float precision)
+        # Clf (dir = 1) setsize >= target -> sign=+1 (increase alpha to shrink sets)
+        # Reg (dir = -1) setsize >= target -> sign=-1 (decrease alpha to expand intervals)
+
+        sign = jnp.where(setsize > target_ratio-1e-6, direction, -direction)
         alpha_proposed = alpha + sign*delta_new
 
         # Freeze if out of bounds
@@ -364,7 +397,7 @@ def _search_uncertainty(
         delta_next = jnp.where(will_freeze, delta, delta_new)
 
         setsize_curr, EC_yt_curr = _evaluate_alpha(
-            alpha_next, y, smx, valid_mask, cs_padded, n_cs, score_fn
+            alpha_next, y, smx, valid_mask, cs_padded, n_cs, score_fn, risk_fn, aux_data
         )
 
         # If frozen:
@@ -374,7 +407,11 @@ def _search_uncertainty(
         # Track the smallest feasible alpha visited (and its EC), regardless
         # of freeze -- this is the "last feasible" fix for Defect 2. Every
         # iterate the loop visits is a candidate, not just the final one.
-        feasible_here = setsize_curr <= 1.0
+        feasible_here = jnp.where(
+            direction > 0,
+            setsize_curr <= target_ratio + 1e-6,
+            setsize_curr >= target_ratio - 1e-6
+        )
         should_update_best = feasible_here & (alpha_next < best_alpha)
         best_alpha_next = jnp.where(should_update_best, alpha_next, best_alpha)
         best_EC_next = jnp.where(should_update_best, EC_yt_curr, best_EC)
@@ -402,40 +439,6 @@ def _search_uncertainty(
         jnp.where(any_feasible_f, jnp.int32(_STATUS_CONVERGED), jnp.int32(_STATUS_INFEASIBLE)),
     )
 
-    """RAY
-    def body(i, state):
-        alpha, delta, metric, EC_yt, frozen = state
-    
-        # Update:
-        delta_new = delta/2.0
-    
-        # Higher alpha shrinks sets/intervals -> metric decreases
-        sign = jnp.where(metric >= target_ratio - 1e-6, direction, -direction)
-        alpha_proposed = alpha + sign*delta_new
-        
-        # Freeze if out of bounds
-        out_of_bounds = (alpha_proposed < 0.0) | (alpha_proposed > 1.0)
-        will_freeze = frozen | out_of_bounds
-            
-        # If frozen, we do not update
-        alpha_next = jnp.where(will_freeze, alpha, alpha_proposed)
-        delta_next = jnp.where(will_freeze, delta, delta_new)
-            
-       
-        # Quantile estimation
-        q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha_next)
-            
-        metric_curr, EC_yt_curr = risk_fn(y, preds, q_hat, valid_mask, score_fn, aux_data)
-            
-        metric_next = jnp.where(will_freeze, metric, metric_curr)
-        EC_yt_next = jnp.where(will_freeze, EC_yt, EC_yt_curr)
-        return (alpha_next, delta_next, metric_next, EC_yt_next, will_freeze)
-            
-    alpha_f, _, _, E_f, _ = lax.fori_loop(0, max_iters, body, init_state)
-    U = 1.0 - E_f*(1-alpha_f)
-    return alpha_f, U
-
-    """
     return alpha_out, U_out, status
 
 
@@ -1053,10 +1056,14 @@ class UncertaintyQuantifier:
         status = _STATUS_CODE_TO_ENUM[int(status_code)]
         self.search_status_ = status
 
+        metric_name = "mean prediction-set size" if self._task == "classification" else "overlap ratio"
+        operator = "<=" if self._task == "classification" else ">="
+        target_val = 1.0 if self._task == "classification" else target_ratio
+
         if status is SearchStatus.FLOOR_LIMITED:
             floor = 1.0 / (N + 1)
             warnings.warn(
-                f"get_uncertainty: the tuning target (mean prediction-set size <= 1) "
+                f"get_uncertainty: the tuning target ({metric_name} {operator} {target_val}) "
                 f"is already met at the domain floor alpha=1/(N+1)={floor!r} for this "
                 f"calibration set (N={N}). U={U!r} is determined by the calibration "
                 f"set size, not by the model -- a larger calibration set may allow a "
@@ -1066,12 +1073,12 @@ class UncertaintyQuantifier:
             )
         elif status is SearchStatus.INFEASIBLE:
             warnings.warn(
-                f"get_uncertainty: no alpha in [1/(N+1), 1] (N={N}) brought the mean "
-                f"prediction-set size to <= 1 on this tuning set. Returning the "
+                f"get_uncertainty: no alpha in [1/(N+1), 1] (N={N}) brought the {metric_name} "
+                f" to {operator} {target_val} on this tuning set. Returning the "
                 f"trivial bound alpha=1.0, U=1.0.",
                 SearchStatusWarning,
                 stacklevel=2,
             )
-
+            
         return U, alpha
 
