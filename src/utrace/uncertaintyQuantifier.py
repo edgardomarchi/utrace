@@ -75,7 +75,7 @@ _STATUS_CODE_TO_ENUM = {
 }
 
 
-@partial(jit, static_argname = ["scores_fn", "task"])
+@partial(jit, static_argnames = ["score_fn", "task"])
 def _predict_sets(smx: jnp.ndarray, q_hat: np.float64, score_fn: Callable,
                   task: str = "classification") -> tuple[jnp.ndarray, jnp.ndarray]:
     """
@@ -354,27 +354,29 @@ def _search_uncertainty(
 
     floor_feasible = jnp.where(
         direction > 0, 
-        setsize_floor <= target_ratio + 1e-6,
-        setsize_floor >= target_ratio - 1e-6
+        setsize_floor <= target_ratio,
+        setsize_floor >= target_ratio
     )
 
     # Dummy initialization to force alpha_proposed = 0.5 on the very first step,
     # satisfying the docstring's strict requirement for an unchanged alpha sequence.
-    # Clf needs sign = -1 (requires setsize < target) -> uses 0.0
-    # Reg needs sign = -1 (requires setsize >= target) -> uses 1.0
-    init_setsize = jnp.where(direction > 0, 0.0, 1.0)
+    # Force sign = -1.0 on step 0 so alpha_proposed = 1.0 -0.5 = 0.5
+    # Clf (dir > 0): wants metric > target to be False -> init_setsize = 0.0 
+    # Reg (dir < 0): wnats metric < target to be False -> init_setsize = target_ratio + 1
+    
+    init_setsize = jnp.where(direction > 0, 0.0, target_ratio + 1.0)
 
     init_state = (
         jnp.asarray(1.0),                # alpha: last committed iterate (drives 'sign', unchange role)
         jnp.asarray(1.0),                # delta
-        jnp.asarray(init_setsize),       # setsize: last commited iterate's mean set size
+        jnp.asarray(init_setsize),                # setsize: last commited iterate's mean set size
         jnp.asarray(0.0),                # Ec_yt: last committed iterate's conditioned mean
         jnp.asarray(False),              # frozen: alpha is out from [0,1]
         jnp.asarray(jnp.inf),            # best_alpha: smallest feasible alpha visited so far
         jnp.asarray(0.0),                # best_EC: EC_yt evaluated at best_alpha
         jnp.asarray(False),              # any_feasible: whether any iterate has been feasible.
     )
-
+    
     def body(i, state):
         alpha, delta, setsize, EC_yt, frozen, best_alpha, best_EC, any_feasible = state
 
@@ -385,7 +387,11 @@ def _search_uncertainty(
         # Clf (dir = 1) setsize >= target -> sign=+1 (increase alpha to shrink sets)
         # Reg (dir = -1) setsize >= target -> sign=-1 (decrease alpha to expand intervals)
 
-        sign = jnp.where(setsize > target_ratio-1e-6, direction, -direction)
+        sign = jnp.where(
+                direction > 0,
+                jnp.where(setsize > target_ratio, 1.0, -1.0),
+                jnp.where(setsize < target_ratio, 1.0, -1.0)
+        )
         alpha_proposed = alpha + sign*delta_new
 
         # Freeze if out of bounds
@@ -409,7 +415,7 @@ def _search_uncertainty(
         # iterate the loop visits is a candidate, not just the final one.
         feasible_here = jnp.where(
             direction > 0,
-            setsize_curr <= target_ratio + 1e-6,
+            setsize_curr <= target_ratio,
             setsize_curr >= target_ratio - 1e-6
         )
         should_update_best = feasible_here & (alpha_next < best_alpha)
