@@ -52,6 +52,9 @@ coverage.xml
 # VsCode
 .vscode/
 
+# Executed notebooks, caches and results (notebooks/*.py is the tracked source)
+notebooks/_build/
+
 # Logs
 log/
 *.log

@@ -127,6 +127,14 @@ test = [
     "pytest",
     "pytest-cov",
 ]
+# Executing notebooks/*.py (jupytext percent format). Combined with whichever of dev, dev-cuda13 or
+# dev-rocm7 is in use, never a replacement for them: it carries no torch and is not part of the
+# [tool.uv] conflicts, so it can be enabled together with any of the three.
+notebooks = [
+    "jupytext",
+    "ipykernel",
+    "nbclient",
+]
 dev = [
     "torch",
     "torchvision",

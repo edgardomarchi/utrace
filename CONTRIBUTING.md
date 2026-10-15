@@ -74,6 +74,29 @@ still works.
   where they do not reach disk.
 - Run sequentially and, for timing, interleave the variants.
 
+## Notebooks
+
+`notebooks/*.py` are jupytext percent-format sources; the executed `.ipynb`, the cached arrays, the
+figures and the results file go to `notebooks/_build/` (git-ignored). They need the `notebooks`
+dependency group (`jupytext`, `ipykernel`, `nbclient`), which is ADDED to the group you already use
+(`dev` by default; with a GPU environment, repeat its flags too: `--no-default-groups --group
+dev-cuda13 --group notebooks --extra=viz --extra=cuda13`), never a replacement for it.
+
+`notebooks/mnist_method_evaluation.py` evaluates how the method behaves on a trained MNIST model (the
+evidence behind decisions about the method; not a user tutorial). On CPU, from the repository root:
+
+```bash
+UTRACE_NB_QUICK=1 uv run --extra=viz --group notebooks python -c "import os, jupytext, nbclient; nb = jupytext.read('notebooks/mnist_method_evaluation.py'); nbclient.NotebookClient(nb, timeout=-1, resources={'metadata': {'path': '.'}}).execute(); jupytext.write(nb, 'notebooks/_build/mnist_method_evaluation_' + ('full' if os.environ.get('UTRACE_NB_QUICK', '1') == '0' else 'quick') + '.ipynb')"
+```
+
+`UTRACE_NB_QUICK=1` (the default when the variable is unset) runs the reduced version; `UTRACE_NB_QUICK=0`
+runs the full one. Every output carries the mode so the two never overwrite each other: the executed
+notebook is `notebooks/_build/mnist_method_evaluation_<quick|full>.ipynb`, the results `results_<mode>.json`
+and the figures go to `figures/<mode>/`. It expects MNIST already present under `data/` (it never downloads), trains a CNN on
+the 10 000 `t10k` images the first time (a few minutes on CPU; cached in `notebooks/_build/model/`) and
+caches the pool's softmax per noise level. It is NOT run in CI: it needs data and trains a model. (`jupytext
+--execute` is not used because it also requires `nbconvert`, which the group does not carry.)
+
 ## Linting
 
 ```bash
