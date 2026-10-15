@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `120 passed, 4 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those four tests run and pass instead (124 passed). The four skips are the GPU-only device-reconciliation tests for calibrate and get_uncertainty — inert without GPU hardware, not a failure.
+Expect `204 passed, 6 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those six tests run instead (210 tests in all). The six skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
@@ -144,6 +144,20 @@ The canonical alpha-search method is the **binary** one, `get_uncertainty`, whic
    tune_smx, tune_y = precompute_softmax(tuneDataLoader, model)
    U, alpha = uqs[C].get_uncertainty(tune_smx, tune_y, max_iters=30)
    ```
+   **That form measures `U` on the same samples that selected `alpha`**, so the two estimates are
+   correlated and their errors compound; it emits a `TuningDataReuseWarning` on every call.
+   To measure `U` on independent data, materialize a separate evaluation set (disjoint from the
+   calibration and tuning sets; the library cannot check this) and pass it:
+   ```python
+   eval_smx, eval_y = precompute_softmax(evalDataLoader, model)
+   U, alpha = uqs[C].get_uncertainty(tune_smx, tune_y, max_iters=30,
+                                     eval_softmax=eval_smx, eval_y=eval_y)
+   ```
+   This is exactly `alpha = uqs[C].tune_alpha(tune_smx, tune_y)` followed by
+   `uqs[C].uncertainty_at(eval_smx, eval_y, alpha)`. Call those two directly when you also want
+   `EC` and the counts (`n_covered`, `n_valid`, `n_succ`) that `uncertainty_at` returns in an
+   `UncertaintyEvaluation`. The evaluation set may be any size (it is padded to a multiple of 256,
+   independently of `max_batch_size`); `U` is `nan` if it holds no sample of the class group.
    **FORBIDDEN: `alpha = np.nanmean([alpha_per_batch...])`.** This is statistically incorrect —
    alpha is a non-linear function of the data, so averaging per-batch alphas does not converge to
    the correct value. Averaging over `L` distinct splits (a full experimental repetition, each
@@ -169,15 +183,15 @@ tensors (no numpy conversion), so the result can take the zero-copy DLPack path 
 
 ### Passing tensors to the core
 
-Pass backend tensors directly to `calibrate`/`predict`/`get_uncertainty`. `to_jax()` (in
+Pass backend tensors directly to `calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`. `to_jax()` (in
 `utils/tensors.py`) handles conversion via DLPack: a CPU PyTorch tensor is consumed zero-copy. Do
-NOT call `.cpu().numpy()` by hand on values that feed `calibrate`/`predict`/`get_uncertainty` —
+NOT call `.cpu().numpy()` by hand on values that feed `calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at` —
 that conversion is the library's job, and writing it yourself defeats the zero-copy path and
 clutters the example.
 
 `.cpu().numpy()` is still legitimate for values that do NOT go into the core — e.g. computing
 accuracy, building arrays for matplotlib. Only avoid it on the path into
-`calibrate`/`predict`/`get_uncertainty`.
+`calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`.
 
 ## Decisions to respect (do NOT "fix" without confirming)
 
@@ -207,7 +221,9 @@ is deliberate.
   bounded above by 1 and becomes flat once every covering set is a singleton. An equality criterion
   on a plateau cannot be attacked by bisection. The unconditional mean crosses 1 monotonically and
   can. The bound U itself is unchanged: it is eq. (6) of the paper, computed with the conditioned
-  expectation over covered tuning samples -- verified directly against
+  expectation over covered samples -- of the tuning set when `get_uncertainty` is called without
+  an evaluation set, of the evaluation set (`eval_softmax`/`eval_y`, or `uncertainty_at`) when one
+  is passed -- verified directly against
   `_evaluate_alpha`'s `EC` (`uncertaintyQuantifier.py`, `is_covered`/`mask_succ` gating `inv_succ`
   on samples where the true label is actually in the prediction set) and the `U_out = 1.0 - EC_out
   * (1.0 - alpha_out)` line in `_search_uncertainty`. Since eq. (5) holds for any alpha, the proxy
@@ -236,7 +252,8 @@ is deliberate.
   floor `1/(N+1)` -- **not** whatever smaller alpha the paper's own definition of the search target
   would imply, if that value lies below what this calibration set's size can resolve. Below the
   floor, no quantile level in an `N`-score calibration set can express a smaller alpha (the level
-  formula would need to exceed 1); returning the floor, with `U` evaluated at that same point, is
+  formula would need to exceed 1); returning the floor, with `U` evaluated at that same alpha (on the tuning set, or on the evaluation
+  set if one is passed), is
   the tightest claim this calibration set can back. This replaces the coverage-guarantee argument
   the pre-fix code relied on (it silently clipped the quantile
   level instead, without adjusting the returned alpha to match, voiding the guarantee below the
@@ -252,7 +269,7 @@ contains backend-specific code; what matters is where it lives and the direction
 - **Core** (`uncertaintyQuantifier`, alpha-search functions, masked quantile): imports ONLY numpy
   and jax. NEVER imports torch, onnx, or any backend, and NEVER imports from the backend
   subpackages below. Data flow is always: user code → backend wrapper → softmax output → core
-  (`calibrate`/`predict`/`get_uncertainty`).
+  (`calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`).
 - **`utrace.utils.pytorch.*`**: everything that touches torch — `Pytorch_wrapper`, example
   models, dataset loaders, transforms, and any helper that needs torch (e.g. `flatten_batch` /
   `unflatten_batch` when operating on torch tensors).

@@ -30,6 +30,10 @@ class SearchStatus(str, Enum):
 
     A `str` subclass so `uq.search_status_ == "converged"` works without importing
     this enum. See `_search_uncertainty` for how each is derived.
+
+    Describes the alpha search on the tuning set only. When `get_uncertainty` is given
+    an evaluation set (`eval_softmax`/`eval_y`), the `U` mentioned below is measured on
+    that set at the alpha the search returned, not on the tuning set.
     """
     CONVERGED = "converged"
     """The search bracketed the target (mean set size == 1) at an alpha strictly
@@ -55,6 +59,47 @@ class SearchStatusWarning(UserWarning):
     specifically on this condition, e.g.
     `warnings.filterwarnings("error", category=SearchStatusWarning)`.
     """
+
+
+class TuningDataReuseWarning(UserWarning):
+    """Raised by `get_uncertainty` when no evaluation set is given.
+
+    Without `eval_softmax`/`eval_y`, `U` is estimated on the same samples that
+    selected alpha, so the two estimates are correlated. Not a subclass of
+    `SearchStatusWarning`: that category reports the outcome of the alpha search,
+    this one reports where `U` was measured, and the two are filtered independently
+    (e.g. `warnings.filterwarnings("ignore", category=TuningDataReuseWarning)`).
+    """
+
+
+class UncertaintyEvaluation(NamedTuple):
+    """Result of `UncertaintyQuantifier.uncertainty_at`: `U` and the counts it is built from.
+
+    All fields refer to the evaluation set, at the alpha that was passed in.
+    `U = 1 - EC * (1 - alpha)`. The counts are returned so a later stage can build
+    confidence bounds from them without re-running the evaluation.
+
+    Fields
+    ------
+    U : np.float64
+        Uncertainty bound. `nan` when the evaluation set has no sample of the
+        calibrated group, or when `alpha` was `nan` (nothing was evaluated).
+    EC : np.float64
+        Mean of `1/|C|` over valid, covered samples (0.0 if there are none; `nan`
+        only when `alpha` was `nan`).
+    n_covered : int
+        Valid samples whose true label is in the prediction set.
+    n_valid : int
+        Samples belonging to the calibrated group (all samples if `classes` is None).
+    n_succ : int
+        Valid, covered samples with a non-empty set: the denominator of `EC`.
+    When `alpha` was `nan` nothing is evaluated and all three counts are 0.
+    """
+    U: np.float64
+    EC: np.float64
+    n_covered: int
+    n_valid: int
+    n_succ: int
 
 
 # Internal int32 status codes used inside the jitted search (jit cannot return a
@@ -377,6 +422,41 @@ def _ensure_sorted(state: _UQState) -> _UQState:
     return state._replace(conformity_scores=jnp.sort(state.conformity_scores), sorted=True)
 
 
+@partial(jit, static_argnames=["score_fn"])
+def _evaluate_at_alpha(
+    alpha: jnp.ndarray,
+    y: jnp.ndarray,
+    smx: jnp.ndarray,
+    valid_mask: jnp.ndarray,
+    cs_padded: jnp.ndarray,
+    n_cs: jnp.ndarray,
+    score_fn: Callable,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """`U`, `EC` and the counts behind them, at one fixed alpha, on one dataset.
+
+    `EC` comes from `_evaluate_alpha`, called unchanged. The prediction sets are
+    recomputed here (same `_q_hat_from_alpha`/`_predict_sets` calls) for the counts
+    `_evaluate_alpha` does not return; both calls sit in one trace, so XLA is free
+    to share the work. `U` is formed inside this jit on purpose: the same expression
+    evaluated eagerly on the host differs from the jitted one by one ulp in a
+    noticeable fraction of cases.
+
+    Returns `(U, EC, n_covered, n_valid, n_succ)`; `U` is `nan` when `n_valid == 0`
+    (without that guard an empty group would silently give `U = 1.0`).
+    """
+    _, EC = _evaluate_alpha(alpha, y, smx, valid_mask, cs_padded, n_cs, score_fn)
+    q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
+    _, prediction_sets = _predict_sets(smx, q_hat, score_fn=score_fn)
+
+    set_sizes = prediction_sets.sum(axis=1)
+    is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
+    n_valid = valid_mask.sum()
+    n_covered = (is_covered & valid_mask).sum()
+    n_succ = (is_covered & (set_sizes > 0) & valid_mask).sum()
+    U = jnp.where(n_valid > 0, 1.0 - EC * (1.0 - alpha), jnp.nan)
+    return U, EC, n_covered, n_valid, n_succ
+
+
 class UncertaintyQuantifier:
     """Wrapper for uncertainty quantification using U-TraCE.
 
@@ -448,6 +528,9 @@ class UncertaintyQuantifier:
         # `get_uncertainty` call returns. None means "no search has run since
         # the last reset()" -- distinct from any SearchStatus member.
         self.search_status_ = None
+        # Shape of one input row as seen by `calibrate` (softmax.shape[1:]); lets
+        # `uncertainty_at` reject an evaluation set with a different number of columns.
+        self._item_shape = None
 
         logger.debug("UQ reset.")
 
@@ -545,6 +628,7 @@ class UncertaintyQuantifier:
         moving `y` to `softmax`'s device before scoring, rather than raising.
         """
         softmax = to_jax(softmax)
+        self._item_shape = tuple(softmax.shape[1:])
         y_arr = to_jax(y).astype(self.label_dtype_)
         # to_jax converts each argument independently and does NOT reconcile devices
         # (see its docstring) -- two genuine framework tensors sourced from different
@@ -671,13 +755,30 @@ class UncertaintyQuantifier:
         y_pred, y_sets = _predict_sets(softmax, self._state.q_hat, score_fn=self.score_)
         return np.array(y_pred), np.array(y_sets)
 
-    def get_uncertainty(self, softmax, y, max_iters: int = 30) -> tuple[np.float64, np.float64]:
+    def get_uncertainty(self, softmax, y, max_iters: int = 30, *,
+                        eval_softmax=None, eval_y=None) -> tuple[np.float64, np.float64]:
         """Estimate model uncertainty over a tuning set via conformal prediction.
 
         Searches for the alpha that yields the target average prediction-set size,
         using ALL provided samples as a single tuning set. The estimate converges
         to the true error probability with the tuning set size (conformal
         guarantee); it does NOT require batching.
+
+        **Where `U` is measured.** `U = 1 - EC * (1 - alpha)` needs `EC`, the mean of
+        `1/|C|` over covered samples, evaluated at the selected alpha. Without
+        `eval_softmax`/`eval_y`, `EC` is measured on the tuning set itself, the same
+        samples that selected alpha. Because the selected alpha is a function of
+        that data, the errors in alpha and in `EC` are correlated and compound
+        instead of averaging out, so this call emits a `TuningDataReuseWarning`.
+        Pass an independent evaluation set to avoid it:
+
+            U, alpha = uq.get_uncertainty(tune_probs, tune_y,
+                                          eval_softmax=eval_probs, eval_y=eval_y)
+
+        This is `tune_alpha(tune_probs, tune_y)` followed by
+        `uncertainty_at(eval_probs, eval_y, alpha).U`; call those two directly to also
+        get `EC` and the counts. The evaluation set must be disjoint from both the
+        calibration and the tuning sets for the guarantee to hold; this method cannot check that.
 
         This method does not set self.alpha or self.q_hat -- the caller decides
         whether and how to apply the returned alpha. It is NOT fully free of
@@ -743,12 +844,21 @@ class UncertaintyQuantifier:
             Integer class labels for the tuning set.
         max_iters : int, default=30
             Maximum iterations for the binary search over alpha.
+        eval_softmax : array-like, shape (n_eval, n_classes), optional
+            Softmax output of an independent evaluation set, on which `U` is measured
+            at the selected alpha. Keyword-only. Must be given together with `eval_y`
+            (giving only one raises `ValueError`). Its size is independent of
+            `max_batch_size`.
+        eval_y : array-like, shape (n_eval,), optional
+            Integer class labels of the evaluation set.
 
         Returns
         -------
         U : float
             Estimated uncertainty. See `SearchStatus` for how it is derived
-            in each of the three outcomes.
+            in each of the three outcomes. With an evaluation set, `U` is measured
+            on it at the returned alpha; it is `nan` if the evaluation set has no
+            sample of `self.classes`, and `nan` (with alpha) if the tuning set has none.
         alpha : float
             The alpha found by the search. NOT applied to the object -- see
             above. `self.search_status_` records which of the three outcomes
@@ -763,7 +873,35 @@ class UncertaintyQuantifier:
         listed in BACKLOG.md as future work -- it does not exist yet in this
         version.
         """
-    
+        if (eval_softmax is None) != (eval_y is None):
+            raise ValueError(
+                "eval_softmax and eval_y must be given together (or both omitted); "
+                f"got eval_softmax={'None' if eval_softmax is None else 'given'}, "
+                f"eval_y={'None' if eval_y is None else 'given'}."
+            )
+
+        if eval_softmax is None:
+            U, alpha = self._search_single_dataset(softmax, y, max_iters)
+            warnings.warn(
+                "get_uncertainty: no evaluation set was given, so U is being estimated "
+                "on the same samples that selected alpha. The two estimates are "
+                "correlated and their errors compound. Pass eval_softmax and eval_y "
+                "(an independent evaluation set) to measure U on separate data, or "
+                "filter TuningDataReuseWarning to silence this.",
+                TuningDataReuseWarning,
+                stacklevel=2,
+            )
+            return U, alpha
+
+        alpha = self.tune_alpha(softmax, y, max_iters=max_iters)
+        if np.isnan(alpha):
+            return np.float64('nan'), np.float64('nan')
+        return self.uncertainty_at(eval_softmax, eval_y, alpha).U, alpha
+
+    def _search_single_dataset(self, softmax, y, max_iters):
+        """Alpha search and `U` on the one tuning set: the pre-evaluation-set body of
+        `get_uncertainty`, moved here unchanged so `tune_alpha` can share it without
+        emitting `TuningDataReuseWarning`."""
         # TODO: _get_uncertainty_jit_impl espera numpy (lo convierte a jnp adentro)
         # y goes through to_jax first, exactly like softmax on the line above -- a raw
         # device-resident tensor (e.g. a CUDA torch tensor) fails np.asarray() directly
@@ -890,3 +1028,139 @@ class UncertaintyQuantifier:
             )
 
         return U, alpha
+
+    def tune_alpha(self, softmax, y, max_iters: int = 30) -> np.float64:
+        """Select alpha on a tuning set, without measuring `U` on it.
+
+        Runs the same search as `get_uncertainty` on the given data and returns only
+        alpha. Use it with `uncertainty_at` to measure `U` on a separate evaluation
+        set (`get_uncertainty(..., eval_softmax=..., eval_y=...)` is exactly this
+        composition).
+
+        Like `get_uncertainty`, it does not set `self.alpha` or `self.q_hat`, sorts the
+        conformity-score buffer lazily, sets `self.search_status_` and emits a
+        `SearchStatusWarning` when the search is not `CONVERGED`. It does not emit
+        `TuningDataReuseWarning`: selecting alpha on a tuning set is its purpose.
+
+        Parameters
+        ----------
+        softmax : array-like, shape (n_tuning, n_classes)
+            Softmax output for the tuning set. Any DLPack-compatible array.
+        y : array-like, shape (n_tuning,)
+            Integer class labels for the tuning set.
+        max_iters : int, default=30
+            Maximum iterations for the binary search over alpha.
+
+        Returns
+        -------
+        alpha : np.float64
+            The selected alpha; `nan` if the tuning set has no sample of
+            `self.classes` (in which case `search_status_` is `None`). See
+            `SearchStatus` for what the value means in each outcome; in particular
+            `INFEASIBLE` returns the domain boundary `1.0`, not an operating point.
+        """
+        _, alpha = self._search_single_dataset(softmax, y, max_iters)
+        return alpha
+
+    def uncertainty_at(self, softmax, y, alpha) -> UncertaintyEvaluation:
+        """Measure `U` at a given alpha on an evaluation set.
+
+        Computes `U = 1 - EC * (1 - alpha)` where `EC` is the mean of `1/|C|` over the
+        evaluation samples that are covered at `alpha`. Pair it with `tune_alpha`, on
+        a different dataset, so that `alpha` is not a function of the data it is
+        measured on. Nothing here checks that the sets are disjoint.
+
+        Does not change `self.alpha`, `self.q_hat` or `self.search_status_`. Like
+        `get_uncertainty` it may sort the conformity-score buffer lazily. Evaluation
+        sets of any size are accepted: they are padded to the next multiple of 256
+        (not to `max_batch_size`), so each distinct padded size compiles once.
+
+        Parameters
+        ----------
+        softmax : array-like, shape (n_eval, n_classes)
+            Softmax output for the evaluation set. Any DLPack-compatible array.
+        y : array-like, shape (n_eval,)
+            Integer class labels for the evaluation set. Samples of `self.classes`
+            are selected from THESE labels, not from any tuning-set mask.
+        alpha : float
+            Must lie in `[1/(N+1), 1]` for the `N` calibration scores held. `nan`
+            (what `tune_alpha` returns for an empty tuning group) is passed through:
+            nothing is evaluated and `U` is `nan`.
+
+        Returns
+        -------
+        UncertaintyEvaluation
+            `U`, `EC` and the counts `n_covered`, `n_valid`, `n_succ`; see its
+            docstring. `U` is `nan` (never `1.0`) if the evaluation set has no sample
+            of `self.classes`. At `alpha = 1.0` (the `INFEASIBLE` boundary) `U` is
+            exactly `1.0`.
+
+        Raises
+        ------
+        ValueError
+            If the instance is not calibrated, the row counts of `softmax` and `y`
+            differ, the columns of `softmax` differ from those seen by `calibrate`, or
+            `alpha` is outside `[1/(N+1), 1]`.
+        """
+        if np.isnan(alpha):
+            nan = np.float64('nan')
+            return UncertaintyEvaluation(U=nan, EC=nan, n_covered=0, n_valid=0, n_succ=0)
+
+        # Same conversion chain as the tuning path (see _search_single_dataset): to_jax
+        # on both, then np.asarray, so a device-resident tensor never reaches numpy
+        # directly and no committed-device mismatch reaches the jit.
+        smx = np.asarray(to_jax(softmax))
+        y_arr = np.asarray(to_jax(y)).flatten().astype(int)
+
+        N = self._state.N
+        if N == 0:
+            raise ValueError("The model must be calibrated before calling uncertainty_at.")
+        if smx.shape[0] != y_arr.shape[0]:
+            raise ValueError(
+                f"softmax has {smx.shape[0]} rows but y has {y_arr.shape[0]} labels."
+            )
+        if self._item_shape is not None and tuple(smx.shape[1:]) != self._item_shape:
+            raise ValueError(
+                f"softmax has shape {tuple(smx.shape[1:])} per row, but this instance was "
+                f"calibrated with {self._item_shape}."
+            )
+        floor = np.float64(1.0) / np.float64(N + 1)
+        alpha_f = np.float64(alpha)
+        if not (floor <= alpha_f <= 1.0):
+            raise ValueError(
+                f"alpha={alpha_f!r} is outside [1/(N+1), 1] = [{floor!r}, 1.0] for this "
+                f"calibration set (N={N})."
+            )
+
+        B = y_arr.shape[0]
+        if self.classes is not None:
+            valid = np.isin(y_arr, np.asarray(self.classes))
+        else:
+            valid = np.ones(B, dtype=bool)
+
+        target_size = _bucket_size(max(B, 1))
+        y_padded = np.zeros(target_size, dtype=np.int32)
+        p_padded = np.zeros((target_size,) + smx.shape[1:], dtype=np.float64)
+        mask_padded = np.zeros(target_size, dtype=bool)
+        y_padded[:B] = y_arr.astype(np.int32)
+        p_padded[:B] = smx
+        mask_padded[:B] = valid
+        y_safe = np.where(mask_padded, y_padded, 0)
+
+        self._state = _ensure_sorted(self._state)
+        U, EC, n_covered, n_valid, n_succ = _evaluate_at_alpha(
+            jnp.asarray(alpha_f, dtype=jnp.float64),
+            jnp.asarray(y_safe),
+            jnp.asarray(p_padded, dtype=jnp.float64),
+            jnp.asarray(mask_padded),
+            self._state.conformity_scores,
+            jnp.int32(N),
+            self.score_,
+        )
+        return UncertaintyEvaluation(
+            U=np.float64(U),
+            EC=np.float64(EC),
+            n_covered=int(n_covered),
+            n_valid=int(n_valid),
+            n_succ=int(n_succ),
+        )

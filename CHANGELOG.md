@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `UncertaintyQuantifier.tune_alpha(softmax, y, max_iters=30)`: selects alpha on a tuning set and
+  returns it, without measuring `U` there. Same search, status and `SearchStatusWarning` as
+  `get_uncertainty`.
+- `UncertaintyQuantifier.uncertainty_at(softmax, y, alpha)`: measures `U = 1 - EC * (1 - alpha)` at a
+  given alpha on an evaluation set, and returns an `UncertaintyEvaluation` with `U`, `EC` and the
+  counts `n_covered`, `n_valid`, `n_succ` (the inputs a later confidence-bound stage needs). The
+  evaluation set can be any size; it is not limited by `max_batch_size`. `U` is `nan`, not `1.0`, if
+  it holds no sample of the calibrated class group. Raises `ValueError` for an uncalibrated
+  instance, a row-count or column-count mismatch, or an alpha outside `[1/(N+1), 1]`.
+- `get_uncertainty(..., *, eval_softmax=None, eval_y=None)`: when both are given, alpha is selected on
+  the tuning set and `U` is measured on the evaluation set, so the two estimates no longer share
+  data. Giving only one raises `ValueError`. The return value is still `(U, alpha)`.
+- `utrace.UncertaintyEvaluation` and `utrace.TuningDataReuseWarning`.
+
+### Changed
+- `get_uncertainty` called without an evaluation set now emits a `TuningDataReuseWarning` on every
+  call: `U` is then estimated on the same samples that selected alpha, which correlates the errors in
+  alpha and in `U`. Returned values are unchanged. The warning is a `UserWarning`, independent of
+  `SearchStatusWarning`; silence it with
+  `warnings.filterwarnings("ignore", category=TuningDataReuseWarning)`, or avoid it by passing an
+  evaluation set.
+
 ## [0.2.0] - 2026-09-24
 
 Upgrading from 0.1.x: two changes can break existing code. `predict()` no longer accepts

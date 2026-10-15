@@ -83,6 +83,13 @@ Out of scope for the current script-migration work. Recorded here so the context
   two fixes closed — this time inside `_search_uncertainty`. Not implemented by this entry as
   currently scoped; recorded so the next person to pick it up does not have to rediscover it.
 
+  **Also covers the evaluation-set arguments.** `uncertainty_at` (and so `get_uncertainty` with
+  `eval_softmax`/`eval_y`) repeats the same `np.asarray(to_jax(...))` host copy on both of its
+  arguments and rebuilds its padded arrays with `jnp.asarray` on the default device, which is what
+  keeps it free of committed-device mismatches today. Making the tuning path zero-copy means making
+  that path zero-copy too, under the same `calibrate`-style `devices()` reconciliation. Its GPU-only
+  test is `tests/core/test_eval_set_device_reconciliation.py`.
+
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
 - to_jax DLPack unaligned-copy: even for genuine tensors the DLPack path can emit "buffer is not aligned ... Creating a copy", so zero-copy is not guaranteed. Decide whether to make such copies VISIBLE (warn/error) rather than silent. Connects to the existing to_jax device-handling backlog item. Perf/observability task.
