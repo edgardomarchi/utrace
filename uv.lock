@@ -2263,6 +2263,7 @@ source = { editable = "." }
 dependencies = [
     { name = "jax" },
     { name = "numpy" },
+    { name = "scipy" },
 ]
 
 [package.optional-dependencies]
@@ -2336,6 +2337,7 @@ requires-dist = [
     { name = "nibabel", marker = "extra == 'acdc'" },
     { name = "numpy" },
     { name = "pandas", marker = "extra == 'viz'" },
+    { name = "scipy", specifier = ">=1.13" },
     { name = "torch", marker = "extra == 'examples'", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "utrace", extra = "examples" } },
     { name = "torchvision", marker = "extra == 'examples'", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "utrace", extra = "examples" } },
 ]

@@ -30,6 +30,7 @@ requires-python = ">=3.11,<3.15"
 dependencies = [
     "jax",
     "numpy",
+    "scipy>=1.13",
 ]
 
 [project.optional-dependencies]

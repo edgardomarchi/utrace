@@ -73,16 +73,26 @@ class TuningDataReuseWarning(UserWarning):
 
 
 class UncertaintyEvaluation(NamedTuple):
-    """Result of `UncertaintyQuantifier.uncertainty_at`: `U` and the counts it is built from.
+    """Result of `UncertaintyQuantifier.uncertainty_at`: `U`, the counts it is built from, and
+    optionally a confidence bound on it.
 
     All fields refer to the evaluation set, at the alpha that was passed in.
-    `U = 1 - EC * (1 - alpha)`. The counts are returned so a later stage can build
-    confidence bounds from them without re-running the evaluation.
+
+    `U = 1 - EC * (1 - alpha)` is a POINT ESTIMATE (the paper's eq. (6), with the nominal
+    coverage `1 - alpha`). It carries no confidence level. `U_empirical = 1 - EC * coverage`
+    is the same expression with the coverage measured on the evaluation set. `U_delta`
+    (only when `uncertainty_at` was given `delta`) is a one-sided upper confidence bound,
+    at level `1 - delta`, on the population value `U* = 1 - e * p`, where `p` is the
+    coverage and `e = E[1/|C| | covered]` at this alpha. By the paper's theorem `U*` bounds
+    the model's error probability, so `U_delta` does too, at level `1 - delta`, UNDER TWO
+    ASSUMPTIONS the code cannot check: (1) the evaluation samples are independent and
+    representative of the data the model is used on (pixels of one image, for example, are
+    not independent); (2) the paper's uniform-selection assumption.
 
     Fields
     ------
     U : np.float64
-        Uncertainty bound. `nan` when the evaluation set has no sample of the
+        Point estimate, see above. `nan` when the evaluation set has no sample of the
         calibrated group, or when `alpha` was `nan` (nothing was evaluated).
     EC : np.float64
         Mean of `1/|C|` over valid, covered samples (0.0 if there are none; `nan`
@@ -93,13 +103,92 @@ class UncertaintyEvaluation(NamedTuple):
         Samples belonging to the calibrated group (all samples if `classes` is None).
     n_succ : int
         Valid, covered samples with a non-empty set: the denominator of `EC`.
-    When `alpha` was `nan` nothing is evaluated and all three counts are 0.
+    coverage : np.float64 or None
+        `n_covered / n_valid`; `nan` if `n_valid == 0` or `alpha` was `nan`.
+    U_empirical : np.float64 or None
+        `1 - EC * coverage`; `nan` under the same conditions.
+    delta : float or None
+        The `delta` that was passed, as given (`None` if none).
+    coverage_lower : np.float64 or None
+        Clopper-Pearson lower bound on the coverage `p`, at level `delta/2`; `0.0` if
+        `n_covered == 0`. `None` when `delta` is `None`.
+    EC_lower : np.float64 or None
+        Hoeffding lower bound on `e` at level `delta/2`, clipped at 0 (`1/|C|` lies in
+        `(0, 1]`); `0.0` if `n_succ == 0`. `None` when `delta` is `None`.
+    U_delta : np.float64 or None
+        `1 - EC_lower * coverage_lower`. The two `delta/2` levels are fixed (not
+        data-dependent) and combine by a union bound, valid although both come from the
+        same evaluation set. `None` when `delta` is `None`.
+
+    When `alpha` was `nan` nothing is evaluated: the three counts are 0 and every float
+    field (the bound fields too, if `delta` was given) is `nan`.
     """
     U: np.float64
     EC: np.float64
     n_covered: int
     n_valid: int
     n_succ: int
+    coverage: np.float64 | None = None
+    U_empirical: np.float64 | None = None
+    delta: float | None = None
+    coverage_lower: np.float64 | None = None
+    EC_lower: np.float64 | None = None
+    U_delta: np.float64 | None = None
+
+
+def _check_delta(delta) -> float | None:
+    """`None`, or `delta` as a float in the open interval (0, 1); `ValueError` otherwise."""
+    if delta is None:
+        return None
+    try:
+        d = float(delta)
+    except (TypeError, ValueError):
+        raise ValueError(f"delta must be None or a real number in (0, 1), got {delta!r}.") from None
+    if not (0.0 < d < 1.0):
+        raise ValueError(f"delta must be None or a real number in (0, 1), got {delta!r}.")
+    return d
+
+
+def _confidence_bound(EC, n_covered: int, n_valid: int, n_succ: int, delta: float):
+    """`(coverage_lower, EC_lower, U_delta)` as float64 scalars, on the host.
+
+    Clopper-Pearson lower bound on the coverage at level `delta/2`, Hoeffding lower bound on
+    `E[1/|C| | covered]` at level `delta/2`, combined as `1 - EC_lower * coverage_lower`
+    (union bound). Requires `n_valid > 0`. scipy is imported here, not at module level, so
+    `import utrace` and every `delta=None` call stay scipy-free.
+    """
+    if n_covered == 0:
+        coverage_lower = np.float64(0.0)
+    else:
+        from scipy.special import betaincinv
+        coverage_lower = np.float64(
+            betaincinv(float(n_covered), float(n_valid - n_covered + 1), delta / 2.0)
+        )
+    if n_succ == 0:
+        EC_lower = np.float64(0.0)
+    else:
+        margin = np.sqrt(np.log(2.0 / delta) / (2.0 * n_succ))
+        EC_lower = np.float64(max(0.0, float(EC) - float(margin)))
+    return coverage_lower, EC_lower, np.float64(1.0 - EC_lower * coverage_lower)
+
+
+def _check_labels(y: np.ndarray | jax.Array, K: int | None, where: str) -> None:
+    """Raise `ValueError` if any label of the integer array `y` is outside `[0, K)`.
+
+    `y` is host numpy on the tuning and evaluation paths, the device array on `calibrate`.
+
+    Without it a label `-1` wraps to the last class and any label `>= K` clamps to it (JAX
+    gather semantics), silently producing a wrong coverage and `EC`. Skipped when `K` is
+    unknown or `y` is empty.
+    """
+    if K is None or y.size == 0:
+        return
+    lo, hi = int(y.min()), int(y.max())
+    if lo < 0 or hi >= K:
+        raise ValueError(
+            f"{where}: labels must lie in [0, K) with K={K} (the number of softmax columns); "
+            f"got min={lo}, max={hi}."
+        )
 
 
 # Internal int32 status codes used inside the jitted search (jit cannot return a
@@ -626,10 +715,25 @@ class UncertaintyQuantifier:
         `softmax` and `y` may arrive committed to different devices (e.g. a GPU-resident
         model output alongside host-resident labels); this method reconciles them by
         moving `y` to `softmax`'s device before scoring, rather than raising.
+
+        Raises `ValueError` if a label is outside `[0, K)` with `K` the number of softmax
+        columns (labels outside it would otherwise alias silently to the last class), if
+        `classes` is not within `[0, K)`, or if `batched` and the trailing shape of `softmax`
+        differs from the one already calibrated.
         """
         softmax = to_jax(softmax)
-        self._item_shape = tuple(softmax.shape[1:])
+        item_shape = tuple(softmax.shape[1:])
+        # Shape check first, label checks second: a column mismatch keeps its own message.
+        if batched and self._item_shape is not None and item_shape != self._item_shape:
+            raise ValueError(
+                f"softmax has shape {item_shape} per row, but this instance was calibrated "
+                f"with {self._item_shape}; a batched calibration must keep the same shape."
+            )
         y_arr = to_jax(y).astype(self.label_dtype_)
+        K = item_shape[0] if len(item_shape) == 1 else None
+        _check_labels(y_arr, K, "calibrate")
+        if self.classes is not None:
+            _check_labels(np.asarray(self.classes), K, "calibrate (classes)")
         # to_jax converts each argument independently and does NOT reconcile devices
         # (see its docstring) -- two genuine framework tensors sourced from different
         # devices (e.g. a CUDA-resident softmax output alongside host-resident labels,
@@ -645,6 +749,8 @@ class UncertaintyQuantifier:
         if y_arr.devices() != softmax.devices():
             y_arr = jax.device_put(y_arr, next(iter(softmax.devices())))
         self._calibrate_impl(softmax, y_arr, batched=batched)
+        # Recorded only once the calibration succeeded, so a failed call leaves it as it was.
+        self._item_shape = item_shape
 
     def _calibrate_impl(self, smx, y, batched: bool = False):
         """Calibrates the conformal predictor with the given data.
@@ -912,7 +1018,26 @@ class UncertaintyQuantifier:
         # receives, and still rebuilds, plain host numpy arrays exactly as before.
         softmax = np.asarray(to_jax(softmax))
         y_arr = np.asarray(to_jax(y)).flatten().astype(int)
+        # Host-side validation, outside _get_uncertainty_jit_impl: columns first, then labels.
+        self._check_item_shape(softmax)
+        _check_labels(y_arr, self._label_range(), "get_uncertainty/tune_alpha")
         return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters)
+
+    def _check_item_shape(self, smx) -> None:
+        """`ValueError` if the trailing shape of `smx` differs from the one `calibrate` saw.
+        Skipped when it is not known (`_item_shape is None`)."""
+        if self._item_shape is not None and tuple(smx.shape[1:]) != self._item_shape:
+            raise ValueError(
+                f"softmax has shape {tuple(smx.shape[1:])} per row, but this instance was "
+                f"calibrated with {self._item_shape}."
+            )
+
+    def _label_range(self) -> int | None:
+        """`K` for the label check: `_item_shape[0]`, or `None` (check skipped) when the
+        instance has no recorded shape or it is not of length 1."""
+        if self._item_shape is not None and len(self._item_shape) == 1:
+            return self._item_shape[0]
+        return None
 
     def _get_uncertainty_jit_impl(self, smx, y, max_iters=30):
         """Builds a fixed-size, class-masked, zero-padded batch from variable-size
@@ -1042,6 +1167,11 @@ class UncertaintyQuantifier:
         `SearchStatusWarning` when the search is not `CONVERGED`. It does not emit
         `TuningDataReuseWarning`: selecting alpha on a tuning set is its purpose.
 
+        Raises `ValueError` if the columns of `softmax` differ from those `calibrate` saw
+        (when known), or if a label is outside `[0, K)` (`K` the number of columns); the
+        column check runs first. `get_uncertainty` raises the same on its tuning set and,
+        through `uncertainty_at`, on its evaluation set.
+
         Parameters
         ----------
         softmax : array-like, shape (n_tuning, n_classes)
@@ -1062,13 +1192,25 @@ class UncertaintyQuantifier:
         _, alpha = self._search_single_dataset(softmax, y, max_iters)
         return alpha
 
-    def uncertainty_at(self, softmax, y, alpha) -> UncertaintyEvaluation:
+    def uncertainty_at(self, softmax, y, alpha, *, delta=None) -> UncertaintyEvaluation:
         """Measure `U` at a given alpha on an evaluation set.
 
-        Computes `U = 1 - EC * (1 - alpha)` where `EC` is the mean of `1/|C|` over the
-        evaluation samples that are covered at `alpha`. Pair it with `tune_alpha`, on
-        a different dataset, so that `alpha` is not a function of the data it is
-        measured on. Nothing here checks that the sets are disjoint.
+        Computes the point estimate `U = 1 - EC * (1 - alpha)` where `EC` is the mean of
+        `1/|C|` over the evaluation samples that are covered at `alpha`. Pair it with
+        `tune_alpha`, on a different dataset, so that `alpha` is not a function of the data
+        it is measured on. Nothing here checks that the sets are disjoint.
+
+        `coverage = n_covered / n_valid` and `U_empirical = 1 - EC * coverage` are always
+        returned. With `delta`, it also returns `U_delta`: a one-sided upper confidence bound
+        at level `1 - delta` on the population value `U* = 1 - e * p` (`p` the coverage and
+        `e = E[1/|C| | covered]` at this alpha), which by the paper's theorem bounds the
+        model's error probability. It is `1 - EC_lower * coverage_lower`, with a
+        Clopper-Pearson lower bound on `p` and a Hoeffding lower bound on `e` (clipped at 0),
+        each at level `delta/2` and combined by a union bound (valid although both use the
+        same evaluation set). The bound holds only if (1) the evaluation samples are
+        independent and representative of the data the model is used on, and (2) the paper's
+        uniform-selection assumption holds; the code can check neither. scipy is imported
+        only when `delta` is given.
 
         Does not change `self.alpha`, `self.q_hat` or `self.search_status_`. Like
         `get_uncertainty` it may sort the conformity-score buffer lazily. Evaluation
@@ -1086,6 +1228,9 @@ class UncertaintyQuantifier:
             Must lie in `[1/(N+1), 1]` for the `N` calibration scores held. `nan`
             (what `tune_alpha` returns for an empty tuning group) is passed through:
             nothing is evaluated and `U` is `nan`.
+        delta : float, optional
+            `None` (default: no bound is computed, `scipy` is not imported) or a real
+            number in the open interval `(0, 1)`: the bound's error level.
 
         Returns
         -------
@@ -1098,13 +1243,22 @@ class UncertaintyQuantifier:
         Raises
         ------
         ValueError
-            If the instance is not calibrated, the row counts of `softmax` and `y`
-            differ, the columns of `softmax` differ from those seen by `calibrate`, or
-            `alpha` is outside `[1/(N+1), 1]`.
+            If `delta` is not `None` or a real number in `(0, 1)`, the instance is not
+            calibrated, the row counts of `softmax` and `y` differ, the columns of `softmax`
+            differ from those seen by `calibrate` (checked before the labels), a label is
+            outside `[0, K)` (`K` the number of columns), or `alpha` is outside
+            `[1/(N+1), 1]`.
         """
+        delta = _check_delta(delta)
         if np.isnan(alpha):
             nan = np.float64('nan')
-            return UncertaintyEvaluation(U=nan, EC=nan, n_covered=0, n_valid=0, n_succ=0)
+            return UncertaintyEvaluation(
+                U=nan, EC=nan, n_covered=0, n_valid=0, n_succ=0,
+                coverage=nan, U_empirical=nan, delta=delta,
+                coverage_lower=None if delta is None else nan,
+                EC_lower=None if delta is None else nan,
+                U_delta=None if delta is None else nan,
+            )
 
         # Same conversion chain as the tuning path (see _search_single_dataset): to_jax
         # on both, then np.asarray, so a device-resident tensor never reaches numpy
@@ -1119,11 +1273,8 @@ class UncertaintyQuantifier:
             raise ValueError(
                 f"softmax has {smx.shape[0]} rows but y has {y_arr.shape[0]} labels."
             )
-        if self._item_shape is not None and tuple(smx.shape[1:]) != self._item_shape:
-            raise ValueError(
-                f"softmax has shape {tuple(smx.shape[1:])} per row, but this instance was "
-                f"calibrated with {self._item_shape}."
-            )
+        self._check_item_shape(smx)
+        _check_labels(y_arr, self._label_range(), "uncertainty_at")
         floor = np.float64(1.0) / np.float64(N + 1)
         alpha_f = np.float64(alpha)
         if not (floor <= alpha_f <= 1.0):
@@ -1157,10 +1308,27 @@ class UncertaintyQuantifier:
             jnp.int32(N),
             self.score_,
         )
+        U, EC = np.float64(U), np.float64(EC)
+        n_covered, n_valid, n_succ = int(n_covered), int(n_valid), int(n_succ)
+        if n_valid == 0:
+            nan = np.float64('nan')
+            return UncertaintyEvaluation(
+                U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
+                coverage=nan, U_empirical=nan, delta=delta,
+                coverage_lower=None if delta is None else nan,
+                EC_lower=None if delta is None else nan,
+                U_delta=None if delta is None else nan,
+            )
+        coverage = np.float64(n_covered / n_valid)
+        U_empirical = np.float64(1.0 - EC * coverage)
+        if delta is None:
+            return UncertaintyEvaluation(
+                U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
+                coverage=coverage, U_empirical=U_empirical,
+            )
+        coverage_lower, EC_lower, U_delta = _confidence_bound(EC, n_covered, n_valid, n_succ, delta)
         return UncertaintyEvaluation(
-            U=np.float64(U),
-            EC=np.float64(EC),
-            n_covered=int(n_covered),
-            n_valid=int(n_valid),
-            n_succ=int(n_succ),
+            U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
+            coverage=coverage, U_empirical=U_empirical, delta=delta,
+            coverage_lower=coverage_lower, EC_lower=EC_lower, U_delta=U_delta,
         )

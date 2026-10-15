@@ -195,6 +195,16 @@ Out of scope for the current script-migration work. Recorded here so the context
    streaming-calibration pipeline, 4 classes) and `.reports/2026-08-21_gpu_measurements_acdc.md`
    (36-batch streaming loops per class, 4 classes, ~3.1M total scores written, summed wall-clock
    and peak-memory figures reported per class).
+4. **Dependence between evaluation samples invalidates the independence assumption of `U_delta`.**
+   `uncertainty_at(..., delta=...)` assumes independent evaluation samples. In segmentation the
+   samples are pixels, and the pixels of one image are strongly dependent; the effective sample size
+   is then far below `n_valid`, and the Clopper-Pearson and Hoeffding margins are too narrow (the
+   bound's real level is below `1 - delta`). The code cannot detect it. Open: how to account for it
+   (e.g. count images, not pixels, or a design-effect correction) and how to document it per use case.
+5. **The inverse of the confidence bound.** Given a specification `U_spec`, the smallest `delta` at
+   which `U_delta <= U_spec` (equivalently, the confidence level at which the model meets the
+   specification). `U_delta` is monotone in `delta`, so it is a one-dimensional root-find on the
+   existing counts. A candidate conformity-assessment feature; not implemented.
 
 ## Research questions (candidates for a second publication — NOT implementation tasks)
 

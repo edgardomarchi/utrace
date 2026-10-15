@@ -5,11 +5,13 @@
 
 **U**ncertainty **Tra**cking for **C**omplex **E**stimators.
 
-U-TraCE is a Python package for computing upper bounds on the marginal or conditional uncertainty of any classification model with a softmax output.
+U-TraCE is a Python package for computing estimates and upper confidence bounds on the marginal or conditional uncertainty of any classification model with a softmax output.
 
 The library is heavily based on Conformal Prediction, which allows its uncertainty estimates to be distribution-free. A key feature of this approach is that the resulting uncertainty measure relies on the model's actual accuracy (how often it is correct) rather than its confidence (e.g., raw softmax outputs).
 
-U-TraCE provides an evaluation method that reports a guaranteed upper bound for the model's uncertainty, defined as the probability of error: $1-P(\hat{y}​=y_t​)$, where $\hat{y}$ is the model's prediction and $y_t$​ is the true label.
+U-TraCE provides an evaluation method that reports an estimate of, and an upper confidence bound on, the model's uncertainty, defined as the probability of error: $1-P(\hat{y}​=y_t​)$, where $\hat{y}$ is the model's prediction and $y_t$​ is the true label.
+
+The point estimate `U` carries no confidence level. The bound `U_delta`, returned by `uncertainty_at(..., delta=...)`, holds with probability at least `1 - delta` only if (1) the evaluation samples are independent and representative of the data the model is used on, and (2) the uniform-selection assumption of the paper holds. The package cannot check either; in particular, pixels of one image are not independent samples.
 
 
 ## Setup

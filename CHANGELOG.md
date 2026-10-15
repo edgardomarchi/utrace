@@ -20,8 +20,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the tuning set and `U` is measured on the evaluation set, so the two estimates no longer share
   data. Giving only one raises `ValueError`. The return value is still `(U, alpha)`.
 - `utrace.UncertaintyEvaluation` and `utrace.TuningDataReuseWarning`.
+- `uncertainty_at(softmax, y, alpha, *, delta=None)`: with `delta` in `(0, 1)` it returns `U_delta`, a
+  one-sided upper confidence bound at level `1 - delta` on `U* = 1 - e * p` (`p` the coverage,
+  `e = E[1/|C| | covered]` at that alpha), which bounds the model's error probability. It is
+  `1 - EC_lower * coverage_lower` with a Clopper-Pearson bound on `p` and a Hoeffding bound on `e`,
+  each at level `delta/2` (union bound). It needs independent, representative evaluation samples and
+  the paper's uniform-selection assumption; the code checks neither. `U` stays the point estimate
+  `1 - EC * (1 - alpha)`.
+- `UncertaintyEvaluation` gains the fields `coverage`, `U_empirical` (`1 - EC * coverage`), `delta`,
+  `coverage_lower`, `EC_lower`, `U_delta`, appended after the original five with defaults. `coverage`
+  and `U_empirical` are always computed; the bound fields are `None` without `delta`. The five
+  original fields are unchanged, but the tuple is longer, so code that unpacks it into five names
+  must change (the type is unreleased).
+- `scipy>=1.13` is now a declared dependency (jax already required it). It is imported only when
+  `delta` is given; `import utrace` does not load it.
 
 ### Changed
+- Labels outside `[0, K)` (`K` the number of softmax columns) now raise `ValueError` in `calibrate`,
+  `get_uncertainty`/`tune_alpha` and `uncertainty_at`. They used to alias silently to the last class
+  (`-1` wraps, anything `>= K` clamps), giving a wrong coverage and `EC`. `calibrate` also rejects
+  `classes` outside `[0, K)`. There is no `ignore_index`.
+- The tuning path now checks the softmax trailing shape against the one `calibrate` recorded, and a
+  batched `calibrate` with a different trailing shape raises `ValueError`.
 - `get_uncertainty` called without an evaluation set now emits a `TuningDataReuseWarning` on every
   call: `U` is then estimated on the same samples that selected alpha, which correlates the errors in
   alpha and in `U`. Returned values are unchanged. The warning is a `UserWarning`, independent of

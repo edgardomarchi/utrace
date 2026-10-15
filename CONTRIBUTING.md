@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `204 passed, 6 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those six tests run instead (210 tests in all). The six skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
+Expect `324 passed, 6 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those six tests run instead (330 tests in all). The six skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
@@ -105,9 +105,9 @@ push and pull request — a PR that doesn't pass it won't pass CI.
   `regenerate_baselines.py --api new` (paths in that script are relative to the file itself).
 - `tests/core/test_import_properties.py` asserts properties of the package as an importable
   artifact — global JAX x64 config, torch/matplotlib/pandas absent from `sys.modules` after
-  `import utrace` — rather than API behavior. The torch-absence check runs in a subprocess,
-  because the rest of the integration suite imports torch into the main test process and would
-  otherwise contaminate the check.
+  `import utrace` (scipy likewise, in `test_scipy_import_is_lazy.py`) — rather than API behavior.
+  The torch-absence check runs in a subprocess, because the rest of the integration suite imports
+  torch into the main test process and would otherwise contaminate the check.
 
 ## Working with `UncertaintyQuantifier`
 
@@ -158,6 +158,15 @@ The canonical alpha-search method is the **binary** one, `get_uncertainty`, whic
    `EC` and the counts (`n_covered`, `n_valid`, `n_succ`) that `uncertainty_at` returns in an
    `UncertaintyEvaluation`. The evaluation set may be any size (it is padded to a multiple of 256,
    independently of `max_batch_size`); `U` is `nan` if it holds no sample of the class group.
+
+   **Reporting a bound.** `U` is a point estimate with no confidence level. For a statement with a
+   level, pass `delta` to `uncertainty_at`: `r = uqs[C].uncertainty_at(eval_smx, eval_y, alpha,
+   delta=0.05)` and report `r.U_delta` as "with probability at least 95%, the error probability is
+   at most `U_delta`", together with the two assumptions it needs: independent evaluation samples
+   representative of use, and the paper's uniform-selection assumption (neither is checkable by the
+   code; pixels of one image are not independent). `r.coverage` and `r.U_empirical`
+   (`1 - EC * coverage`) are always returned and need no `delta`.
+
    **FORBIDDEN: `alpha = np.nanmean([alpha_per_batch...])`.** This is statistically incorrect —
    alpha is a non-linear function of the data, so averaging per-batch alphas does not converge to
    the correct value. Averaging over `L` distinct splits (a full experimental repetition, each
@@ -193,6 +202,17 @@ clutters the example.
 accuracy, building arrays for matplotlib. Only avoid it on the path into
 `calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`.
 
+### Input contract for labels and shapes
+
+Labels must be integers in `[0, K)`, `K` being the number of softmax columns. `calibrate`,
+`get_uncertainty`/`tune_alpha` and `uncertainty_at` raise `ValueError` naming the offending min/max
+and `K` otherwise; `calibrate` also rejects `classes` outside `[0, K)`. There is no `ignore_index`:
+drop ignored samples before the call. (Before this check a label `-1` wrapped to the last class and
+any label `>= K` clamped to it, silently giving a wrong coverage and `EC`.) A softmax whose trailing
+shape differs from the one `calibrate` recorded raises too, on the tuning and evaluation paths and on
+a batched `calibrate`; column checks run before label checks. Labels given as floats are still
+truncated by `astype(int)` without a check.
+
 ## Decisions to respect (do NOT "fix" without confirming)
 
 - In the coverage test scripts, `uq.alpha = U` (setting alpha to the U value, not the tuned alpha)
@@ -220,7 +240,7 @@ is deliberate.
   change of definition: conditioning on coverage forces `|C| >= 1`, so the conditioned quantity is
   bounded above by 1 and becomes flat once every covering set is a singleton. An equality criterion
   on a plateau cannot be attacked by bisection. The unconditional mean crosses 1 monotonically and
-  can. The bound U itself is unchanged: it is eq. (6) of the paper, computed with the conditioned
+  can. The point estimate U itself is unchanged: it is eq. (6) of the paper, computed with the conditioned
   expectation over covered samples -- of the tuning set when `get_uncertainty` is called without
   an evaluation set, of the evaluation set (`eval_softmax`/`eval_y`, or `uncertainty_at`) when one
   is passed -- verified directly against
@@ -229,6 +249,17 @@ is deliberate.
   * (1.0 - alpha_out)` line in `_search_uncertainty`. Since eq. (5) holds for any alpha, the proxy
   affects how tight the bound is, never whether it is valid. Do not "restore" the conditioned
   criterion in the search without first deriving a criterion that actually crosses.
+
+- **`U_delta` uses the measured coverage, not the nominal `1 - alpha`.** `U = 1 - EC * (1 - alpha)`
+  (the paper's eq. (6)) is a point estimate with no confidence level. `uncertainty_at(...,
+  delta=...)` instead bounds the population value `U* = 1 - e * p`, `p` the coverage and
+  `e = E[1/|C| | covered]` at the given alpha: `U_delta = 1 - EC_lower * coverage_lower`, with a
+  Clopper-Pearson lower bound on `p` and a Hoeffding lower bound on `e` (clipped at 0), each at
+  level `delta/2` (a fixed split, union bound, valid on the same evaluation set). It therefore
+  uses the empirical coverage that the evaluation set supports, which can be above or below
+  `1 - alpha`, so `U_delta` is not guaranteed to be `>= U`; it is always `>= U_empirical =
+  1 - EC * coverage`. It holds at level `1 - delta` under independent, representative evaluation
+  samples and the paper's uniform-selection assumption. Both are assumptions, not checks.
 
 - **Quantile index: one order statistic above the canonical split-conformal quantile.**
   `_masked_quantile_higher` (`utils/utils_jax.py`) computes `idx = ceil(q * (n_valid - 1))` with
@@ -266,9 +297,11 @@ contains backend-specific code; what matters is where it lives and the direction
 
 ### Dependency rule
 
-- **Core** (`uncertaintyQuantifier`, alpha-search functions, masked quantile): imports ONLY numpy
-  and jax. NEVER imports torch, onnx, or any backend, and NEVER imports from the backend
-  subpackages below. Data flow is always: user code → backend wrapper → softmax output → core
+- **Core** (`uncertaintyQuantifier`, alpha-search functions, masked quantile): imports ONLY numpy,
+  jax and scipy. scipy (a declared dependency, `scipy>=1.13`; jax requires it too) is imported
+  lazily, inside the confidence-bound computation of `uncertainty_at`, so `import utrace` and every
+  call without `delta` never load it (`tests/core/test_scipy_import_is_lazy.py`). NEVER imports
+  torch, onnx, or any backend, and NEVER imports from the backend subpackages below. Data flow is always: user code → backend wrapper → softmax output → core
   (`calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`).
 - **`utrace.utils.pytorch.*`**: everything that touches torch — `Pytorch_wrapper`, example
   models, dataset loaders, transforms, and any helper that needs torch (e.g. `flatten_batch` /
