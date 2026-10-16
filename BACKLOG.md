@@ -198,13 +198,28 @@ Out of scope for the current script-migration work. Recorded here so the context
 4. **Dependence between evaluation samples invalidates the independence assumption of `U_delta`.**
    `uncertainty_at(..., delta=...)` assumes independent evaluation samples. In segmentation the
    samples are pixels, and the pixels of one image are strongly dependent; the effective sample size
-   is then far below `n_valid`, and the Clopper-Pearson and Hoeffding margins are too narrow (the
+   is then far below `n_valid`, and the Clopper-Pearson, Hoeffding and empirical Bernstein margins are too narrow (the
    bound's real level is below `1 - delta`). The code cannot detect it. Open: how to account for it
    (e.g. count images, not pixels, or a design-effect correction) and how to document it per use case.
 5. **The inverse of the confidence bound.** Given a specification `U_spec`, the smallest `delta` at
    which `U_delta <= U_spec` (equivalently, the confidence level at which the model meets the
    specification). `U_delta` is monotone in `delta`, so it is a one-dimensional root-find on the
    existing counts. A candidate conformity-assessment feature; not implemented.
+6. **Rescaling the `EC_lower` margins to `[1/K, 1]`, and clipping at `1/K`.** `1/|C|` lies in
+   `[1/K, 1]`, not `(0, 1]`. Applying the bound to `Z' = (Z - 1/K) / (1 - 1/K)` and mapping back
+   multiplies only the range term of the empirical Bernstein margin by `1 - 1/K`: with `V_n` the
+   sample variance of `Z` itself, `m_EB = sqrt(2 V_n ln(8/delta) / n) + (1 - 1/K) 7 ln(8/delta) /
+   (3 (n - 1))`; the variance term is unchanged (the factor cancels against `V'_n = V_n / (1 -
+   1/K)^2`). Multiplying both terms is invalid. Hoeffding's margin scales by `1 - 1/K` entirely, and
+   `EC_lower` can then be clipped at `1/K` instead of 0. Not implemented: the measured gain is about
+   0.0005 on `U_delta` in the MNIST notebook's regime, and the formula is easy to get wrong.
+   Source: `.reports/2026-10-15_empirical_bernstein_diagnostic.md`, A.4.
+7. **Asymmetric split of `delta` between the coverage and `EC` components.** The split is fixed at
+   `delta/2` each (the `EC` half as `delta/4 + delta/4`). With the empirical Bernstein margin the
+   `EC` component is far narrower than the coverage component in the notebook's regime, so giving
+   the coverage bound a larger share of `delta` (the sum of the shares stays `delta`) would tighten
+   `U_delta`. It needs a rule that does not depend on the data, and a re-run of the Monte Carlo
+   validity check. Not implemented.
 
 ## Research questions (candidates for a second publication — NOT implementation tasks)
 

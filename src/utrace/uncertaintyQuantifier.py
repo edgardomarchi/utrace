@@ -113,8 +113,11 @@ class UncertaintyEvaluation(NamedTuple):
         Clopper-Pearson lower bound on the coverage `p`, at level `delta/2`; `0.0` if
         `n_covered == 0`. `None` when `delta` is `None`.
     EC_lower : np.float64 or None
-        Hoeffding lower bound on `e` at level `delta/2`, clipped at 0 (`1/|C|` lies in
-        `(0, 1]`); `0.0` if `n_succ == 0`. `None` when `delta` is `None`.
+        Lower bound on `e` at level `delta/2`, clipped at 0: `EC` minus the smaller of a
+        Hoeffding margin and an empirical Bernstein margin (Maurer and Pontil, 2009,
+        Theorem 4), each one-sided at `delta/4` (`1/|C|` lies in `(0, 1]`; see
+        `uncertainty_at`). `0.0` if `n_succ == 0`; only the Hoeffding margin if `n_succ == 1`.
+        `None` when `delta` is `None`.
     U_delta : np.float64 or None
         `1 - EC_lower * coverage_lower`. The two `delta/2` levels are fixed (not
         data-dependent) and combine by a union bound, valid although both come from the
@@ -149,13 +152,30 @@ def _check_delta(delta) -> float | None:
     return d
 
 
-def _confidence_bound(EC, n_covered: int, n_valid: int, n_succ: int, delta: float):
+def _confidence_bound(
+    EC, n_covered: int, n_valid: int, n_succ: int, sum_sq_dev, delta: float
+):
     """`(coverage_lower, EC_lower, U_delta)` as float64 scalars, on the host.
 
-    Clopper-Pearson lower bound on the coverage at level `delta/2`, Hoeffding lower bound on
-    `E[1/|C| | covered]` at level `delta/2`, combined as `1 - EC_lower * coverage_lower`
-    (union bound). Requires `n_valid > 0`. scipy is imported here, not at module level, so
-    `import utrace` and every `delta=None` call stay scipy-free.
+    Clopper-Pearson lower bound on the coverage at level `delta/2`; lower bound on
+    `E[1/|C| | covered]` at level `delta/2`, built from two one-sided margins at level `delta/4`
+    each, of which the smaller is taken; combined as `1 - EC_lower * coverage_lower` (union
+    bound over the three events). With `n = n_succ` and `z = 1/|C|` in `(0, 1]`:
+
+    - Hoeffding: `m_H = sqrt(ln(4/delta) / (2 n))`.
+    - Empirical Bernstein, Maurer & Pontil (2009), "Empirical Bernstein Bounds and Sample
+      Variance Penalization", COLT, arXiv:0907.3740, Theorem 4 (one-sided, `n >= 2`) at failure
+      level `delta/4`: `m_EB = sqrt(2 V_n ln(8/delta) / n) + 7 ln(8/delta) / (3 (n - 1))`, with
+      `V_n = sum_sq_dev / (n - 1)` the unbiased sample variance of `z`; `sum_sq_dev` is the
+      centred sum of squares `sum((z - mean(z))^2)` over the `n_succ` covered samples (clipped
+      at 0 here).
+
+    `EC_lower = max(0, EC - min(m_H, m_EB))`; `n_succ == 0` gives 0, `n_succ == 1` (no sample
+    variance) uses `m_H` alone. Which margin is smaller depends on the data through `V_n`: both
+    events are fixed in advance and hold with probability `>= 1 - delta/4`, so taking the
+    smaller is a union bound, not a data-dependent choice of level. Requires `n_valid > 0`.
+    scipy is imported here, not at module level, so `import utrace` and every `delta=None`
+    call stay scipy-free.
     """
     if n_covered == 0:
         coverage_lower = np.float64(0.0)
@@ -167,7 +187,12 @@ def _confidence_bound(EC, n_covered: int, n_valid: int, n_succ: int, delta: floa
     if n_succ == 0:
         EC_lower = np.float64(0.0)
     else:
-        margin = np.sqrt(np.log(2.0 / delta) / (2.0 * n_succ))
+        margin = np.sqrt(np.log(4.0 / delta) / (2.0 * n_succ))
+        if n_succ >= 2:
+            L = np.log(8.0 / delta)
+            V = max(0.0, float(sum_sq_dev)) / (n_succ - 1)
+            margin_eb = np.sqrt(2.0 * V * L / n_succ) + 7.0 * L / (3.0 * (n_succ - 1))
+            margin = min(margin, margin_eb)
         EC_lower = np.float64(max(0.0, float(EC) - float(margin)))
     return coverage_lower, EC_lower, np.float64(1.0 - EC_lower * coverage_lower)
 
@@ -520,8 +545,8 @@ def _evaluate_at_alpha(
     cs_padded: jnp.ndarray,
     n_cs: jnp.ndarray,
     score_fn: Callable,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """`U`, `EC` and the counts behind them, at one fixed alpha, on one dataset.
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """`U`, `EC`, the counts behind them, at one fixed alpha, on one dataset.
 
     `EC` comes from `_evaluate_alpha`, called unchanged. The prediction sets are
     recomputed here (same `_q_hat_from_alpha`/`_predict_sets` calls) for the counts
@@ -530,8 +555,12 @@ def _evaluate_at_alpha(
     evaluated eagerly on the host differs from the jitted one by one ulp in a
     noticeable fraction of cases.
 
-    Returns `(U, EC, n_covered, n_valid, n_succ)`; `U` is `nan` when `n_valid == 0`
-    (without that guard an empty group would silently give `U = 1.0`).
+    Returns `(U, EC, n_covered, n_valid, n_succ, sum_sq_dev)`; `U` is `nan` when
+    `n_valid == 0` (without that guard an empty group would silently give `U = 1.0`).
+    `sum_sq_dev` is the centred sum of squares `sum((z - mean(z))^2)` of `z = 1/|C|` over the
+    `n_succ` valid, covered, non-empty samples (the mean is formed here, in the same trace),
+    for the empirical Bernstein bound; it is exactly 0 when all those sets are singletons.
+    It is internal and does not affect the other five outputs.
     """
     _, EC = _evaluate_alpha(alpha, y, smx, valid_mask, cs_padded, n_cs, score_fn)
     q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
@@ -541,9 +570,13 @@ def _evaluate_at_alpha(
     is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
     n_valid = valid_mask.sum()
     n_covered = (is_covered & valid_mask).sum()
-    n_succ = (is_covered & (set_sizes > 0) & valid_mask).sum()
+    succ = is_covered & (set_sizes > 0) & valid_mask
+    n_succ = succ.sum()
+    z = jnp.where(succ, 1.0 / jnp.maximum(set_sizes, 1), 0.0)
+    mean_z = z.sum() / jnp.maximum(n_succ, 1)
+    sum_sq_dev = jnp.where(succ, (z - mean_z) ** 2, 0.0).sum()
     U = jnp.where(n_valid > 0, 1.0 - EC * (1.0 - alpha), jnp.nan)
-    return U, EC, n_covered, n_valid, n_succ
+    return U, EC, n_covered, n_valid, n_succ, sum_sq_dev
 
 
 class UncertaintyQuantifier:
@@ -1205,9 +1238,15 @@ class UncertaintyQuantifier:
         at level `1 - delta` on the population value `U* = 1 - e * p` (`p` the coverage and
         `e = E[1/|C| | covered]` at this alpha), which by the paper's theorem bounds the
         model's error probability. It is `1 - EC_lower * coverage_lower`, with a
-        Clopper-Pearson lower bound on `p` and a Hoeffding lower bound on `e` (clipped at 0),
-        each at level `delta/2` and combined by a union bound (valid although both use the
-        same evaluation set). The bound holds only if (1) the evaluation samples are
+        Clopper-Pearson lower bound on `p` at level `delta/2` and a lower bound on `e`
+        (clipped at 0) at level `delta/2`, combined by a union bound (valid although both use
+        the same evaluation set). The bound on `e` is `EC - min(m_H, m_EB)`, with
+        `m_H = sqrt(ln(4/delta) / (2 n))` (Hoeffding) and
+        `m_EB = sqrt(2 V ln(8/delta) / n) + 7 ln(8/delta) / (3 (n - 1))` (empirical Bernstein,
+        Maurer and Pontil (2009), "Empirical Bernstein Bounds and Sample Variance
+        Penalization", COLT, arXiv:0907.3740, Theorem 4), where `n = n_succ` and `V` is the
+        unbiased sample variance of `1/|C|` over the covered samples; each margin is one-sided
+        at level `delta/4`. With `n_succ == 1` only `m_H` is used. The bound holds only if (1) the evaluation samples are
         independent and representative of the data the model is used on, and (2) the paper's
         uniform-selection assumption holds; the code can check neither. scipy is imported
         only when `delta` is given.
@@ -1299,7 +1338,7 @@ class UncertaintyQuantifier:
         y_safe = np.where(mask_padded, y_padded, 0)
 
         self._state = _ensure_sorted(self._state)
-        U, EC, n_covered, n_valid, n_succ = _evaluate_at_alpha(
+        U, EC, n_covered, n_valid, n_succ, sum_sq_dev = _evaluate_at_alpha(
             jnp.asarray(alpha_f, dtype=jnp.float64),
             jnp.asarray(y_safe),
             jnp.asarray(p_padded, dtype=jnp.float64),
@@ -1326,7 +1365,9 @@ class UncertaintyQuantifier:
                 U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
                 coverage=coverage, U_empirical=U_empirical,
             )
-        coverage_lower, EC_lower, U_delta = _confidence_bound(EC, n_covered, n_valid, n_succ, delta)
+        coverage_lower, EC_lower, U_delta = _confidence_bound(
+            EC, n_covered, n_valid, n_succ, sum_sq_dev, delta
+        )
         return UncertaintyEvaluation(
             U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
             coverage=coverage, U_empirical=U_empirical, delta=delta,

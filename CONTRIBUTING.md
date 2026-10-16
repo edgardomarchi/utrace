@@ -277,8 +277,15 @@ is deliberate.
   (the paper's eq. (6)) is a point estimate with no confidence level. `uncertainty_at(...,
   delta=...)` instead bounds the population value `U* = 1 - e * p`, `p` the coverage and
   `e = E[1/|C| | covered]` at the given alpha: `U_delta = 1 - EC_lower * coverage_lower`, with a
-  Clopper-Pearson lower bound on `p` and a Hoeffding lower bound on `e` (clipped at 0), each at
-  level `delta/2` (a fixed split, union bound, valid on the same evaluation set). It therefore
+  Clopper-Pearson lower bound on `p` and a lower bound on `e` (clipped at 0), each at level
+  `delta/2` (a fixed split, union bound, valid on the same evaluation set). The bound on `e` is
+  `EC - min(m_H, m_EB)`: `m_H = sqrt(ln(4/delta) / (2 n))` (Hoeffding) and
+  `m_EB = sqrt(2 V ln(8/delta) / n) + 7 ln(8/delta) / (3 (n - 1))` (empirical Bernstein, Maurer
+  and Pontil (2009), COLT, arXiv:0907.3740, Theorem 4), with `n = n_succ` and `V` the unbiased
+  sample variance of `1/|C|` over the covered samples; each is one-sided at `delta/4`, so taking
+  the smaller is a union bound, not a data-dependent level. `n_succ == 1` uses `m_H` alone and
+  `n_succ == 0` gives 0. The range `[1/K, 1]` of `1/|C|` is not used (a rescaled variant is in
+  `BACKLOG.md`). It therefore
   uses the empirical coverage that the evaluation set supports, which can be above or below
   `1 - alpha`, so `U_delta` is not guaranteed to be `>= U`; it is always `>= U_empirical =
   1 - EC * coverage`. It holds at level `1 - delta` under independent, representative evaluation

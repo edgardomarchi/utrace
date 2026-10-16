@@ -23,8 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `uncertainty_at(softmax, y, alpha, *, delta=None)`: with `delta` in `(0, 1)` it returns `U_delta`, a
   one-sided upper confidence bound at level `1 - delta` on `U* = 1 - e * p` (`p` the coverage,
   `e = E[1/|C| | covered]` at that alpha), which bounds the model's error probability. It is
-  `1 - EC_lower * coverage_lower` with a Clopper-Pearson bound on `p` and a Hoeffding bound on `e`,
-  each at level `delta/2` (union bound). It needs independent, representative evaluation samples and
+  `1 - EC_lower * coverage_lower` with a Clopper-Pearson bound on `p` and a lower bound on `e`,
+  each at level `delta/2` (union bound). The bound on `e` is `EC` minus the smaller of a Hoeffding
+  margin and an empirical Bernstein margin (Maurer and Pontil (2009), "Empirical Bernstein Bounds
+  and Sample Variance Penalization", COLT, arXiv:0907.3740, Theorem 4), each one-sided at `delta/4`;
+  the empirical Bernstein margin is much smaller when the sets are mostly singletons, and over the
+  grid examined the minimum is at most about 9 % wider than a Hoeffding margin at `delta/2`. It needs independent, representative evaluation samples and
   the paper's uniform-selection assumption; the code checks neither. `U` stays the point estimate
   `1 - EC * (1 - alpha)`.
 - `UncertaintyEvaluation` gains the fields `coverage`, `U_empirical` (`1 - EC * coverage`), `delta`,

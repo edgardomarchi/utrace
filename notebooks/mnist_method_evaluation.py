@@ -764,7 +764,7 @@ for s in NOISES:
 # The inferences below are hand-written from one specific full run. They refer to it by the SHA-256 of the
 # non-volatile part of its results file; if the results of THIS run differ (other mode, seed, parameters,
 # package versions, or code), they may no longer follow from the numbers above.
-INFERENCES_WRITTEN_FROM_SHA256 = "61bcdcf0a864e1de9f420c468e60aa51f3cef2d2c9058c089e914852b9f75c88"
+INFERENCES_WRITTEN_FROM_SHA256 = "c1035138c8ff83d7039260dcb965ea8cbd465aed0013222eb0d25e96c779f0a5"
 if NONVOLATILE_SHA256 == INFERENCES_WRITTEN_FROM_SHA256:
     print("inferences match this run (non-volatile sha256", NONVOLATILE_SHA256[:16] + "...)")
 else:
@@ -776,7 +776,7 @@ else:
 
 # %% [markdown]
 # Written from the full run whose results file has non-volatile SHA-256
-# `61bcdcf0a864e1de9f420c468e60aa51f3cef2d2c9058c089e914852b9f75c88`
+# `c1035138c8ff83d7039260dcb965ea8cbd465aed0013222eb0d25e96c779f0a5`
 # (`QUICK=False`, `L=50`, seed 20261015, CPU). Each statement is
 # tagged with the evidence it rests on; they are inferences from one model, one dataset and one
 # partition scheme, not properties of the method in general.
@@ -785,25 +785,29 @@ else:
 #    `delta`, at every `sigma` (95% Clopper-Pearson upper limit on the violation rate: 0.071). This is
 #    consistent with the guarantee, but 50 repetitions cannot tell a bound that is right from one that is
 #    very conservative: a nominal rate of 0.05 would produce about 2.5 violations, and zero were seen.
-#    The combined bound is conservative by construction (a union bound with a distribution-free
-#    Hoeffding term), as the stage-two Monte Carlo already showed.
-# 2. **Which margin term dominates depends on the regime.** The margin `U_delta - U_empirical` at
-#    `delta=0.05` is about 0.038 at `sigma=0`, almost all of it the EC term (0.0297 vs 0.0081). It is
-#    ~`sqrt(ln(2/delta)/(2 n_succ)) * coverage_lower`, the Hoeffding width, because `EC_lower` is
-#    worst-case for a variable in `(0, 1]`. Here 99.9% of the sets are singletons, so `1/|C|` is almost
-#    constant and that worst case is far from the truth. As the error grows the EC term shrinks (it is
-#    multiplied by `coverage_lower`, which falls with `sigma`) and the coverage term (a binomial width
-#    that is largest near `p = 0.5`) takes over: they are about equal at `sigma=1` (0.0221 vs 0.0208) and
-#    the coverage term dominates from `sigma=1.5` on (0.0197 vs 0.0151). A bound that adapts to the
-#    variance of `1/|C|` would mainly help in the low-error regime; this is an inference from the sets'
-#    composition, not something this notebook tested.
-# 3. **The margin shrinks as 1/sqrt(n_eval).** At `sigma=0`, `delta=0.05`, `U_delta` goes from 0.129
-#    (n = 300) to 0.052 (n = 5000) over a `U_empirical` of 0.028; the EC term falls from 0.0753 to 0.0188
-#    (a factor 4.0 for a size ratio of 16.7, i.e. sqrt). At `sigma=1.5` the same sizes give 0.801 to 0.735
-#    over 0.713 to 0.717.
+#    The combined bound is conservative by construction (a union bound; the EC term is
+#    `EC - min(Hoeffding, empirical Bernstein)`, Maurer and Pontil (2009), arXiv:0907.3740, Theorem 4,
+#    each margin at `delta/4`), as the stage-two Monte Carlo and the one for the empirical Bernstein
+#    bound already showed.
+# 2. **Which margin term dominates depends on the regime, and the empirical Bernstein margin moved it.**
+#    With the Hoeffding-only EC term of the earlier version, the margin `U_delta - U_empirical` at
+#    `delta=0.05`, `sigma=0` was 0.0376, of which 0.0297 was the EC term and 0.0081 the coverage term.
+#    Now it is 0.0141 (EC term 0.0062, coverage term 0.0081; the coverage term is unchanged). At every
+#    `sigma` and both `delta` the coverage term is now the larger one (e.g. `sigma=1`: 0.0221 vs 0.0071;
+#    `sigma=2.5`: 0.0166 vs 0.0055). The reason, as an inference from the sets' composition: 99.9% of the
+#    sets at `sigma=0` are singletons, so `1/|C|` is almost constant, `V_n` is almost 0, and the margin
+#    reduces to the range term `7 ln(8/delta) / (3 (n_succ - 1))`, which falls as 1/n instead of
+#    1/sqrt(n). The gain in `U_delta - U_E` at `delta=0.05` is 0.0376 -> 0.0141 (`sigma=0`) and
+#    0.0438 -> 0.0301 (`sigma=1`), smaller as the coverage term takes over.
+# 3. **The EC margin now shrinks about as 1/n_eval, the coverage margin as 1/sqrt(n_eval).** At
+#    `sigma=0`, `delta=0.05`, `U_delta` goes from 0.0926 (n = 300) to 0.0359 (n = 5000) over a
+#    `U_empirical` of 0.028; the EC term falls from 0.0389 to 0.0026 (a factor 15 for a size ratio of
+#    16.7), the coverage term from 0.0254 to 0.0050 (a factor 5.1, i.e. about sqrt). At `sigma=1.5` the same
+#    sizes give 0.800 to 0.728 over 0.717 to 0.713 (with the Hoeffding-only EC term, 0.801 to 0.735).
 # 4. **Evaluation-set size, not tuning reuse, is what limits `U_delta` here.** With 2000 samples the
-#    tightest margin over `U_E` is about 0.03 (`sigma=2.5`) to 0.044 (`sigma=1`). For individual classes
-#    (about 200 evaluation samples each) it is about 0.12 to 0.14 at `sigma=0`.
+#    tightest margin over `U_E` is about 0.023 (`sigma=2.5`) to 0.030 (`sigma=1`) (0.03 to 0.044 with the
+#    Hoeffding-only EC term). For individual classes (about 200 evaluation samples each) it is about 0.08
+#    to 0.10 at `sigma=0` (0.12 to 0.14 before).
 # 5. **The bias that stage one targeted is not visible in this setup.** The mean of `U_reuse - U_E` is
 #    within +-0.0026 at every `sigma` (standard error 0.0005 to 0.0011), and `U - U_E` has a mean within
 #    0.0002 of it at every level and the same standard deviation (e.g. 0.0074 for both at

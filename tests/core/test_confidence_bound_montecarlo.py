@@ -1,8 +1,8 @@
 """Monte Carlo check of the confidence bound of `uncertainty_at(..., delta=...)`.
 
-This tests the STATISTICS of the bound (Clopper-Pearson on the coverage, Hoeffding on
-`E[1/|C| | covered]`, union bound) on i.i.d. synthetic data where the population values are
-known to high precision. It does NOT test the paper's uniform-selection assumption, nor
+This tests the STATISTICS of the bound (Clopper-Pearson on the coverage, the smaller of a
+Hoeffding and an empirical Bernstein margin on `E[1/|C| | covered]`, union bound) on i.i.d.
+synthetic data where the population values are known to high precision. It does NOT test the paper's uniform-selection assumption, nor
 independence of real evaluation samples; those cannot be checked by a synthetic generator that
 satisfies them by construction.
 

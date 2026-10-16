@@ -1,4 +1,4 @@
-"""Tests for `uncertainty_at(..., delta=...)`: the Clopper-Pearson / Hoeffding bound on `U`.
+"""Tests for `uncertainty_at(..., delta=...)`: the Clopper-Pearson / EC-lower bound on `U`.
 
 New file only. The Monte Carlo check of the guarantee is in
 `test_confidence_bound_montecarlo.py`; label validation in `test_label_validation.py`.
@@ -42,7 +42,7 @@ def test_coverage_lower_matches_scipy_ppf(n, delta):
     for k in sorted({1, 2, max(1, n // 2), max(1, n - 1), n}):
         if not 1 <= k <= n:
             continue
-        cl, _, _ = _confidence_bound(0.5, k, n, max(k, 1), delta)
+        cl, _, _ = _confidence_bound(0.5, k, n, max(k, 1), 0.0, delta)
         ref = scipy_beta.ppf(delta / 2, k, n - k + 1)
         assert cl == pytest.approx(ref, rel=1e-12, abs=0)
 
@@ -50,31 +50,39 @@ def test_coverage_lower_matches_scipy_ppf(n, delta):
 @pytest.mark.parametrize("n", [1, 7, 100, 10**4])
 @pytest.mark.parametrize("delta", [0.2, 0.05, 0.001])
 def test_coverage_lower_closed_forms(n, delta):
-    assert _confidence_bound(0.5, 0, n, 0, delta)[0] == 0.0
-    cl = _confidence_bound(0.5, n, n, n, delta)[0]
+    assert _confidence_bound(0.5, 0, n, 0, 0.0, delta)[0] == 0.0
+    cl = _confidence_bound(0.5, n, n, n, 0.0, delta)[0]
     assert cl == pytest.approx((delta / 2) ** (1 / n), rel=1e-12)
 
 
-# ----- 2. Hoeffding ----------------------------------------------------------------
+# ----- 2. EC lower bound: min(Hoeffding, empirical Bernstein), each at delta/4 ------
+# The full hand-computed cases (which margin wins, n_succ of 0, 1, 2) are in
+# `test_ec_empirical_bernstein.py`.
 
-def test_ec_lower_hoeffding_hand_computed():
-    # sqrt(ln(2/0.05) / (2*100)) = sqrt(ln 40 / 200) = 0.13581015157406195
-    _, ec_lower, _ = _confidence_bound(0.6, 50, 100, 100, 0.05)
-    assert ec_lower == pytest.approx(0.6 - 0.13581015157406195, rel=1e-14)
-    # delta=0.1, n_succ=50: sqrt(ln 20 / 100) = 0.17308183826022852
-    _, ec_lower, _ = _confidence_bound(0.6, 50, 100, 50, 0.1)
-    assert ec_lower == pytest.approx(0.6 - 0.17308183826022852, rel=1e-14)
+def test_ec_lower_hand_computed_n100_zero_variance():
+    # delta=0.05, n=100, V=0: m_H = sqrt(ln(80)/200), m_EB = 7 ln(160) / (3 * 99).
+    m_h = math.sqrt(math.log(80.0) / 200.0)
+    m_eb = 7.0 * math.log(160.0) / (3.0 * 99.0)
+    assert m_eb < m_h
+    _, ec_lower, _ = _confidence_bound(0.6, 50, 100, 100, 0.0, 0.05)
+    assert ec_lower == pytest.approx(0.6 - m_eb, rel=1e-14)
+    # delta=0.1, n=50, V=0: m_H = sqrt(ln(40)/100) wins over m_EB = 7 ln(80) / (3 * 49).
+    m_h = math.sqrt(math.log(40.0) / 100.0)
+    m_eb = 7.0 * math.log(80.0) / (3.0 * 49.0)
+    assert m_h < m_eb
+    _, ec_lower, _ = _confidence_bound(0.6, 50, 100, 50, 0.0, 0.1)
+    assert ec_lower == pytest.approx(0.6 - m_h, rel=1e-14)
 
 
 def test_ec_lower_clipped_at_zero_and_zero_succ():
-    assert _confidence_bound(0.05, 50, 100, 100, 0.05)[1] == 0.0       # margin 0.136 > EC
-    assert _confidence_bound(0.0, 0, 100, 0, 0.05)[1] == 0.0           # n_succ == 0
+    assert _confidence_bound(0.05, 50, 100, 100, 0.0, 0.05)[1] == 0.0       # margin 0.136 > EC
+    assert _confidence_bound(0.0, 0, 100, 0, 0.0, 0.05)[1] == 0.0           # n_succ == 0
     # Both zero: U_delta is exactly the trivial bound.
-    assert _confidence_bound(0.0, 0, 100, 0, 0.05)[2] == 1.0
+    assert _confidence_bound(0.0, 0, 100, 0, 0.0, 0.05)[2] == 1.0
 
 
 def test_u_delta_is_one_minus_product():
-    cl, el, ud = _confidence_bound(0.7, 80, 100, 80, 0.05)
+    cl, el, ud = _confidence_bound(0.7, 80, 100, 80, 0.0, 0.05)
     assert ud == 1.0 - el * cl
 
 
