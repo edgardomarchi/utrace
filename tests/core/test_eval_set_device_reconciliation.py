@@ -46,14 +46,23 @@ def test_device_resident_eval_arguments_do_not_raise():
     assert np.isfinite(U) and np.isfinite(alpha)
 
 
-def test_eval_result_is_identical_across_device_placements():
+@pytest.mark.parametrize("delta", [None, 0.05])
+def test_eval_result_is_identical_across_device_placements(delta):
     cpu, gpu = jax.devices("cpu")[0], jax.devices("gpu")[0]
     e_smx, e_y = _data(300, 4, 2)
 
     def run(smx_device, y_device):
         uq = _uq(smx_device)
         return uq.uncertainty_at(jax.device_put(jnp.asarray(e_smx), smx_device),
-                                 jax.device_put(jnp.asarray(e_y), y_device), 0.2)
+                                 jax.device_put(jnp.asarray(e_y), y_device), 0.2, delta=delta)
 
-    results = [run(cpu, cpu), run(gpu, gpu), run(gpu, cpu), run(cpu, gpu)]
-    assert all(r == results[0] for r in results), results
+    ref, *others = [run(cpu, cpu), run(gpu, gpu), run(gpu, cpu), run(cpu, gpu)]
+    for placement, r in zip(["gpu,gpu", "gpu,cpu", "cpu,gpu"], others):
+        for name, expected, got in zip(ref._fields, ref, r):
+            if expected is None or isinstance(expected, int):
+                assert got == expected, f"{name} differs for {placement}: {got!r} != {expected!r}"
+            else:
+                # Reductions on different devices may differ by rounding (one ulp of EC on CUDA),
+                # so floating-point fields get a tolerance; integer and None fields stay exact.
+                np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-15,
+                                           err_msg=f"{name} differs for {placement}")
