@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `324 passed, 6 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those six tests run instead (330 tests in all). The six skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
+Expect `548 passed, 6 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those six tests run instead (554 tests in all). The six skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
@@ -233,8 +233,19 @@ and `K` otherwise; `calibrate` also rejects `classes` outside `[0, K)`. There is
 drop ignored samples before the call. (Before this check a label `-1` wrapped to the last class and
 any label `>= K` clamped to it, silently giving a wrong coverage and `EC`.) A softmax whose trailing
 shape differs from the one `calibrate` recorded raises too, on the tuning and evaluation paths and on
-a batched `calibrate`; column checks run before label checks. Labels given as floats are still
-truncated by `astype(int)` without a check.
+a batched `calibrate`; column checks run before the range check.
+
+Before the integer cast, the same entry points (including the evaluation labels of
+`get_uncertainty(..., eval_*)`) check the label dtype. Integer dtypes pass; boolean dtypes pass
+and map to 0/1; floating dtypes pass only if every value is finite and integral (`2.0` is class 2,
+with results identical to `2`); anything else (complex, object, string) raises `ValueError`. A
+float label that is non-integral or non-finite (`0.9`, `-0.5`, `nan`, `inf`) raises `ValueError`
+naming the first offending value, how often it occurs, and the total of invalid labels. (Before,
+`astype(int)` truncated toward zero: `0.9` became class 0, and `-0.5` became 0 and passed the
+range check.) Numpy arrays and lists are checked before conversion to jax; torch and jax inputs
+after it. The dtype check runs where the labels are converted: after the batched shape check in
+`calibrate`, but before the column check on the tuning path and in `uncertainty_at`. An integral
+float outside `[0, K)` passes the dtype check and is reported by the range check.
 
 ## Decisions to respect (do NOT "fix" without confirming)
 

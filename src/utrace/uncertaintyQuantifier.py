@@ -197,6 +197,54 @@ def _confidence_bound(
     return coverage_lower, EC_lower, np.float64(1.0 - EC_lower * coverage_lower)
 
 
+def _check_label_dtype(y: np.ndarray | jax.Array, where: str) -> None:
+    """Raise `ValueError` unless `y` holds labels that cast to integers without loss.
+
+    Integer and boolean dtypes pass. A floating dtype passes only if every value is finite
+    and integral (`2.0`); the error names the first other value and how often it occurs.
+    Any other dtype (complex, object, string) is rejected. `y` is host numpy or a jax
+    array (on any device).
+
+    Without it the integer cast truncates toward zero: `0.9` becomes class 0, and `-0.5`
+    becomes 0 and passes the `[0, K)` check of `_check_labels`.
+    """
+    if jnp.issubdtype(y.dtype, jnp.integer) or jnp.issubdtype(y.dtype, jnp.bool_):
+        return
+    if not jnp.issubdtype(y.dtype, jnp.floating):
+        raise ValueError(
+            f"{where}: labels must have an integer, boolean or floating dtype; got {y.dtype}."
+        )
+    xp = jnp if isinstance(y, jax.Array) else np
+    flat = y.ravel()
+    bad = ~(xp.isfinite(flat) & (flat == xp.trunc(flat)))
+    n_bad = int(bad.sum())
+    if n_bad == 0:
+        return
+    first = np.asarray(flat[int(xp.argmax(bad))])[()]
+    n_first = int((xp.isnan(flat) if np.isnan(first) else flat == first).sum())
+    raise ValueError(
+        f"{where}: floating-point labels must be finite and integral (such as 2.0); "
+        f"got {first!s} ({n_first} occurrence{'s' if n_first != 1 else ''}; "
+        f"{n_bad} invalid label{'s' if n_bad != 1 else ''} in total)."
+    )
+
+
+def _labels_to_jax(y, where: str) -> jax.Array:
+    """`to_jax(y)` with `_check_label_dtype` applied, without casting.
+
+    Host input (numpy, lists) is checked before conversion, because `to_jax` raises
+    `TypeError` on a string or object array; framework tensors (torch, jax) are checked
+    after it, on the converted array.
+    """
+    if isinstance(y, np.ndarray) or not hasattr(y, "__dlpack__"):
+        y = np.asarray(y)
+        _check_label_dtype(y, where)
+        return to_jax(y)
+    y = to_jax(y)
+    _check_label_dtype(y, where)
+    return y
+
+
 def _check_labels(y: np.ndarray | jax.Array, K: int | None, where: str) -> None:
     """Raise `ValueError` if any label of the integer array `y` is outside `[0, K)`.
 
@@ -739,7 +787,8 @@ class UncertaintyQuantifier:
             Predicted class softmax output. Accepts any array type that implements
             DLPack (jax, numpy, torch, tensorflow, ...). Zero-copy when possible.
         y : array-like, shape (n_samples,)
-            Integer class labels.
+            Integer class labels. Boolean labels are read as 0/1; floating labels are
+            accepted only if every value is finite and integral (`2.0`).
         batched : bool, default=False
             If True, append to existing calibration scores instead of replacing.
 
@@ -752,7 +801,10 @@ class UncertaintyQuantifier:
         Raises `ValueError` if a label is outside `[0, K)` with `K` the number of softmax
         columns (labels outside it would otherwise alias silently to the last class), if
         `classes` is not within `[0, K)`, or if `batched` and the trailing shape of `softmax`
-        differs from the one already calibrated.
+        differs from the one already calibrated. Also raises `ValueError`, after the shape
+        check and before the range check, if `y` has a floating dtype with a non-finite or
+        non-integral value (the integer cast would truncate it toward zero) or a dtype that
+        is not integer, boolean or floating.
         """
         softmax = to_jax(softmax)
         item_shape = tuple(softmax.shape[1:])
@@ -762,7 +814,7 @@ class UncertaintyQuantifier:
                 f"softmax has shape {item_shape} per row, but this instance was calibrated "
                 f"with {self._item_shape}; a batched calibration must keep the same shape."
             )
-        y_arr = to_jax(y).astype(self.label_dtype_)
+        y_arr = _labels_to_jax(y, "calibrate").astype(self.label_dtype_)
         K = item_shape[0] if len(item_shape) == 1 else None
         _check_labels(y_arr, K, "calibrate")
         if self.classes is not None:
@@ -980,7 +1032,8 @@ class UncertaintyQuantifier:
             All samples are used; the caller controls the tuning set size by
             choosing how many samples to pass.
         y : array-like, shape (n_tuning,)
-            Integer class labels for the tuning set.
+            Integer class labels for the tuning set; boolean and integral floating
+            labels are accepted, see `calibrate`.
         max_iters : int, default=30
             Maximum iterations for the binary search over alpha.
         eval_softmax : array-like, shape (n_eval, n_classes), optional
@@ -989,7 +1042,7 @@ class UncertaintyQuantifier:
             (giving only one raises `ValueError`). Its size is independent of
             `max_batch_size`.
         eval_y : array-like, shape (n_eval,), optional
-            Integer class labels of the evaluation set.
+            Integer class labels of the evaluation set, under the same dtype rule as `y`.
 
         Returns
         -------
@@ -1049,8 +1102,9 @@ class UncertaintyQuantifier:
         # array protocol, with an implicit device-to-host copy. This mirrors calibrate's
         # own to_jax(y) call; it does not change _get_uncertainty_jit_impl, which still
         # receives, and still rebuilds, plain host numpy arrays exactly as before.
+        # _labels_to_jax is to_jax plus the label dtype check, which must precede the cast.
         softmax = np.asarray(to_jax(softmax))
-        y_arr = np.asarray(to_jax(y)).flatten().astype(int)
+        y_arr = np.asarray(_labels_to_jax(y, "get_uncertainty/tune_alpha")).flatten().astype(int)
         # Host-side validation, outside _get_uncertainty_jit_impl: columns first, then labels.
         self._check_item_shape(softmax)
         _check_labels(y_arr, self._label_range(), "get_uncertainty/tune_alpha")
@@ -1202,15 +1256,18 @@ class UncertaintyQuantifier:
 
         Raises `ValueError` if the columns of `softmax` differ from those `calibrate` saw
         (when known), or if a label is outside `[0, K)` (`K` the number of columns); the
-        column check runs first. `get_uncertainty` raises the same on its tuning set and,
-        through `uncertainty_at`, on its evaluation set.
+        column check runs first. Before either, it raises `ValueError` if `y` has a
+        floating dtype with a non-finite or non-integral value, or a dtype that is not
+        integer, boolean or floating. `get_uncertainty` raises the same on its tuning set
+        and, through `uncertainty_at`, on its evaluation set.
 
         Parameters
         ----------
         softmax : array-like, shape (n_tuning, n_classes)
             Softmax output for the tuning set. Any DLPack-compatible array.
         y : array-like, shape (n_tuning,)
-            Integer class labels for the tuning set.
+            Integer class labels for the tuning set; boolean and integral floating
+            labels are accepted, see `calibrate`.
         max_iters : int, default=30
             Maximum iterations for the binary search over alpha.
 
@@ -1261,7 +1318,8 @@ class UncertaintyQuantifier:
         softmax : array-like, shape (n_eval, n_classes)
             Softmax output for the evaluation set. Any DLPack-compatible array.
         y : array-like, shape (n_eval,)
-            Integer class labels for the evaluation set. Samples of `self.classes`
+            Integer class labels for the evaluation set (boolean and integral floating
+            labels are accepted, see `calibrate`). Samples of `self.classes`
             are selected from THESE labels, not from any tuning-set mask.
         alpha : float
             Must lie in `[1/(N+1), 1]` for the `N` calibration scores held. `nan`
@@ -1282,7 +1340,9 @@ class UncertaintyQuantifier:
         Raises
         ------
         ValueError
-            If `delta` is not `None` or a real number in `(0, 1)`, the instance is not
+            If `delta` is not `None` or a real number in `(0, 1)`, `y` has a floating dtype
+            with a non-finite or non-integral value or a dtype that is not integer, boolean
+            or floating (checked before the remaining conditions), the instance is not
             calibrated, the row counts of `softmax` and `y` differ, the columns of `softmax`
             differ from those seen by `calibrate` (checked before the labels), a label is
             outside `[0, K)` (`K` the number of columns), or `alpha` is outside
@@ -1303,7 +1363,7 @@ class UncertaintyQuantifier:
         # on both, then np.asarray, so a device-resident tensor never reaches numpy
         # directly and no committed-device mismatch reaches the jit.
         smx = np.asarray(to_jax(softmax))
-        y_arr = np.asarray(to_jax(y)).flatten().astype(int)
+        y_arr = np.asarray(_labels_to_jax(y, "uncertainty_at")).flatten().astype(int)
 
         N = self._state.N
         if N == 0:

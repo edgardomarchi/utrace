@@ -44,6 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `get_uncertainty`/`tune_alpha` and `uncertainty_at`. They used to alias silently to the last class
   (`-1` wraps, anything `>= K` clamps), giving a wrong coverage and `EC`. `calibrate` also rejects
   `classes` outside `[0, K)`. There is no `ignore_index`.
+- Labels with a floating dtype must now be finite and integral in `calibrate`,
+  `get_uncertainty`/`tune_alpha` (tuning and evaluation labels) and `uncertainty_at`; `0.9`,
+  `-0.5`, `nan` or `inf` raise `ValueError` naming the first offending value and its count. They
+  used to be truncated toward zero by the integer cast (`0.9` became class 0, `-0.5` became 0 and
+  passed the range check). Integral floats such as `2.0` give exactly the same results as `2`.
+  Boolean labels are accepted as 0/1; complex, object and string labels raise `ValueError` (string
+  and object arrays used to raise `TypeError` from the jax conversion).
 - The tuning path now checks the softmax trailing shape against the one `calibrate` recorded, and a
   batched `calibrate` with a different trailing shape raises `ValueError`.
 - `get_uncertainty` called without an evaluation set now emits a `TuningDataReuseWarning` on every
