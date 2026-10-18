@@ -85,8 +85,10 @@ Out of scope for the current script-migration work. Recorded here so the context
 
   **Also covers the evaluation-set arguments.** `uncertainty_at` (and so `get_uncertainty` with
   `eval_softmax`/`eval_y`) repeats the same `np.asarray(to_jax(...))` host copy on both of its
-  arguments and rebuilds its padded arrays with `jnp.asarray` on the default device, which is what
-  keeps it free of committed-device mismatches today. Making the tuning path zero-copy means making
+  arguments and rebuilds its padded arrays with `jnp.asarray`. Those arrays are uncommitted, which
+  is what keeps it free of committed-device mismatches today: the jitted computation then runs on
+  the device of the committed calibration buffer (see MIGRATION.md, E1), not on the default
+  device. Making the tuning path zero-copy means making
   that path zero-copy too, under the same `calibrate`-style `devices()` reconciliation. Its GPU-only
   test is `tests/core/test_eval_set_device_reconciliation.py`.
 
