@@ -97,6 +97,22 @@ the 10 000 `t10k` images the first time (a few minutes on CPU; cached in `notebo
 caches the pool's softmax per noise level. It is NOT run in CI: it needs data and trains a model. (`jupytext
 --execute` is not used because it also requires `nbconvert`, which the group does not carry.)
 
+`notebooks/periodic_verification_demo.py` is a user-facing demonstration: commission once on clean data,
+then verify periodically with the frozen quantifier while the input degrades (contrast loss, with AWGN as
+a reference), including label-free early-warning rules. On CPU, from the repository root:
+
+```bash
+UTRACE_NB_QUICK=1 uv run --extra=viz --group notebooks python -c "import os, jupytext, nbclient; nb = jupytext.read('notebooks/periodic_verification_demo.py'); nbclient.NotebookClient(nb, timeout=-1, resources={'metadata': {'path': '.'}}).execute(); jupytext.write(nb, 'notebooks/_build/periodic_verification_demo_' + ('full' if os.environ.get('UTRACE_NB_QUICK', '1') == '0' else 'quick') + '.ipynb')"
+```
+
+The same `UTRACE_NB_QUICK` switch applies (quick: 3 repetitions; full: 20). Outputs carry the mode: the
+executed notebook `notebooks/_build/periodic_verification_demo_<quick|full>.ipynb`, the results
+`periodic_verification_results_<mode>.json` and the slide figures (PNG at 200 dpi and PDF) in
+`figures/periodic_verification_<mode>/`. It shares the model checkpoint with the notebook above
+(training it the first time if absent) and caches the pool's softmax per degradation level in
+`notebooks/_build/cache/` (about 3 minutes on CPU the first time; both modes then reuse it). Run it with
+`JAX_PLATFORMS=cpu` for bitwise-reproducible results.
+
 ## Linting
 
 ```bash
