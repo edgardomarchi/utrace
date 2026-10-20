@@ -39,6 +39,11 @@
 # | binomial bound | Clopper-Pearson upper bound (`1 - delta`) on `err_eval` | yes | upper confidence bound on the error probability |
 # | `U_inf` | `1 - mean(1{C non-empty} / size(C))` | no | population value is a lower bound on `U*` |
 # | `U_inf_lower` | `1 - (mean + min(Hoeffding, emp. Bernstein))` | no | lower confidence bound on `U_inf`, hence on `U*` |
+# | hesitant success | `C` empty, top-1 answer correct | yes | correct answers the frozen threshold rejects |
+# | flagged error | `C` empty, top-1 answer wrong | yes | errors the set marks as doubtful |
+# | confident error | `C` non-empty, `y` not in `C` (so the top-1 answer is wrong) | yes | errors made with a confident set |
+# | AUROC | `P(m_correct > m_wrong) + P(tie) / 2`, `m` the max-softmax | yes | resolution: how well confidence ranks correct above wrong |
+# | top-label ECE | `sum_b (n_b / n) abs(acc_b - conf_b)`, 15 equal-mass bins | yes | calibration of the top-label confidence (binned estimate) |
 
 # %% [markdown]
 # ## Parameters
@@ -428,7 +433,67 @@ def decompose(r, S: np.ndarray, smx: np.ndarray, y: np.ndarray) -> dict:
     ec_term = float(r.coverage_lower * (r.EC - r.EC_lower))
     assert abs((r.U_empirical - err) - (empty_correct + multi)) < 1e-12, (float(r.U_empirical - err), empty_correct + multi)
     assert abs((r.U_delta - r.U_empirical) - (cov_term + ec_term)) < 1e-12, (float(r.U_delta - r.U_empirical), cov_term + ec_term)
-    return {"dec_empty_correct": empty_correct, "dec_multi": multi, "dec_coverage": cov_term, "dec_EC": ec_term}
+    return {"dec_empty_correct": empty_correct, "dec_multi": multi, "dec_coverage": cov_term, "dec_EC": ec_term,
+            "res_structural": float((r.U_empirical - err) - (empty_correct + multi)),
+            "res_statistical": float((r.U_delta - r.U_empirical) - (cov_term + ec_term))}
+
+
+def auroc(m_correct: np.ndarray, m_wrong: np.ndarray) -> float:
+    """P(m_correct > m_wrong) + P(tie) / 2, from the Mann-Whitney statistic (midranks, so a tie counts 1/2)."""
+    if len(m_correct) == 0 or len(m_wrong) == 0:
+        return float("nan")
+    return float(mannwhitneyu(m_correct, m_wrong, alternative="two-sided").statistic / (len(m_correct) * len(m_wrong)))
+
+
+N_BINS = 15
+
+
+def equal_mass_bins(conf: np.ndarray) -> np.ndarray:
+    """Bin index per sample: edges at the 1/15, ..., 14/15 quantiles of `conf`. Tied values are never split
+    across bins: coinciding edges merge, so with many ties (70 % of clean max-softmax is exactly 1.0) fewer
+    than 15 non-empty bins remain."""
+    inner = np.unique(np.quantile(conf, np.arange(1, N_BINS) / N_BINS))
+    return np.searchsorted(inner, conf, side="left")          # bin b holds (inner[b-1], inner[b]]
+
+
+def top_label_ece(conf: np.ndarray, correct: np.ndarray) -> tuple[float, int]:
+    """Top-label ECE, sum_b (n_b / n) |acc_b - conf_b| over the equal-mass bins, and the number of non-empty bins."""
+    b = equal_mass_bins(conf)
+    ece = 0.0
+    for k in np.unique(b):
+        m = b == k
+        ece += m.mean() * abs(correct[m].mean() - conf[m].mean())
+    return float(ece), len(np.unique(b))
+
+
+def outcomes(r, S: np.ndarray, smx: np.ndarray, y: np.ndarray) -> dict:
+    """Section 9: every evaluation image in exactly one outcome; resolution and calibration of max-softmax."""
+    n = len(y)
+    sz = S.sum(1)
+    covered = S[np.arange(n), y]
+    correct = smx.argmax(1) == y
+    empty = sz == 0
+    kinds = {"cov_correct": covered & correct, "cov_wrong": covered & ~correct, "hesitant": empty & correct,
+             "flagged": empty & ~correct, "confident_err": ~empty & ~covered}
+    assert sum(int(v.sum()) for v in kinds.values()) == n and not np.any(sum(v.astype(int) for v in kinds.values()) != 1)
+    assert not np.any(kinds["confident_err"] & correct), "LAC: a non-empty set always holds the argmax"
+    assert not np.any(kinds["cov_wrong"] & (sz < 2)), "a covered singleton is correct"
+    frac = {f"out_{k}": float(v.mean()) for k, v in kinds.items()}
+    n_err = int((~correct).sum())
+    share = {f"share_{k}": (float(kinds[k].sum() / n_err) if n_err else float("nan"))
+             for k in ("confident_err", "flagged", "cov_wrong")}
+    # what labels add over the label-free bound, on this same set: U_empirical - U_inf = mean(1{C non-empty, y not in C} / |C|)
+    z, _ = u_inf_parts(S)
+    u_inf_eval = float(1 - z.mean())
+    missed_weight = float(np.where(kinds["confident_err"], 1.0 / np.maximum(sz, 1), 0.0).mean())
+    res_labels = float((r.U_empirical - u_inf_eval) - missed_weight)
+    assert abs(res_labels) < 1e-12, res_labels
+    m = smx.max(1)
+    ece, nb = top_label_ece(m, correct)
+    return {**frac, **share, "U_inf_eval": u_inf_eval, "U_emp_minus_U_inf": missed_weight, "res_labels": res_labels,
+            "auroc": auroc(m[correct], m[~correct]), "ece": ece, "ece_bins": nb,
+            "maxsm_tie1_correct": float((m[correct] == 1.0).mean()) if correct.any() else float("nan"),
+            "maxsm_tie1_wrong": float((m[~correct] == 1.0).mean()) if (~correct).any() else float("nan")}
 
 
 def verify(c: dict, name: str, deg_id: int, li: int, level: float) -> dict:
@@ -451,13 +516,14 @@ def verify(c: dict, name: str, deg_id: int, li: int, level: float) -> dict:
            "p_L1b": float(fisher_exact([[int(r.n_covered), int(r.n_valid - r.n_covered)],
                                         [int(c["eval"]["n_covered"]), int(c["eval"]["n_valid"] - c["eval"]["n_covered"])]],
                                        alternative="less").pvalue),
-           **dec, "label_free": lf,
+           **dec, **outcomes(r, S, smx[ev], Y[ev]), "label_free": lf,
            "p_A1": float(fisher_exact([[lf["n_empty"], lf["n"] - lf["n_empty"]],
                                        [lf0["n_empty"], lf0["n"] - lf0["n_empty"]]], alternative="greater").pvalue),
            "p_A3": float(mannwhitneyu(maxsm, c["_maxsm"], alternative="less").pvalue)}
     rec["alarm"] = {"A1": rec["p_A1"] < 0.05, "A2": lf["U_inf_lower"] > c["eval"]["U_delta"], "A3": rec["p_A3"] < 0.05,
                     "L1": rec["p_drift"] < 0.05, "L1b": rec["p_L1b"] < 0.05, "L2": rec["binom_upper"] > c["binom_upper"],
                     "L2_formal": rec["binom_lower"] > c["binom_upper"]}
+    assert rec["out_hesitant"] == rec["dec_empty_correct"]           # the same count, seen from the two sections
     return rec
 
 
@@ -492,8 +558,10 @@ table(F, LEVELS, {"U_E": ("U_E", None), "err_eval": ("err_eval", None), "binomia
                   "U": ("U", None), "U_empirical": ("U_empirical", None), "U_delta": ("U_delta", None)}).round(4)
 
 # %% [markdown]
-# Means over the `L` repetitions. Next, the figure: the slide version of this table, with bands.
-# The recalibrated `U_delta` (thin dashed) is computed in section 7.
+# Means over the `L` repetitions. `U` uses the nominal coverage `1 - alpha0`, not the measured one, so
+# it stays at about `alpha0` at every level (column `U`) and is not drawn in the figures. Next, the
+# figure: the slide version of this table, with bands. The recalibrated `U_delta` (thin dotted) is
+# computed in section 7.
 
 # %%
 def recalibrated(c: dict, name: str, deg_id: int, li: int, level: float) -> dict:
@@ -566,7 +634,33 @@ frozen_figure(F, RECAL[DEGRADATION], LEVELS, CONTRAST_X, True, "frozen_verificat
 # images. Lines are means over repetitions, thin outlines the 5th-95th percentiles. Yellow: the
 # structural part, between `U_E` and `U_empirical`. Orange: the statistical margin, between
 # `U_empirical` and `U_delta`. The thin dotted line is `U_delta` when the quantifier is recalibrated at
-# each level (section 7).
+# each level (section 7). On this absolute scale both bands are narrow; the next figure shows the same
+# lines as excess over `U_E`.
+
+# %%
+fig, axs = plt.subplots(1, 2, sharey=True)
+for ax, (name, levels, xlabel, invert) in zip(axs, ((DEGRADATION, LEVELS, "contrast factor $c$", True),
+                                                    ("awgn", AWGN_LEVELS, r"noise std $\sigma$", False)), strict=True):
+    ue = col(FROZEN[name], "U_E")
+    for k, label, c_, ls, mk in (("U_empirical", r"$U_{empirical} - U_E$", COL["U_emp"], "-", "o"),
+                                 ("U_delta", r"$U_\delta - U_E$, frozen instrument", COL["U_delta"], "-", "D"),
+                                 ("binom_upper", r"binomial bound $- U_E$", COL["binom"], "--", "^")):
+        line_band(ax, levels, col(FROZEN[name], k) - ue, label if ax is axs[0] else None, c_, ls=ls, marker=mk)
+    ax.axhline(0, color=COL["ref"], lw=1.5)
+    ax.set_xlabel(xlabel)
+    if invert:
+        ax.invert_xaxis()
+axs[0].set_ylabel(r"excess over the actual error $U_E$")
+axs[0].legend(loc="upper left", frameon=False)
+fig.tight_layout()
+save(fig, "frozen_excess")
+
+# %% [markdown]
+# **Figure `frozen_excess`.** Left: contrast loss; right: AWGN; same vertical scale. The excess over
+# the actual error `U_E` of the point estimate `U_empirical`, the frozen `U_delta` and the binomial
+# bound: mean over repetitions, shaded 5th-95th percentiles. Below the grey zero line a quantity
+# underestimates the error. `U_empirical - U_E` is the structural part (plus sampling noise), and the
+# distance from it up to `U_delta - U_E` is the statistical margin.
 
 # %% [markdown]
 # ## 3b. Where `U_delta`'s excess over the error comes from
@@ -646,34 +740,11 @@ print("\nawgn"); print(DECOMP["awgn"].round(4).to_string())
 # `U_empirical - err_eval` only by the sampling error of `err_eval` against the validation error.
 
 # %% [markdown]
-# ## 4. Why `U` and `U_delta` separate
+# ## 4. Coverage under drift
 #
-# `U = 1 - EC (1 - alpha0)` takes the coverage for granted: it plugs in the **nominal** value
-# `1 - alpha0` that the calibration promised. When the input degrades, the promise no longer holds,
-# but `U` cannot know. `U_delta` instead **measures** the coverage on the evaluation set (and takes a
-# conservative bound on it). So when coverage falls, `U_delta` follows and `U` does not.
-#
-# With this model almost every non-empty set holds one label (multi-label sets are at most a few per
-# thousand, and absent in some repetitions), so `EC` is 1 or within a few thousandths of it and
-# `U` stays at about `alpha0` at every level: flat.
-
-# %%
-fig, ax = plt.subplots()
-for a, label, c_, mk in ((col(F, "U_E"), r"$U_E$: actual error rate (validation)", COL["U_E"], "s"),
-                         (col(F, "U_empirical"), r"$U_{empirical}$ (measured coverage)", COL["U_emp"], "o"),
-                         (col(F, "U"), r"$U$ (nominal coverage $1-\alpha_0$)", COL["U"], "D")):
-    ax.plot(LEVELS, a.mean(0), "-", color=c_, marker=mk, label=label)
-    thin_band(ax, LEVELS, a, c_)
-ax.set_xlabel(CONTRAST_X); ax.set_ylabel("error probability or its estimate")
-ax.set_ylim(0, None); ax.invert_xaxis(); ax.legend(loc="upper left", frameon=False)
-fig.tight_layout()
-save(fig, "nominal_U_blind")
-
-# %% [markdown]
-# **Figure `nominal_U_blind`.** What a user would see without re-measuring coverage: `U`, computed with
-# the nominal coverage `1 - alpha0`, stays flat while the actual error `U_E` rises more than twenty-fold.
-# `U_empirical`, the same formula with the coverage measured on the evaluation set, follows the error.
-# Mean lines, with the 5th-95th percentiles as thin outlines.
+# `U_delta` **measures** the coverage on the evaluation set (and takes a conservative bound on it),
+# where `U` plugs in the nominal `1 - alpha0` the calibration promised. When the input degrades, the
+# promise no longer holds: the measured coverage falls, and the sets change.
 
 # %%
 cov, cov_lo = col(F, "coverage"), col(F, "coverage_lower")
@@ -833,6 +904,10 @@ lf_tab = table(F, LEVELS, {"empty (unlab.)": ("empty", "label_free"), "multi (un
 print("commissioning U_delta (A2 threshold), mean over repetitions:", round(np.mean([c["eval"]["U_delta"] for c in COMM]), 4))
 lf_tab.round(4)
 
+# %% [markdown]
+# Alarm rates by rule. The literal L2 is kept here for completeness only: comparing two noisy upper
+# bounds, it fires about half the time on clean data, so it is not drawn in `alarm_rates`.
+
 # %%
 pd.DataFrame({RULES[k]: {"false alarm (level 0)": v["false_alarm"], "its 95% upper limit": v["false_alarm_upper95"],
                          "first level >= 50%": v["first_50"], "first level >= 90%": v["first_90"],
@@ -860,7 +935,7 @@ save(fig, "label_free")
 # %%
 ALARM_STYLE = {"A1": (COL["empty"], "-", "s"), "A2": (COL["U_inf"], "-", "o"), "A3": (COL["maxsm"], "-", "v"),
                "L1": (COL["U_delta"], "--", "D"), "L1b": (COL["U_delta"], ":", "P"),
-               "L2": (COL["binom"], "--", "^"), "L2_formal": (COL["binom"], ":", "x")}
+               "L2_formal": (COL["binom"], ":", "x")}   # the literal L2 is in the tables only: ~50 % on clean data by construction
 
 
 def alarm_figure(alarms, levels, xlabel, invert, name):
@@ -883,7 +958,8 @@ alarm_figure(ALARMS[DEGRADATION], LEVELS, "contrast factor $c$  (1 = commissioni
 # **Figure `alarm_rates`.** Fraction of repetitions in which each rule raises an alarm, by level.
 # Solid lines: label-free rules (A1, A2, A3) on the unlabelled batch; dashed and dotted: the labelled
 # references. At `c = 1` (fresh clean data) every alarm is a false alarm; the dash-dotted line marks
-# 5 %. With `L` repetitions a rate is resolved only to `1/L`.
+# 5 %. With `L` repetitions a rate is resolved only to `1/L`. The literal L2 is left out of the figure,
+# because it fires about half the time on clean data by construction; it stays in the table above.
 
 # %% [markdown]
 # ## 7. For comparison: recalibrating at every level
@@ -929,6 +1005,190 @@ pd.DataFrame({RULES[k]: {"false alarm (level 0)": v["false_alarm"], "first level
               for k, v in ALARMS["awgn"].items()}).T.round(3)
 
 # %% [markdown]
+# ## 9. Confident errors
+#
+# Section 3b showed what `U_delta` sees: under contrast loss correct answers fall into empty sets,
+# while under AWGN the structural part stays near zero. This section looks at the other side: the
+# errors, and whether the model's confidence tells them apart. Everything is at the frozen `alpha0`, on
+# each level's labelled evaluation set, per repetition.
+#
+# Every evaluation image falls into exactly one outcome:
+#
+# - **covered** (`y` in `C`), with the top-1 answer correct or wrong. Wrong is possible only when
+#   `|C| >= 2`, because a covered singleton is the true class;
+# - **hesitant success**: empty set, top-1 answer correct (the "empty & correct" layer of section 3b);
+# - **flagged error**: empty set, top-1 answer wrong. The set marks the answer as doubtful;
+# - **confident error**: non-empty set that excludes `y`. With LAC the top-1 class is in every non-empty
+#   set, so the top-1 answer is wrong. Nothing in the set signals it.
+#
+# `outcomes` (section 3) asserts that the outcomes partition the set, that every confident error has a
+# wrong top-1 answer, and one more identity, to `1e-12`. With `U_inf` computed on the evaluation set
+# itself, ignoring the labels,
+#
+# ```
+# U_empirical - U_inf = mean( 1{C non-empty, y not in C} / |C| )
+# ```
+#
+# which is exactly what the label-free bound misses: the confident errors, weighted by `1/|C|`.
+#
+# Two standard diagnostics of the max-softmax confidence sit next to it. **Calibration** asks whether a
+# confidence of 0.9 means 90 % correct; **resolution** asks whether correct and wrong answers get
+# different confidences. Post-hoc recalibration can fix calibration on a fixed distribution, but it
+# cannot create resolution the scores do not carry. (That is background, not something this notebook
+# tests.)
+#
+# - **Resolution: AUROC** of max-softmax for separating correct from wrong answers, from the
+#   Mann-Whitney statistic: `P(m_correct > m_wrong) + P(tie) / 2`. Ties matter here: about 70 % of clean
+#   max-softmax values are exactly 1.0 in float32, and each tied correct-wrong pair counts one half
+#   (midranks), as it would for a classifier that guesses between them. 0.5 is no resolution, 1 perfect.
+# - **Calibration: top-label ECE** (top-label in the sense of Gupta and Ramdas, *Top-label calibration
+#   and multiclass-to-binary reductions*, ICLR 2022): the binned gap between the top-label confidence and
+#   the accuracy, `sum_b (n_b / n) |acc_b - conf_b|`, with 15 equal-mass bins (edges at the 1/15
+#   quantiles). Tied confidences are never split across bins, so on clean data, where most values are
+#   exactly 1.0, coinciding edges merge and fewer bins remain. This is the usual binned estimator, a
+#   descriptive diagnostic with a known bias, not a distribution-free guarantee.
+
+# %%
+# hand checks of the AUROC tie convention and of the binning
+assert auroc(np.array([1.0, 1.0, 0.9]), np.array([1.0, 0.5])) == (0.5 + 1 + 0.5 + 1 + 0 + 1) / 6
+assert top_label_ece(np.array([1.0] * 10 + [0.6] * 5), np.array([True] * 9 + [False] + [True] * 3 + [False] * 2))[1] == 2
+# and against a direct count of all correct-wrong pairs, on repetition 0 at every level
+for name, levels, deg_id in ((DEGRADATION, LEVELS, 0), ("awgn", AWGN_LEVELS, 1)):
+    for li, lv in enumerate(levels):
+        ev, _, _ = level_split(COMM[0]["_split"][4], 0, deg_id, li)
+        m, ok = SMX[(name, lv)][ev].max(1), SMX[(name, lv)][ev].argmax(1) == Y[ev]
+        d = m[ok][:, None] - m[~ok][None, :]
+        assert abs(((d > 0).sum() + 0.5 * (d == 0).sum()) / d.size - FROZEN[name][0][li]["auroc"]) < 1e-12
+print("AUROC and binning checks passed")
+
+OUTCOME_COLS = {"covered, correct": "out_cov_correct", "covered, wrong": "out_cov_wrong", "hesitant success": "out_hesitant",
+                "flagged error": "out_flagged", "confident error": "out_confident_err"}
+ERROR_TYPES = {"share_confident_err": ("confident (non-empty set without the true class)", COL["single"]),
+               "share_flagged": ("flagged (empty set)", COL["empty"]),
+               "share_cov_wrong": ("covered but wrong (multi-label set)", COL["multi"])}
+
+
+def confident_table(recs, levels):
+    out = {"level": levels, "U_E": col(recs, "U_E").mean(0), "err_eval": col(recs, "err_eval").mean(0)}
+    out |= {label: col(recs, k).mean(0) for label, k in OUTCOME_COLS.items()}
+    out |= {f"share {k[6:]}": np.nanmean(col(recs, k), 0) for k in ERROR_TYPES}
+    out |= {"U_inf (eval)": col(recs, "U_inf_eval").mean(0), "U_empirical - U_inf": col(recs, "U_emp_minus_U_inf").mean(0),
+            "AUROC": col(recs, "auroc").mean(0), "ECE": col(recs, "ece").mean(0), "ECE bins": col(recs, "ece_bins").mean(0)}
+    return pd.DataFrame(out).set_index("level")
+
+
+CONFIDENT = {name: confident_table(FROZEN[name], lv) for name, lv in ((DEGRADATION, LEVELS), ("awgn", AWGN_LEVELS))}
+print(DEGRADATION); print(CONFIDENT[DEGRADATION].round(4).to_string())
+print("\nawgn"); print(CONFIDENT["awgn"].round(4).to_string())
+print("\nmax |residual| over all repetitions and levels: structural",
+      max(np.abs(col(FROZEN[n], "res_structural")).max() for n in FROZEN), "statistical",
+      max(np.abs(col(FROZEN[n], "res_statistical")).max() for n in FROZEN), "labels",
+      max(np.abs(col(FROZEN[n], "res_labels")).max() for n in FROZEN))
+
+# %%
+fig, axs = plt.subplots(1, 2, sharey=True)
+for ax, (name, levels, xlabel, invert) in zip(axs, ((DEGRADATION, LEVELS, "contrast factor $c$", True),
+                                                    ("awgn", AWGN_LEVELS, r"noise std $\sigma$", False)), strict=True):
+    shares = [np.nanmean(col(FROZEN[name], k), 0) for k in ERROR_TYPES]
+    ax.stackplot(levels, *shares, colors=[c_ for _, c_ in ERROR_TYPES.values()], edgecolor="white", lw=2,
+                 labels=[label for label, _ in ERROR_TYPES.values()] if ax is axs[0] else ())
+    ax.set_xlabel(xlabel); ax.set_xlim(min(levels), max(levels)); ax.grid(axis="x", visible=False)
+    if invert:
+        ax.invert_xaxis()
+axs[0].set_ylim(0, 1); axs[0].set_ylabel("share of the top-1 errors (mean over repetitions)")
+axs[0].legend(loc="lower left", frameon=True, facecolor="white", edgecolor="none", framealpha=0.92)
+fig.tight_layout()
+save(fig, "error_types")
+
+# %% [markdown]
+# **Figure `error_types`.** Left: contrast loss; right: AWGN. Each top-1 error on the labelled
+# evaluation set is a confident error (non-empty set without the true class), a flagged error (empty
+# set) or covered but wrong (true class in a multi-label set); the shares are means over repetitions
+# and sum to one. Under AWGN almost every error comes with a confident set (in the full run, 95 % to
+# 99 % at every noise level). Under contrast loss more and more errors are flagged by an empty set: the
+# confident share falls from 97 % on clean data to about half at the strongest levels. Covered-but-wrong
+# errors stay below 1 %, because multi-label sets are rare.
+
+# %%
+SEVERITY_X = r"actual error rate $U_E$ (mean at each level)"
+fig, axs = plt.subplots(1, 2)
+for name, levels, label, mk in ((DEGRADATION, LEVELS, "contrast loss", "o"), ("awgn", AWGN_LEVELS, "AWGN", "s")):
+    x = col(FROZEN[name], "U_E").mean(0)
+    c_ = COL["U"] if name == DEGRADATION else COL["U_delta"]
+    line_band(axs[0], x, col(FROZEN[name], "auroc"), label, c_, marker=mk)
+    line_band(axs[1], x, col(FROZEN[name], "ece"), label, c_, marker=mk)
+axs[0].axhline(0.5, color=COL["ref"], lw=1.5, ls="-.", label="no resolution (0.5)")
+axs[0].set_ylabel("AUROC of max-softmax, correct vs wrong"); axs[1].set_ylabel("top-label ECE (15 equal-mass bins)")
+axs[1].set_ylim(0, None)
+for ax in axs:
+    ax.set_xlabel(SEVERITY_X)
+axs[0].set_ylim(0.45, 1.0)
+axs[0].legend(loc="upper right", frameon=False)
+fig.tight_layout()
+save(fig, "resolution_calibration")
+
+# %% [markdown]
+# **Figure `resolution_calibration`.** Left: resolution, the AUROC of max-softmax for telling correct
+# from wrong top-1 answers (ties count one half); right: calibration, the top-label ECE. Both on each
+# level's labelled evaluation set at the frozen `alpha0`. The two degradations have different level
+# scales, so the horizontal axis is the actual error `U_E` at each level, a common measure of severity.
+# Mean over repetitions, shaded 5th-95th percentiles.
+
+# %%
+RELIABILITY_TARGETS = (0.03, 0.15, 0.45)
+
+
+def pooled_eval(name, deg_id, li, lv):
+    """Max-softmax and correctness on the evaluation sets of all repetitions at one level (images may recur)."""
+    ev = np.concatenate([level_split(c["_split"][4], c["rep"], deg_id, li)[0] for c in COMM])
+    s = SMX[(name, lv)][ev]
+    return s.max(1), s.argmax(1) == Y[ev]
+
+
+RELIABILITY_LEVELS = {}
+fig = plt.figure(figsize=(12.8, 7.2))
+gs = fig.add_gridspec(4, 3, height_ratios=[3, 1, 3, 1], hspace=0.15, wspace=0.12)
+for row, (name, levels, deg_id, sym) in enumerate(((DEGRADATION, LEVELS, 0, "c"), ("awgn", AWGN_LEVELS, 1, r"\sigma"))):
+    ue = col(FROZEN[name], "U_E").mean(0)
+    # first column: the clean level itself (its U_E, 0.028, is the 0.03 target; the nearest-U_E rule would pick the
+    # first degraded level instead, at 0.029); then the levels whose mean U_E is closest to 0.15 and 0.45
+    picks = [0, *(int(np.argmin(np.abs(ue - t))) for t in RELIABILITY_TARGETS[1:])]
+    RELIABILITY_LEVELS[name] = [{"level": levels[j], "U_E": float(ue[j])} for j in picks]
+    for ci, j in enumerate(picks):
+        m, ok = pooled_eval(name, deg_id, j, levels[j])
+        b = equal_mass_bins(m)
+        ks = np.unique(b)
+        conf = np.array([m[b == k].mean() for k in ks]); acc = np.array([ok[b == k].mean() for k in ks])
+        cnt = np.array([(b == k).sum() for k in ks])
+        ax = fig.add_subplot(gs[2 * row, ci]); axc = fig.add_subplot(gs[2 * row + 1, ci], sharex=ax)
+        ax.plot([0, 1], [0, 1], color=COL["ref"], lw=1.5, ls="-.")
+        ax.plot(conf, acc, "-o", color=COL["U"], ms=7, lw=2)
+        ax.set_xlim(0, 1.02); ax.set_ylim(0, 1.02); ax.set_aspect("auto")
+        ax.text(0.03, 0.97, f"${sym}$ = {levels[j]:g}, $U_E$ = {ue[j]:.2f}\n{len(ks)} bins", transform=ax.transAxes,
+                va="top", fontsize=14)
+        axc.bar(conf, cnt, width=0.02, color=COL["U"])
+        axc.set_yscale("log"); axc.set_ylim(1, len(m) * 1.5)
+        ax.tick_params(labelbottom=False)
+        if ci:
+            ax.tick_params(labelleft=False); axc.tick_params(labelleft=False)
+        else:
+            ax.set_ylabel("accuracy", fontsize=15); axc.set_ylabel("count", fontsize=14)
+        if row == 0:
+            axc.tick_params(labelbottom=False)
+fig.supxlabel("top-label confidence (max-softmax)", fontsize=18, y=0.02)
+save(fig, "reliability")
+print("reliability levels (clean, then closest mean U_E to", RELIABILITY_TARGETS[1:], "):", RELIABILITY_LEVELS)
+
+# %% [markdown]
+# **Figure `reliability`.** Top row: contrast loss; bottom row: AWGN. Columns: clean data (`U_E` about
+# 0.03), then the levels whose mean `U_E` is closest to 0.15 and 0.45 (printed above, and in each panel). Each panel is a
+# reliability diagram of the top-label confidence against the accuracy, with the same equal-mass bins
+# as the ECE, on the labelled evaluation sets of all repetitions pooled (an image can recur across
+# repetitions). Points on the dash-dotted diagonal are calibrated; below it, over-confident. The strip
+# under each panel gives the number of images per bin (log scale): where ties merge bins, one bin can
+# hold most of the images.
+
+# %% [markdown]
 # ## Persist the results
 #
 # `periodic_verification_results_<mode>.json` holds every number and the provenance. Timestamps, run
@@ -954,7 +1214,9 @@ def summarise(recs, recal, levels):
             "eval_empty": ("eval_empty", None), "eval_multi": ("eval_multi", None),
             "unl_empty": ("empty", "label_free"), "unl_multi": ("multi", "label_free"), "U_inf": ("U_inf", "label_free"),
             "U_inf_lower": ("U_inf_lower", "label_free"), "maxsm_mean": ("maxsm_mean", "label_free"),
-            "err_eval": ("err_eval", None), **{k: (k, None) for k in LAYERS}}
+            "err_eval": ("err_eval", None), **{k: (k, None) for k in LAYERS},
+            **{k: (k, None) for k in (*OUTCOME_COLS.values(), *ERROR_TYPES, "U_inf_eval", "U_emp_minus_U_inf",
+                                      "auroc", "ece", "ece_bins")}}
     out = {}
     for j, lv in enumerate(levels):
         e = {k: band(col(recs, *v)[:, j]) for k, v in keys.items()}
@@ -974,7 +1236,9 @@ SUMMARY = {"commissioning": {"alpha0": band([c["alpha0"] for c in COMM]), "U_del
                              "unl_empty": band([c["label_free"]["empty"] for c in COMM]),
                              "status": sorted({c["status"] for c in COMM}), "n_multi_pool_rep0": n_multi_pool},
            DEGRADATION: summarise(F, RECAL[DEGRADATION], LEVELS), "awgn": summarise(FROZEN["awgn"], RECAL["awgn"], AWGN_LEVELS),
-           "alarms": ALARMS}
+           "alarms": ALARMS, "reliability_levels": RELIABILITY_LEVELS,
+           "max_abs_residual": {n: {k: float(np.abs(col(FROZEN[n], k)).max()) for k in ("res_structural", "res_statistical", "res_labels")}
+                                for n in FROZEN}}
 RESULTS = clean({"meta": {"python": sys.version.split()[0], "jax": jax.__version__, "jax_backend": jax.default_backend(),
                           "torch": torch.__version__, "numpy": np.__version__, "utrace": utrace.__version__,
                           "params": PARAMS, "model_sha256": MODEL_SHA256,
@@ -990,7 +1254,7 @@ print(RESULTS_PATH, "| sha256 of the non-volatile part:", NONVOLATILE_SHA256)
 print("figures:", *sorted(str(p) for p in FIG.iterdir()), sep="\n  ")
 
 # %% [markdown]
-# ## 9. Summary
+# ## 10. Summary
 #
 # ### Facts
 #
@@ -1023,6 +1287,12 @@ for name, levels in ((DEGRADATION, LEVELS), ("awgn", AWGN_LEVELS)):
         e = S[name][f"{lv:g}"]
         print(f"  {lv:>6g}  {e['dec_empty_correct'][0]:8.4f} {e['dec_multi'][0]:9.5f} | {e['dec_coverage'][0]:8.4f} "
               f"{e['dec_EC'][0]:8.4f} ;  {e['U_emp_minus_err_eval'][0]:8.4f} vs {e['U_emp_minus_U_E'][0]:8.4f}")
+    print("  confident errors (means): share of errors confident / flagged / covered-wrong ; U_emp - U_inf ; AUROC ; ECE")
+    for lv in levels:
+        e = S[name][f"{lv:g}"]
+        print(f"  {lv:>6g}  {e['share_confident_err'][0]:6.3f} {e['share_flagged'][0]:6.3f} {e['share_cov_wrong'][0]:6.3f} ; "
+              f"{e['U_emp_minus_U_inf'][0]:7.4f} ; {e['auroc'][0]:.3f} [{e['auroc'][1]:.3f}, {e['auroc'][2]:.3f}] ; "
+              f"{e['ece'][0]:.4f} [{e['ece'][1]:.4f}, {e['ece'][2]:.4f}]")
     print("  alarms (false-alarm rate at level 0; first level with rate >= 50 % / >= 90 %):")
     for k, v in S["alarms"][name].items():
         print(f"    {k:<10} {v['false_alarm']:.2f} (95% upper {v['false_alarm_upper95']:.2f});  {v['first_50']} / {v['first_90']}")
@@ -1042,7 +1312,7 @@ print(f"\n'confidence drops before errors rise' (U_E +<1 pp and U_delta - U >= 3
 # The inferences below are hand-written from one specific full run, identified by the SHA-256 of the
 # non-volatile part of its results file. If THIS run differs (mode, seed, parameters, versions, code),
 # they may not follow from the numbers above.
-INFERENCES_WRITTEN_FROM_SHA256 = "70680757497e1a22f5b656bb23b4d910a14b6b03938d67f8643dbfcd2a62d020"
+INFERENCES_WRITTEN_FROM_SHA256 = "97e17506fc220981cd7e8e27fd2a8eea3cf3418a15961e4891de57dad4c54503"
 if NONVOLATILE_SHA256 == INFERENCES_WRITTEN_FROM_SHA256:
     print("inferences match this run (non-volatile sha256", NONVOLATILE_SHA256[:16] + "...)")
 else:
@@ -1054,7 +1324,7 @@ else:
 
 # %% [markdown]
 # Written from the full run with non-volatile SHA-256
-# `70680757497e1a22f5b656bb23b4d910a14b6b03938d67f8643dbfcd2a62d020` (`QUICK=False`, `L=20`, seed
+# `97e17506fc220981cd7e8e27fd2a8eea3cf3418a15961e4891de57dad4c54503` (`QUICK=False`, `L=20`, seed
 # 20261020, CPU). One model, one dataset, two degradations: these are observations about this setup,
 # not properties of the method in general. Numbers are means over the 20 repetitions.
 #
@@ -1086,9 +1356,9 @@ else:
 #    quantities, each at `delta/2`, where the binomial bound bounds one at `delta`. On top of that comes
 #    the structural part. So the gap `U_delta - binomial bound` grows from 0.008 to 0.090 under contrast
 #    loss, almost all of the growth structural, while under AWGN it stays at 0.008 to 0.013. The
-#    frozen `U_delta` was never below `U_E` in any repetition, level or degradation. `U`, which assumes
-#    the nominal coverage, stays at about 0.0275 while `U_E` rises from 0.028 to 0.579
-#    (figure `nominal_U_blind`).
+#    frozen `U_delta` was never below `U_E` in any repetition, level or degradation (figure
+#    `frozen_excess`). `U`, which assumes the nominal coverage, stays at about 0.0275 while `U_E` rises
+#    from 0.028 to 0.579 (column `U` of the section 3 table).
 # 5. **The uniform-selection term is not measurable here.** Multi-label sets are a few per thousand at
 #    most. Their term is within +-0.0001 in the mean at every level (per repetition between -0.0013 and
 #    +0.0008), so this model and data say nothing about the cost of the uniform-selection assumption.
@@ -1102,14 +1372,32 @@ else:
 #    test (A1) reaches 50 % at `c = 0.6` and 100 % at `c = 0.5`. The formal `U_inf_lower` rule (A2) first
 #    fires at `c = 0.35` (10 %) and reaches 100 % only at `c = 0.25` (`U_E` 0.21). Under AWGN, A2 never
 #    fires and the empty fraction stays at about 1 % or below while `U_E` reaches 0.79: label-free rules
-#    do not see confident errors.
+#    do not see confident errors (item 10 measures how much they miss).
 # 8. **L1b is the drift test to use with a frozen instrument; L1 is not.** On clean data L1 (against
 #    the nominal `1 - alpha0`) fired in 3 of 20 (contrast) and 1 of 20 (AWGN) repetitions. L1b (against
 #    the commissioning coverage) fired in 1 of 20 and 0 of 20. A separate 1000-draw check (see the report)
 #    measured 9.8 % for L1 and 4.6 % for L1b at a nominal 5 %. L1b pays for this in power, because it
 #    compares two samples: under contrast loss it reaches 50 % of repetitions at `c = 0.5` (L1 at
-#    `c = 0.6`), and 40 % against 60 % at `c = 0.6`. The literal L2 fired in 10 of 20 on clean data in both
-#    runs, as expected for two noisy bounds compared head to head.
+#    `c = 0.6`), and 40 % against 60 % at `c = 0.6`. The literal L2 fired in 10 of 20 on clean data under
+#    both degradations, as expected for two noisy bounds compared head to head; it is kept in the alarm
+#    tables but not drawn in `alarm_rates`.
 # 9. **Recalibrating hides the drift but gives a slightly tighter bound.** Recalibrated `U_delta` is
 #    below the frozen one by up to 0.058 (`c = 0.15`: 0.627 against 0.685) and was never below `U_E`.
 #    The tuned `alpha` moves from 0.027 to 0.571, and the measured coverage follows `1 - alpha`.
+# 10. **Most errors of this model are confident errors, and they are what the label-free bound misses.**
+#    On clean data 97 % of the top-1 errors come with a non-empty set that excludes the true class, so
+#    `U_inf` on the evaluation set is 0.001 while `U_empirical` is 0.028: `U_empirical - U_inf` = 0.026,
+#    almost the whole of it. Under AWGN the confident share stays at 0.95 to 0.99 at every level, `U_inf`
+#    never exceeds 0.012, and `U_empirical - U_inf` grows with the error to 0.785 at `sigma = 2`
+#    (`U_empirical` 0.791). Under contrast loss the flagged share rises from 0.03 to 0.49 at `c = 0.15`,
+#    `U_inf` reaches 0.363, and the label-free bound misses 0.295 of `U_empirical`'s 0.658 (45 %).
+#    Covered-but-wrong errors are below 1 % throughout. So a label-free bound tracks the error only to the
+#    extent that errors produce empty sets: here under contrast loss, not under noise.
+# 11. **Under AWGN max-softmax becomes badly over-confident; under contrast loss it stays roughly
+#    calibrated much longer, and its resolution falls more slowly.** On clean data the AUROC is 0.94 to
+#    0.95 and the top-label ECE 0.020 to 0.021 (only 5 equal-mass bins remain, because of the ties at 1.0). At a similar error rate, about 0.21 (`c = 0.25`
+#    against `sigma = 0.75`), the AUROC is 0.880 against 0.852 but the ECE 0.036 against 0.170. At the
+#    strongest levels the AUROC is 0.765 (`c = 0.15`, `U_E` 0.58) and 0.622 (`sigma = 2`, `U_E` 0.79),
+#    the ECE 0.198 and 0.753. The AWGN reliability diagrams show why: many images keep a confidence near
+#    1 while the accuracy in those bins falls to roughly 0.35 to 0.9 (`sigma = 1`). The ECE is a binned
+#    descriptive estimate, not a guarantee, and nothing here tests whether recalibration would help.
