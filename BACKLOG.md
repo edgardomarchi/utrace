@@ -83,6 +83,15 @@ Out of scope for the current script-migration work. Recorded here so the context
   two fixes closed — this time inside `_search_uncertainty`. Not implemented by this entry as
   currently scoped; recorded so the next person to pick it up does not have to rediscover it.
 
+  **Also covers the evaluation-set arguments.** `uncertainty_at` (and so `get_uncertainty` with
+  `eval_softmax`/`eval_y`) repeats the same `np.asarray(to_jax(...))` host copy on both of its
+  arguments and rebuilds its padded arrays with `jnp.asarray`. Those arrays are uncommitted, which
+  is what keeps it free of committed-device mismatches today: the jitted computation then runs on
+  the device of the committed calibration buffer (see MIGRATION.md, E1), not on the default
+  device. Making the tuning path zero-copy means making
+  that path zero-copy too, under the same `calibrate`-style `devices()` reconciliation. Its GPU-only
+  test is `tests/core/test_eval_set_device_reconciliation.py`.
+
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
 - to_jax DLPack unaligned-copy: even for genuine tensors the DLPack path can emit "buffer is not aligned ... Creating a copy", so zero-copy is not guaranteed. Decide whether to make such copies VISIBLE (warn/error) rather than silent. Connects to the existing to_jax device-handling backlog item. Perf/observability task.
@@ -188,6 +197,31 @@ Out of scope for the current script-migration work. Recorded here so the context
    streaming-calibration pipeline, 4 classes) and `.reports/2026-08-21_gpu_measurements_acdc.md`
    (36-batch streaming loops per class, 4 classes, ~3.1M total scores written, summed wall-clock
    and peak-memory figures reported per class).
+4. **Dependence between evaluation samples invalidates the independence assumption of `U_delta`.**
+   `uncertainty_at(..., delta=...)` assumes independent evaluation samples. In segmentation the
+   samples are pixels, and the pixels of one image are strongly dependent; the effective sample size
+   is then far below `n_valid`, and the Clopper-Pearson, Hoeffding and empirical Bernstein margins are too narrow (the
+   bound's real level is below `1 - delta`). The code cannot detect it. Open: how to account for it
+   (e.g. count images, not pixels, or a design-effect correction) and how to document it per use case.
+5. **The inverse of the confidence bound.** Given a specification `U_spec`, the smallest `delta` at
+   which `U_delta <= U_spec` (equivalently, the confidence level at which the model meets the
+   specification). `U_delta` is monotone in `delta`, so it is a one-dimensional root-find on the
+   existing counts. A candidate conformity-assessment feature; not implemented.
+6. **Rescaling the `EC_lower` margins to `[1/K, 1]`, and clipping at `1/K`.** `1/|C|` lies in
+   `[1/K, 1]`, not `(0, 1]`. Applying the bound to `Z' = (Z - 1/K) / (1 - 1/K)` and mapping back
+   multiplies only the range term of the empirical Bernstein margin by `1 - 1/K`: with `V_n` the
+   sample variance of `Z` itself, `m_EB = sqrt(2 V_n ln(8/delta) / n) + (1 - 1/K) 7 ln(8/delta) /
+   (3 (n - 1))`; the variance term is unchanged (the factor cancels against `V'_n = V_n / (1 -
+   1/K)^2`). Multiplying both terms is invalid. Hoeffding's margin scales by `1 - 1/K` entirely, and
+   `EC_lower` can then be clipped at `1/K` instead of 0. Not implemented: the measured gain is about
+   0.0005 on `U_delta` in the MNIST notebook's regime, and the formula is easy to get wrong.
+   Source: `.reports/2026-10-15_empirical_bernstein_diagnostic.md`, A.4.
+7. **Asymmetric split of `delta` between the coverage and `EC` components.** The split is fixed at
+   `delta/2` each (the `EC` half as `delta/4 + delta/4`). With the empirical Bernstein margin the
+   `EC` component is far narrower than the coverage component in the notebook's regime, so giving
+   the coverage bound a larger share of `delta` (the sum of the shares stays `delta`) would tighten
+   `U_delta`. It needs a rule that does not depend on the data, and a re-run of the Monte Carlo
+   validity check. Not implemented.
 
 ## Research questions (candidates for a second publication — NOT implementation tasks)
 

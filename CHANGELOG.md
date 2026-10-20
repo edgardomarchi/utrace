@@ -6,6 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-17
+
+Upgrading from 0.2.x: three changes can affect existing code. Labels outside `[0, K)`, and
+floating-point labels that are not finite and integral, now raise `ValueError` instead of being
+silently aliased or truncated; string and object labels raise `ValueError` instead of `TypeError`.
+`get_uncertainty` without an evaluation set now emits a `TuningDataReuseWarning`, which fails under
+`-W error`; pass `eval_softmax`/`eval_y` or filter the warning. `scipy>=1.13` is a new declared
+dependency.
+
+### Added
+- `UncertaintyQuantifier.tune_alpha(softmax, y, max_iters=30)`: selects alpha on a tuning set and
+  returns it, without measuring `U` there. Same search, status and `SearchStatusWarning` as
+  `get_uncertainty`.
+- `UncertaintyQuantifier.uncertainty_at(softmax, y, alpha)`: measures `U = 1 - EC * (1 - alpha)` at a
+  given alpha on an evaluation set, and returns an `UncertaintyEvaluation` with `U`, `EC` and the
+  counts `n_covered`, `n_valid`, `n_succ` (the inputs of the confidence bound below). The
+  evaluation set can be any size; it is not limited by `max_batch_size`. `U` is `nan`, not `1.0`, if
+  it holds no sample of the calibrated class group. Raises `ValueError` for an uncalibrated
+  instance, a row-count or column-count mismatch, or an alpha outside `[1/(N+1), 1]`.
+- `get_uncertainty(..., *, eval_softmax=None, eval_y=None)`: when both are given, alpha is selected on
+  the tuning set and `U` is measured on the evaluation set, so the two estimates no longer share
+  data. Giving only one raises `ValueError`. The return value is still `(U, alpha)`.
+- `utrace.UncertaintyEvaluation` and `utrace.TuningDataReuseWarning`.
+- `uncertainty_at(softmax, y, alpha, *, delta=None)`: with `delta` in `(0, 1)` it returns `U_delta`, a
+  one-sided upper confidence bound at level `1 - delta` on `U* = 1 - e * p` (`p` the coverage,
+  `e = E[1/|C| | covered]` at that alpha), which bounds the model's error probability; any other
+  `delta` raises `ValueError`. It is
+  `1 - EC_lower * coverage_lower` with a Clopper-Pearson bound on `p` and a lower bound on `e`,
+  each at level `delta/2` (union bound). The bound on `e` is `EC` minus the smaller of a Hoeffding
+  margin and an empirical Bernstein margin (Maurer and Pontil (2009), "Empirical Bernstein Bounds
+  and Sample Variance Penalization", COLT, arXiv:0907.3740, Theorem 4), each one-sided at `delta/4`;
+  the empirical Bernstein margin is much smaller when the sets are mostly singletons, and over the
+  grid examined the minimum is at most about 9 % wider than a Hoeffding margin at `delta/2`. It needs independent, representative evaluation samples and
+  the paper's uniform-selection assumption; the code checks neither. `U` stays the point estimate
+  `1 - EC * (1 - alpha)`.
+- `UncertaintyEvaluation` gains the fields `coverage`, `U_empirical` (`1 - EC * coverage`), `delta`,
+  `coverage_lower`, `EC_lower`, `U_delta`, appended after the original five with defaults. `coverage`
+  and `U_empirical` are always computed; the bound fields are `None` without `delta`.
+- `scipy>=1.13` is now a declared dependency (jax already required it). It is imported only when
+  `delta` is given; `import utrace` does not load it.
+
+### Changed
+- Labels outside `[0, K)` (`K` the number of softmax columns) now raise `ValueError` in `calibrate`,
+  `get_uncertainty`/`tune_alpha` and `uncertainty_at`. They used to alias silently to the last class
+  (`-1` wraps, anything `>= K` clamps), giving a wrong coverage and `EC`. `calibrate` also rejects
+  `classes` outside `[0, K)`. There is no `ignore_index`.
+- Labels with a floating dtype must now be finite and integral in `calibrate`,
+  `get_uncertainty`/`tune_alpha` (tuning and evaluation labels) and `uncertainty_at`; `0.9`,
+  `-0.5`, `nan` or `inf` raise `ValueError` naming the first offending value and its count. They
+  used to be truncated toward zero by the integer cast (`0.9` became class 0, `-0.5` became 0 and
+  passed the range check). Integral floats such as `2.0` give exactly the same results as `2`.
+  Boolean labels are accepted as 0/1; complex, object and string labels raise `ValueError` (string
+  and object arrays used to raise `TypeError` from the jax conversion).
+- The tuning path now checks the softmax trailing shape against the one `calibrate` recorded, and a
+  batched `calibrate` with a different trailing shape raises `ValueError`.
+- `get_uncertainty` called without an evaluation set now emits a `TuningDataReuseWarning` on every
+  call: `U` is then estimated on the same samples that selected alpha, which correlates the errors in
+  alpha and in `U`. Returned values are unchanged. The warning is a `UserWarning`, independent of
+  `SearchStatusWarning`; silence it with
+  `warnings.filterwarnings("ignore", category=TuningDataReuseWarning)`, or avoid it by passing an
+  evaluation set.
+
+### Documentation
+- `README.md` no longer calls `U` a guaranteed upper bound: `U` is a point estimate with no
+  confidence level, and `U_delta` holds only under the stated independence and uniform-selection
+  assumptions.
+- `notebooks/mnist_method_evaluation.py` (jupytext) evaluates `tune_alpha`, `uncertainty_at` and
+  `U_delta` on a trained MNIST model; a `notebooks` dependency group runs it. The notebook is not
+  part of the installed package.
+
 ## [0.2.0] - 2026-09-24
 
 Upgrading from 0.1.x: two changes can break existing code. `predict()` no longer accepts
@@ -71,6 +141,7 @@ explicitly instead.
 
 Initial release.
 
-[Unreleased]: https://github.com/edgardomarchi/utrace/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/edgardomarchi/utrace/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/edgardomarchi/utrace/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/edgardomarchi/utrace/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/edgardomarchi/utrace/releases/tag/v0.1.0

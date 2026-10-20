@@ -1,7 +1,7 @@
 [project]
 
 name = "utrace"
-version = "0.2.0"
+version = "0.3.0"
 description = "Uncertainty Tracking for Complex Estimators"
 
 license = "MIT"
@@ -30,6 +30,7 @@ requires-python = ">=3.11,<3.15"
 dependencies = [
     "jax",
     "numpy",
+    "scipy>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -125,6 +126,14 @@ explicit = true
 test = [
     "pytest",
     "pytest-cov",
+]
+# Executing notebooks/*.py (jupytext percent format). Combined with whichever of dev, dev-cuda13 or
+# dev-rocm7 is in use, never a replacement for them: it carries no torch and is not part of the
+# [tool.uv] conflicts, so it can be enabled together with any of the three.
+notebooks = [
+    "jupytext",
+    "ipykernel",
+    "nbclient",
 ]
 dev = [
     "torch",
