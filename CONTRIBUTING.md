@@ -113,6 +113,29 @@ executed notebook `notebooks/_build/periodic_verification_demo_<quick|full>.ipyn
 `notebooks/_build/cache/` (about 3 minutes on CPU the first time; both modes then reuse it). Run it with
 `JAX_PLATFORMS=cpu` for bitwise-reproducible results.
 
+`notebooks/acdc_periodic_verification.py` is the same verification on a real black box: the KM
+cardiac segmentation model on the 150 unique ACDC patients, one frozen quantifier per class (LV, MYO,
+RV), with the bound stated at patient level (a betting confidence interval computed in the notebook)
+next to the package's pixel-level `U_delta`. It needs the `acdc` extra (`monai`, `nibabel`) and the
+third-party data and model at the paths `scripts/ACDC_example.py` uses (`../../data/ACDC/` and
+`../../models/ventricular_short_axis/`, relative to `scripts/`; see that script's docstring; the
+`UTRACE_ACDC_DATA` and `UTRACE_ACDC_MODEL` environment variables override them). It reads only
+`training/` and `testing/`, never `validation/`. CPU only, from the repository root:
+
+```bash
+JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES= UTRACE_NB_QUICK=1 uv run --locked --extra=viz --extra=acdc --group notebooks python -c "import os, jupytext, nbclient; nb = jupytext.read('notebooks/acdc_periodic_verification.py'); nbclient.NotebookClient(nb, timeout=-1, resources={'metadata': {'path': '.'}}).execute(); jupytext.write(nb, 'notebooks/_build/acdc_periodic_verification_' + ('full' if os.environ.get('UTRACE_NB_QUICK', '1') == '0' else 'quick') + '.ipynb')"
+```
+
+The same `UTRACE_NB_QUICK` switch applies (quick: 2 repetitions and thinned level grids; full: 20
+repetitions). Outputs carry the mode: `notebooks/_build/acdc_periodic_verification_<quick|full>.ipynb`,
+`acdc_periodic_verification_results_<mode>.json` and the slide figures in
+`figures/acdc_periodic_verification_<mode>/`. The float32 softmax of the foreground pixels is cached
+per degradation level in `notebooks/_build/cache/acdc_km_fg_*.npz` (about 123 MB per level, 18 levels
+in the full grid; the quick levels are a subset, so both modes share it). A second file per level,
+`acdc_km_fp_*.npz` (10 to 60 MB), keeps the background-labelled pixels the model labels as foreground,
+which the label-free alarms need; if only the first file is present, the level is re-inferred and checked
+bitwise against it.
+
 ## Linting
 
 ```bash
