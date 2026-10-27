@@ -42,14 +42,12 @@ class AddGaussianNoise:
 
 
 def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./data/'), model_path:Path=Path('./saved_models/'),
-         json_path:Path|None=None) -> None:
+         json_path:Path|None=None, iterations:int=1) -> None:
 
     BATCH_SIZE = 1200  # Number of images per batch
     num_classes = 10
     num_monte_carlo = 1000
     splits = [0.2, 0.2, 0.6]
-    
-    iterations = 1
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ImageClassifierCNN().to(device)
@@ -241,6 +239,7 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", type=Path, default=None, help="also write the plotted numbers to this JSON file")
+    parser.add_argument("--iterations", type=int, default=1, help="repetitions of the noise sweep (the paper uses 10)")
     args = parser.parse_args()
     log_path = Path("log/btorch_test.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,5 +276,6 @@ if __name__ == "__main__":
     mpl_logger = logging.getLogger('matplotlib')
     mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
 
-    main(train_model=True, img_path=img_path, data_path=data_path, model_path=model_path, json_path=args.json)
+    main(train_model=True, img_path=img_path, data_path=data_path, model_path=model_path, json_path=args.json,
+         iterations=args.iterations)
     plt.show()
