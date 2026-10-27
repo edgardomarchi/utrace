@@ -80,6 +80,7 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
     }
 
     dnn_to_bnn(model, const_bnn_prior_parameters)
+    model.to(device)  # dnn_to_bnn builds the Bayesian layers on the CPU
 
     noises = np.arange(0, 2.5, 0.5)
 
@@ -108,6 +109,7 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
             testDataLoader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
             x_test, y_test = next(iter(testDataLoader))
+            x_test = x_test.to(device)
 
             model.eval()
             with torch.no_grad():
