@@ -110,7 +110,11 @@ executed notebook `notebooks/_build/periodic_verification_demo_<quick|full>.ipyn
 `periodic_verification_results_<mode>.json` and the slide figures (PNG at 200 dpi and PDF) in
 `figures/periodic_verification_<mode>/`. It shares the model checkpoint with the notebook above
 (training it the first time if absent) and caches the pool's softmax per degradation level in
-`notebooks/_build/cache/` (about 3 minutes on CPU the first time; both modes then reuse it). Run it with
+`notebooks/_build/cache/`, including the levels of the degradation screening in its appendix (about
+8 minutes on CPU the first time; both modes then reuse it, and a cached run takes under a minute).
+Besides the per-level results, its results file holds a 1000-draw false-alarm check of every
+alarm rule on clean data (`summary.null_check`) and the single-seed screening of five degradations
+(`summary.screening`). Run it with
 `JAX_PLATFORMS=cpu` for bitwise-reproducible results.
 
 `notebooks/acdc_periodic_verification.py` is the same verification on a real black box: the KM

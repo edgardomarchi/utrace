@@ -62,7 +62,7 @@ L = 3 if QUICK else 20                              # repetitions
 DELTA = 0.05                                        # error level of every bound and test
 
 # The degradation: contrast loss x -> m + c (x - m), m the image mean, pixels in [0, 1], then clipped.
-# Chosen in a screening run of five candidates; see the report. AWGN is kept as a reference.
+# Chosen in a screening run of five candidates (appendix, at the end). AWGN is kept as a reference.
 DEGRADATION = "contrast"
 LEVELS = [1.0, 0.8, 0.6, 0.5, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15]   # contrast factor c; 1 = commissioning
 AWGN_LEVELS = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]              # noise std, in normalised units (as mnist_method_evaluation.py)
@@ -97,6 +97,7 @@ import torch
 from scipy.stats import beta, binomtest, fisher_exact, mannwhitneyu
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+from torchvision.transforms.functional import gaussian_blur
 
 import utrace
 from utrace import SearchStatusWarning, UncertaintyQuantifier
@@ -162,7 +163,7 @@ POOL_N = len(Y)
 _ref = datasets.MNIST(root=str(DATA_ROOT), train=True, download=False, transform=transforms.Compose(base_tf))
 assert all(torch.equal(_ref[i][0], (X01[i] - 0.5) / 0.5) for i in range(16))   # same tensors as the torchvision pipeline
 
-IDENTITY = {"contrast": 1.0, "awgn": 0.0}
+IDENTITY = {"contrast": 1.0, "awgn": 0.0, "gain": 1.0, "offset": 0.0, "blur": 0.0}   # gain, offset, blur: appendix only
 
 
 def degrade(name: str, level: float) -> torch.Tensor:
@@ -171,11 +172,20 @@ def degrade(name: str, level: float) -> torch.Tensor:
     contrast: m + c (x - m) in [0, 1] (m the per-image mean), clipped to [0, 1], then Normalize.
     awgn: as in mnist_method_evaluation.py, Normalize then x + sigma * N(0, 1), no clipping; one noise
           realisation per level, from a seeded generator, so the cache is deterministic.
+    gain, offset, blur (screening, appendix): g x, x + o, or a Gaussian blur with sigma in pixels (kernel
+          2 ceil(3 sigma) + 1), on [0, 1], clipped to [0, 1], then Normalize.
     """
     x = X01
     if name == "contrast" and level != IDENTITY[name]:
         m = X01.mean(dim=(1, 2, 3), keepdim=True)
         x = (m + level * (X01 - m)).clamp(0.0, 1.0)
+    elif name == "gain" and level != IDENTITY[name]:
+        x = (level * X01).clamp(0.0, 1.0)
+    elif name == "offset" and level != IDENTITY[name]:
+        x = (X01 + level).clamp(0.0, 1.0)
+    elif name == "blur" and level != IDENTITY[name]:
+        k = 2 * int(np.ceil(3 * level)) + 1
+        x = gaussian_blur(X01, kernel_size=[k, k], sigma=[level, level]).clamp(0.0, 1.0)
     x = (x - 0.5) / 0.5
     if name == "awgn" and level != IDENTITY[name]:
         g = torch.Generator().manual_seed(SEED + round(level * 1000))
@@ -333,8 +343,8 @@ save(fig, "commissioning_sets")
 # %% [markdown]
 # **Figure `commissioning_sets`.** Clean evaluation images with their prediction set at `alpha0` and
 # their true label. "Missed" means the true label is outside the set. Multi-label sets are shown only
-# if the counts printed above are non-zero: with this model they are rare (none at all at this
-# repetition's `alpha0`), so almost every set is a singleton or empty.
+# if the counts printed above are non-zero: with this model they are rare (a few per thousand at this
+# repetition's `alpha0`, printed above), so almost every set is a singleton or empty.
 
 # %% [markdown]
 # ## 3. Periodic verification with a frozen instrument
@@ -450,7 +460,7 @@ N_BINS = 15
 
 def equal_mass_bins(conf: np.ndarray) -> np.ndarray:
     """Bin index per sample: edges at the 1/15, ..., 14/15 quantiles of `conf`. Tied values are never split
-    across bins: coinciding edges merge, so with many ties (70 % of clean max-softmax is exactly 1.0) fewer
+    across bins: coinciding edges merge, so with many ties (most clean max-softmax values are exactly 1.0) fewer
     than 15 non-empty bins remain."""
     inner = np.unique(np.quantile(conf, np.arange(1, N_BINS) / N_BINS))
     return np.searchsorted(inner, conf, side="left")          # bin b holds (inner[b-1], inner[b]]
@@ -749,17 +759,21 @@ print("\nawgn"); print(DECOMP["awgn"].round(4).to_string())
 # %%
 cov, cov_lo = col(F, "coverage"), col(F, "coverage_lower")
 nominal = np.array([1 - c["alpha0"] for c in COMM])
-reject = col(F, "p_drift") < 0.05
+cov_comm = np.array([c["eval"]["coverage"] for c in COMM])     # measured on the commissioning evaluation set
+reject = col(F, "p_drift") < 0.05                              # L1, against the nominal coverage (section 5)
+reject_l1b = col(F, "p_L1b") < 0.05                            # L1b, against the commissioning coverage (marked below)
 
 fig, ax = plt.subplots()
 line_band(ax, LEVELS, cov, "measured coverage", COL["U_delta"], marker="D")
 line_band(ax, LEVELS, cov_lo, "its Clopper-Pearson lower bound (one-sided, level $\\delta/2$)", COL["U_delta"], ls="--", marker="")
 ax.axhline(nominal.mean(), color=COL["U"], lw=2.5, label=r"nominal coverage $1-\alpha_0$ (mean over repetitions)")
-rate = reject.mean(0)
+ax.axhline(cov_comm.mean(), color=COL["ref"], lw=2.5, ls="-.", label="coverage measured at commissioning (mean over repetitions)")
+rate = reject_l1b.mean(0)
 for x, y, r_ in zip(LEVELS, cov.mean(0), rate, strict=True):
     if r_ >= 0.5:
         ax.plot(x, y, "o", ms=20, mfc="none", mec=COL["U_E"], mew=2)
-ax.plot([], [], "o", ms=20, mfc="none", mec=COL["U_E"], mew=2, label="drift test rejects at 5 % (in at least half of the repetitions)")
+ax.plot([], [], "o", ms=20, mfc="none", mec=COL["U_E"], mew=2,
+        label="L1b rejects at 5 %: coverage below commissioning (in at least half of the repetitions)")
 ax.set_xlabel(CONTRAST_X); ax.set_ylabel("coverage")
 ax.invert_xaxis(); ax.legend(loc="lower left", frameon=False)
 fig.tight_layout()
@@ -767,8 +781,14 @@ save(fig, "coverage_drift")
 
 # %% [markdown]
 # **Figure `coverage_drift`.** Measured coverage on the fresh labelled set and its Clopper-Pearson lower
-# bound (the one `U_delta` uses), against the nominal `1 - alpha0` that `U` assumes. Circled points: the
-# drift test of section 5 rejects at 5 % in at least half of the repetitions.
+# bound (the one `U_delta` uses), against two references: the nominal `1 - alpha0` that `U` assumes, and
+# the coverage measured at commissioning on the commissioning evaluation set. For a frozen instrument the
+# second is the one to compare with: the conformal guarantee holds on average over calibration sets, so
+# the one frozen calibration can sit slightly away from nominal (section 5). Averaged over repetitions
+# the two lines can almost coincide; what differs is each repetition's own commissioning coverage, the
+# reference L1b uses for that repetition (L1 uses the nominal one). Circled points: the drift
+# test L1b of section 5 (current coverage against the commissioning coverage) rejects at 5 % in at least
+# half of the repetitions.
 
 # %%
 comp = np.stack([col(F, k).mean(0) for k in ("eval_empty", "eval_single", "eval_multi")])
@@ -814,6 +834,38 @@ pd.DataFrame({"L1 median p-value": np.median(pdrift, 0), "L1 rejected at 5 %": r
               "L1b median p-value": np.median(pl1b, 0), "L1b rejected at 5 %": (pl1b < 0.05).mean(0),
               "mean coverage": cov.mean(0), "mean 1 - alpha0": nominal.mean()},
              index=pd.Index(LEVELS, name="contrast c")).round(4)
+
+# %% [markdown]
+# **False alarms, measured.** With `L` repetitions a rate on clean data is resolved only to `1/L`. To
+# measure it, `N_NULL = 1000` independent draws repeat, each with its own random split, the whole
+# procedure on clean data: a fresh commissioning (calibration, `tune_alpha`, the commissioning
+# evaluation set and the unlabelled reference batch, as in section 2), then one periodic check at level
+# 0 on fresh images (as in section 3), with the same sizes and the same rules. Draw `i` uses the split of
+# repetition `i`, so the first `L` draws are the repetitions above (asserted). Every rule's rejections
+# are counted at the nominal 5 %, with a two-sided 95 % Clopper-Pearson interval on the rate.
+
+# %%
+N_NULL = 1000
+t0 = time.time()
+NULL_ALARMS = []
+for rep in range(N_NULL):
+    a_ = verify(commission(rep), DEGRADATION, 0, 0, LEVELS[0])["alarm"]
+    if rep < L:
+        assert a_ == F[rep][0]["alarm"], "the first L draws are the repetitions of section 3"
+    NULL_ALARMS.append(a_)
+T_NULL = time.time() - t0
+NULL_CHECK = {"n_draws": N_NULL, "nominal_level": 0.05, "rules": {}}
+for k in NULL_ALARMS[0]:
+    n_rej = sum(a_[k] for a_ in NULL_ALARMS)
+    ci = binomtest(n_rej, N_NULL).proportion_ci(confidence_level=0.95, method="exact")
+    NULL_CHECK["rules"][k] = {"rejections": n_rej, "rate": n_rej / N_NULL, "cp95": [float(ci.low), float(ci.high)]}
+print(f"{N_NULL} clean draws in {T_NULL:.0f}s")
+pd.DataFrame({k: {"rejections": v["rejections"], "rate": v["rate"], "95% CP low": v["cp95"][0], "95% CP high": v["cp95"][1]}
+              for k, v in NULL_CHECK["rules"].items()}).T.round(4)
+
+# %% [markdown]
+# L1 and L1b are the drift tests above; A1 to A3 and the two L2 rules are the alarms of section 6 (the
+# literal L2 compares two noisy upper bounds, so it fires about half the time by construction).
 
 # %% [markdown]
 # ## 6. Early warning without labels
@@ -1038,7 +1090,7 @@ pd.DataFrame({RULES[k]: {"false alarm (level 0)": v["false_alarm"], "first level
 # tests.)
 #
 # - **Resolution: AUROC** of max-softmax for separating correct from wrong answers, from the
-#   Mann-Whitney statistic: `P(m_correct > m_wrong) + P(tie) / 2`. Ties matter here: about 70 % of clean
+#   Mann-Whitney statistic: `P(m_correct > m_wrong) + P(tie) / 2`. Ties matter here: more than 60 % of clean
 #   max-softmax values are exactly 1.0 in float32, and each tied correct-wrong pair counts one half
 #   (midranks), as it would for a classifier that guesses between them. 0.5 is no resolution, 1 perfect.
 # - **Calibration: top-label ECE** (top-label in the sense of Gupta and Ramdas, *Top-label calibration
@@ -1104,8 +1156,8 @@ save(fig, "error_types")
 # **Figure `error_types`.** Left: contrast loss; right: AWGN. Each top-1 error on the labelled
 # evaluation set is a confident error (non-empty set without the true class), a flagged error (empty
 # set) or covered but wrong (true class in a multi-label set); the shares are means over repetitions
-# and sum to one. Under AWGN almost every error comes with a confident set (in the full run, 95 % to
-# 99 % at every noise level). Under contrast loss more and more errors are flagged by an empty set: the
+# and sum to one. Under AWGN almost every error comes with a confident set (in the full run, 97 % to
+# over 99 % at every noise level). Under contrast loss more and more errors are flagged by an empty set: the
 # confident share falls from 97 % on clean data to about half at the strongest levels. Covered-but-wrong
 # errors stay below 1 %, because multi-label sets are rare.
 
@@ -1150,8 +1202,8 @@ fig = plt.figure(figsize=(12.8, 7.2))
 gs = fig.add_gridspec(4, 3, height_ratios=[3, 1, 3, 1], hspace=0.15, wspace=0.12)
 for row, (name, levels, deg_id, sym) in enumerate(((DEGRADATION, LEVELS, 0, "c"), ("awgn", AWGN_LEVELS, 1, r"\sigma"))):
     ue = col(FROZEN[name], "U_E").mean(0)
-    # first column: the clean level itself (its U_E, 0.028, is the 0.03 target; the nearest-U_E rule would pick the
-    # first degraded level instead, at 0.029); then the levels whose mean U_E is closest to 0.15 and 0.45
+    # first column: the clean level itself, by rule (the 0.03 target; with a different model the nearest-U_E rule
+    # could pick the first degraded level instead); then the levels whose mean U_E is closest to 0.15 and 0.45
     picks = [0, *(int(np.argmin(np.abs(ue - t))) for t in RELIABILITY_TARGETS[1:])]
     RELIABILITY_LEVELS[name] = [{"level": levels[j], "U_E": float(ue[j])} for j in picks]
     for ci, j in enumerate(picks):
@@ -1187,6 +1239,79 @@ print("reliability levels (clean, then closest mean U_E to", RELIABILITY_TARGETS
 # repetitions). Points on the dash-dotted diagonal are calibrated; below it, over-confident. The strip
 # under each panel gives the number of images per bin (log scale): where ties merge bins, one bin can
 # hold most of the images.
+
+# %% [markdown]
+# ## Appendix: the degradation screening
+#
+# **A screening run, not the full run.** It records how contrast loss was chosen. Five candidate
+# degradations, each with **one** seed and **one** commissioning: repetition 0's calibration and `alpha0`.
+#
+# - **Gain** `g x`, **contrast** (as above), **offset** `x + o` and **blur** (Gaussian, `sigma` in pixels)
+#   act on the `[0, 1]` image, clipped to `[0, 1]`, then normalised. **AWGN**, as everywhere here, is
+#   added after normalisation, without clipping.
+# - At each level the frozen instrument is evaluated on repetition 0's commissioning evaluation set (2000
+#   images, the same images at every level, degraded). `U_E`, the mean max-softmax and the set fractions
+#   come from the rest of the pool (54 000 images: everything outside calibration, tuning and that
+#   evaluation set), degraded.
+# - **Selection rule** ("confidence drops before errors rise"): a level at which `U_E` has risen by less
+#   than 1 percentage point above level 0, while `U_delta - U` has at least tripled from its level-0 value.
+#
+# The section 3 analysis repeats this for contrast loss and AWGN over `L` repetitions with fresh images
+# at each level; the numbers here differ from it by sampling and are used only to rank the candidates.
+
+# %%
+SCREEN_LEVELS = {"gain": [1.0, 0.8, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1],
+                 "contrast": [1.0, 0.8, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1],
+                 "offset": [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5],
+                 "blur": [0.0, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0],
+                 "awgn": [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5]}
+q_s, a_s = COMM[0]["uq"], COMM[0]["alpha0"]
+_, _, ev_s, unl_s, rest_s = COMM[0]["_split"]
+rem_s = np.concatenate([unl_s, rest_s])
+assert len(rem_s) == POOL_N - CAL_SIZE - TUNE_SIZE - EVAL_SIZE
+
+
+def screen_level(name: str, level: float) -> dict:
+    """The frozen repetition-0 instrument at one screening level."""
+    smx = pool_softmax(name, level)
+    r = q_s.uncertainty_at(smx[ev_s], Y[ev_s], a_s, delta=DELTA)
+    k_err = int((smx[ev_s].argmax(1) != Y[ev_s]).sum())
+    _, S = q_s.predict(smx[rem_s])
+    sz = S.sum(1)
+    return {"level": level, "U_E": float((smx[rem_s].argmax(1) != Y[rem_s]).mean()), "err_eval": k_err / EVAL_SIZE,
+            "binom_upper": cp_upper(k_err, EVAL_SIZE), "maxsm_mean": float(smx[rem_s].max(1).mean()),
+            "coverage": float(r.coverage), "U": float(r.U), "U_empirical": float(r.U_empirical), "U_delta": float(r.U_delta),
+            "empty": float((sz == 0).mean()), "single": float((sz == 1).mean()), "multi": float((sz > 1).mean())}
+
+
+t0 = time.time()
+SCREENING = {"note": "screening run: one seed, repetition 0's commissioning; not the full run", "seed": SEED,
+             "alpha0": a_s, "n_eval": len(ev_s), "n_rest": len(rem_s), "levels": SCREEN_LEVELS, "results": {}, "pattern_levels": {}}
+for name, levels in SCREEN_LEVELS.items():
+    recs = [screen_level(name, lv) for lv in levels]
+    assert np.array_equal(pool_softmax(name, levels[0]), CLEAN)                    # level 0 is the clean pool
+    gap0 = recs[0]["U_delta"] - recs[0]["U"]
+    for r_ in recs:
+        r_["U_E_increase"] = r_["U_E"] - recs[0]["U_E"]
+        r_["gap_U_delta_minus_U"] = r_["U_delta"] - r_["U"]
+        r_["gap_factor"] = r_["gap_U_delta_minus_U"] / gap0
+        r_["rule"] = bool(r_["U_E_increase"] < 0.01 and r_["gap_factor"] >= 3)
+    SCREENING["results"][name] = recs
+    SCREENING["pattern_levels"][name] = [r_["level"] for r_ in recs[1:] if r_["rule"]]
+T_SCREEN = time.time() - t0
+print(f"screening ({sum(map(len, SCREEN_LEVELS.values()))} levels) in {T_SCREEN:.0f}s; alpha0 = {a_s:.5f} "
+      f"(1 - alpha0 = {1 - a_s:.4f}); levels meeting the selection rule: {SCREENING['pattern_levels']}")
+for name in SCREEN_LEVELS:
+    print(f"\n== {name}")
+    print(pd.DataFrame(SCREENING["results"][name]).drop(columns="rule").set_index("level")
+          .rename(columns={"binom_upper": "binom", "maxsm_mean": "maxsm", "U_empirical": "U_emp",
+                           "U_E_increase": "dU_E", "gap_U_delta_minus_U": "Ud-U", "gap_factor": "x(Ud-U)"}).round(4).to_string())
+
+# %% [markdown]
+# Columns: `U_E` and the set fractions on the 54 000 remaining images; `err_eval`, the binomial bound
+# (one-sided Clopper-Pearson, `1 - delta`), coverage, `U`, `U_empirical` and `U_delta` on the 2000
+# evaluation images; `dU_E` the rise of `U_E` above level 0; `Ud-U` the gap `U_delta - U` and
+# `x(Ud-U)` its ratio to the level-0 gap. The selection rule asks for `dU_E < 0.01` and `x(Ud-U) >= 3`.
 
 # %% [markdown]
 # ## Persist the results
@@ -1236,7 +1361,7 @@ SUMMARY = {"commissioning": {"alpha0": band([c["alpha0"] for c in COMM]), "U_del
                              "unl_empty": band([c["label_free"]["empty"] for c in COMM]),
                              "status": sorted({c["status"] for c in COMM}), "n_multi_pool_rep0": n_multi_pool},
            DEGRADATION: summarise(F, RECAL[DEGRADATION], LEVELS), "awgn": summarise(FROZEN["awgn"], RECAL["awgn"], AWGN_LEVELS),
-           "alarms": ALARMS, "reliability_levels": RELIABILITY_LEVELS,
+           "alarms": ALARMS, "reliability_levels": RELIABILITY_LEVELS, "null_check": NULL_CHECK, "screening": SCREENING,
            "max_abs_residual": {n: {k: float(np.abs(col(FROZEN[n], k)).max()) for k in ("res_structural", "res_statistical", "res_labels")}
                                 for n in FROZEN}}
 RESULTS = clean({"meta": {"python": sys.version.split()[0], "jax": jax.__version__, "jax_backend": jax.default_backend(),
@@ -1247,7 +1372,7 @@ RESULTS = clean({"meta": {"python": sys.version.split()[0], "jax": jax.__version
                  "commissioning": COMM, "frozen": FROZEN, "recalibrated": RECAL, "summary": SUMMARY})
 RESULTS["volatile"] = {"finished_at": time.strftime("%Y-%m-%d %H:%M:%S"), "utrace_commit": COMMIT, "src_dirty": DIRTY,
                        "seconds": {"total": time.time() - T_START, "softmax": T_SOFTMAX, "frozen": T_FROZEN,
-                                   "recalibrated": T_RECAL}}
+                                   "recalibrated": T_RECAL, "null_check": T_NULL, "screening": T_SCREEN}}
 RESULTS_PATH.write_text(json.dumps(RESULTS, sort_keys=True, indent=1))
 NONVOLATILE_SHA256 = hashlib.sha256(json.dumps({k: v for k, v in RESULTS.items() if k != "volatile"}, sort_keys=True).encode()).hexdigest()
 print(RESULTS_PATH, "| sha256 of the non-volatile part:", NONVOLATILE_SHA256)
@@ -1304,6 +1429,10 @@ PATTERN_LEVELS = [lv for lv in LEVELS[1:] if S[DEGRADATION][f"{lv:g}"]["U_E"][0]
                   and S[DEGRADATION][f"{lv:g}"]["U_delta"][0] - S[DEGRADATION][f"{lv:g}"]["U"][0] >= 3 * g0]
 print(f"\n'confidence drops before errors rise' (U_E +<1 pp and U_delta - U >= 3x its level-0 value {g0:.4f}): "
       f"{PATTERN_LEVELS if PATTERN_LEVELS else 'at no level'}")
+print(f"screening (one seed, appendix): levels meeting the same rule: {S['screening']['pattern_levels']}")
+print(f"false alarms in {S['null_check']['n_draws']} clean draws (section 5), rate [95% Clopper-Pearson]:")
+for k, v in S["null_check"]["rules"].items():
+    print(f"    {k:<10} {v['rejections']:4d}  {v['rate']:.3f} [{v['cp95'][0]:.3f}, {v['cp95'][1]:.3f}]")
 
 # %% [markdown]
 # ### Inferences
@@ -1312,7 +1441,7 @@ print(f"\n'confidence drops before errors rise' (U_E +<1 pp and U_delta - U >= 3
 # The inferences below are hand-written from one specific full run, identified by the SHA-256 of the
 # non-volatile part of its results file. If THIS run differs (mode, seed, parameters, versions, code),
 # they may not follow from the numbers above.
-INFERENCES_WRITTEN_FROM_SHA256 = "97e17506fc220981cd7e8e27fd2a8eea3cf3418a15961e4891de57dad4c54503"
+INFERENCES_WRITTEN_FROM_SHA256 = "5ffb206ff5ddff024e8c9e454b9c315d8b1fcac5b12dcc0aef5e626b2478ec27"
 if NONVOLATILE_SHA256 == INFERENCES_WRITTEN_FROM_SHA256:
     print("inferences match this run (non-volatile sha256", NONVOLATILE_SHA256[:16] + "...)")
 else:
@@ -1324,80 +1453,90 @@ else:
 
 # %% [markdown]
 # Written from the full run with non-volatile SHA-256
-# `97e17506fc220981cd7e8e27fd2a8eea3cf3418a15961e4891de57dad4c54503` (`QUICK=False`, `L=20`, seed
+# `5ffb206ff5ddff024e8c9e454b9c315d8b1fcac5b12dcc0aef5e626b2478ec27` (`QUICK=False`, `L=20`, seed
 # 20261020, CPU). One model, one dataset, two degradations: these are observations about this setup,
 # not properties of the method in general. Numbers are means over the 20 repetitions.
 #
 # 1. **The "confidence drops before errors rise" pattern, as defined here, was not observed.** The
 #    test was that `U_E` rises by less than 1 percentage point while `U_delta - U` at least triples
-#    from its level-0 value (0.0145). `U_E` stays within 1 pp of level 0 down to `c = 0.6` (0.0280 ->
-#    0.0344), where `U_delta - U` has grown only to 0.0235 (x1.6). At `c = 0.5`, `U_E` is already
-#    +1.35 pp. None of the five screened degradations showed the pattern either (see the report).
+#    from its level-0 value (0.0141). `U_E` stays within 1 pp of level 0 only down to `c = 0.8` (0.0307
+#    -> 0.0343), where `U_delta - U` has grown only to 0.0184 (x1.3). At `c = 0.6`, `U_E` is already
+#    +1.28 pp, with `U_delta - U` at x2.1. None of the five screened degradations showed the pattern
+#    either (appendix).
 # 2. **Which part of `U_delta - err_eval` dominates depends on the regime.**
 #    - On clean data and under mild degradation the statistical margin dominates. At level 0,
-#      `U_delta - err_eval` = 0.0149, of which 0.0144 is statistical (coverage term 0.0081, `EC`
-#      term 0.0063) and 0.0005 structural. This holds for both degradations.
-#    - Under contrast loss the structural part grows: 0.0005 -> 0.0066 (`c = 0.4`) -> 0.0216
-#      (`c = 0.3`, now about equal to the statistical 0.0229) -> 0.0818 (`c = 0.15`, three quarters
-#      of the total 0.1083). It is almost entirely correct answers in empty sets: low-contrast images
-#      the model still gets right but whose confidence fell below the frozen threshold.
+#      `U_delta - err_eval` = 0.0152, of which 0.0148 is statistical (coverage term 0.0084, `EC`
+#      term 0.0064) and 0.0005 structural. This holds for both degradations.
+#    - Under contrast loss the structural part grows: 0.0005 -> 0.0098 (`c = 0.4`) -> 0.0310
+#      (`c = 0.3`, now above the statistical 0.0244) -> 0.1212 (`c = 0.15`, about four fifths of the
+#      total 0.1478). It is almost entirely correct answers in empty sets: low-contrast images the
+#      model still gets right but whose confidence fell below the frozen threshold.
 #    - Under AWGN the structural part stays small (at most 0.0031, at `sigma = 0.75`), because the
 #      model's errors stay confident and few correct answers lose their set. The excess is
 #      statistical at every noise level.
 # 3. **The statistical margin rises toward coverage of about 0.5 and then falls, as expected for a
-#    binomial margin.** Under AWGN it goes 0.0145 -> 0.0285 at `sigma = 1` (coverage 0.54) -> 0.0234 at
-#    `sigma = 2` (coverage 0.21). Under contrast loss it goes 0.0144 -> 0.0281 at `c = 0.2` (coverage
-#    0.57) -> 0.0265 at `c = 0.15` (coverage 0.34). The fall is visible over one level only. The
-#    coverage term carries the change; the `EC` term stays between 0.0057 and 0.0065 throughout,
+#    binomial margin.** Under AWGN it goes 0.0146 -> 0.0287 at `sigma = 1` (coverage 0.50) -> 0.0235 at
+#    `sigma = 2` (coverage 0.21). Under contrast loss it goes 0.0148 -> 0.0281 at `c = 0.2` (coverage
+#    0.54) -> 0.0266 at `c = 0.15` (coverage 0.35). The fall is visible over one level only. The
+#    coverage term carries the change; the `EC` term stays between 0.0057 and 0.0066 throughout,
 #    because `EC` is about 1.
 # 4. **Against the binomial bound, `U_delta`'s extra width is a constant statistical part plus the
 #    structural part.** `U_delta`'s statistical margin exceeds the binomial bound's own margin by an
-#    almost constant 0.008 to 0.010 at every level of both degradations: `U_delta` bounds two
+#    almost constant 0.008 to 0.011 at every level of both degradations: `U_delta` bounds two
 #    quantities, each at `delta/2`, where the binomial bound bounds one at `delta`. On top of that comes
-#    the structural part. So the gap `U_delta - binomial bound` grows from 0.008 to 0.090 under contrast
-#    loss, almost all of the growth structural, while under AWGN it stays at 0.008 to 0.013. The
-#    frozen `U_delta` was never below `U_E` in any repetition, level or degradation (figure
-#    `frozen_excess`). `U`, which assumes the nominal coverage, stays at about 0.0275 while `U_E` rises
-#    from 0.028 to 0.579 (column `U` of the section 3 table).
+#    the structural part. So the gap `U_delta - binomial bound` grows from 0.008 to 0.129 under contrast
+#    loss, almost all of the growth structural, while under AWGN it stays at 0.008 to 0.013. **The
+#    frozen `U_delta` was below `U_E` in 1 of the 340 checks** (20 repetitions, 17 levels): repetition
+#    12 at `c = 0.6`, 0.0426 against 0.0445. That evaluation set's error, 0.0275, was 3.7 binomial
+#    standard deviations below `U_E`. A bound at confidence `1 - delta` = 0.95 is allowed to fail in up to
+#    5 % of checks, so one failure in 340 is within what it promises. In the other 339 checks, and under
+#    AWGN in all of them, `U_delta` was above `U_E`. `U`, which assumes the nominal coverage, stays
+#    between 0.030 and 0.032 while `U_E` rises from 0.031 to 0.528 under contrast loss and to 0.788 under
+#    AWGN (column `U` of the section 3 table).
 # 5. **The uniform-selection term is not measurable here.** Multi-label sets are a few per thousand at
-#    most. Their term is within +-0.0001 in the mean at every level (per repetition between -0.0013 and
-#    +0.0008), so this model and data say nothing about the cost of the uniform-selection assumption.
+#    most (34 in the whole clean pool at repetition 0's `alpha0`). Their term is within +-0.00015 in the
+#    mean at every level (per repetition between -0.0010 and +0.0013), so this model and data say
+#    nothing about the cost of the uniform-selection assumption.
 # 6. **Estimating the structural part against `err_eval` or `U_E` differs only by sampling.** The mean
-#    of `U_empirical - err_eval` and that of `U_empirical - U_E` differ by at most 0.0023 (contrast)
-#    and 0.0043 (AWGN). Per repetition, `err_eval - U_E` has a standard deviation of 0.003 to 0.012,
-#    matching the binomial sampling error of 2000 images (for example 0.0037 expected at an error of
-#    0.028, 0.0110 at 0.58).
+#    of `U_empirical - err_eval` and that of `U_empirical - U_E` differ by at most 0.0063 (contrast)
+#    and 0.0029 (AWGN). Per repetition, `err_eval - U_E` has a standard deviation of 0.003 to 0.012,
+#    matching the binomial sampling error of 2000 images (for example 0.0039 expected at an error of
+#    0.031, 0.0112 at 0.53).
 # 7. **The early label-free signal is the confidence baseline, not `U_inf`.** At `c = 0.8`, where `U_E`
-#    has moved by +0.1 pp, the max-softmax test (A3) alarms in 20 of 20 repetitions. The empty-fraction
-#    test (A1) reaches 50 % at `c = 0.6` and 100 % at `c = 0.5`. The formal `U_inf_lower` rule (A2) first
-#    fires at `c = 0.35` (10 %) and reaches 100 % only at `c = 0.25` (`U_E` 0.21). Under AWGN, A2 never
-#    fires and the empty fraction stays at about 1 % or below while `U_E` reaches 0.79: label-free rules
-#    do not see confident errors (item 10 measures how much they miss).
-# 8. **L1b is the drift test to use with a frozen instrument; L1 is not.** On clean data L1 (against
-#    the nominal `1 - alpha0`) fired in 3 of 20 (contrast) and 1 of 20 (AWGN) repetitions. L1b (against
-#    the commissioning coverage) fired in 1 of 20 and 0 of 20. A separate 1000-draw check (see the report)
-#    measured 9.8 % for L1 and 4.6 % for L1b at a nominal 5 %. L1b pays for this in power, because it
-#    compares two samples: under contrast loss it reaches 50 % of repetitions at `c = 0.5` (L1 at
-#    `c = 0.6`), and 40 % against 60 % at `c = 0.6`. The literal L2 fired in 10 of 20 on clean data under
-#    both degradations, as expected for two noisy bounds compared head to head; it is kept in the alarm
-#    tables but not drawn in `alarm_rates`.
+#    has moved by +0.4 pp, the max-softmax test (A3) alarms in 20 of 20 repetitions. The empty-fraction
+#    test (A1) goes from 10 % at `c = 0.8` to 100 % at `c = 0.6`. The formal `U_inf_lower` rule (A2)
+#    first fires at `c = 0.35` (10 %) and reaches 100 % at `c = 0.3` (`U_E` 0.17). Under AWGN, A2 never
+#    fires and the empty fraction stays at about 1 % or below while `U_E` reaches 0.79: label-free
+#    rules do not see confident errors (item 10 measures how much they miss).
+# 8. **L1b is the drift test to use with a frozen instrument; L1 is not.** On clean data, 20
+#    repetitions cannot tell them apart: both fired in 3 of 20 (contrast) and 0 of 20 (AWGN). The
+#    1000-draw check of section 5 can: L1 (against the nominal `1 - alpha0`) fired in 10.6 % of draws
+#    (95 % interval 8.8 % to 12.7 %), above its nominal 5 %; L1b (against the commissioning coverage) in
+#    4.1 % (3.0 % to 5.5 %), consistent with 5 %. L1b pays for this in power, because it compares two
+#    samples, but here only a little: under contrast loss both reach 50 % of repetitions at `c = 0.6`
+#    (80 % against 95 %) and 100 % at `c = 0.5`. The literal L2 fired in 7 of 20 (contrast) and 9 of 20
+#    (AWGN) on clean data, and in 47.6 % of the 1000 draws, as expected for two noisy bounds compared
+#    head to head; it is kept in the alarm tables but not drawn in `alarm_rates`.
 # 9. **Recalibrating hides the drift but gives a slightly tighter bound.** Recalibrated `U_delta` is
-#    below the frozen one by up to 0.058 (`c = 0.15`: 0.627 against 0.685) and was never below `U_E`.
-#    The tuned `alpha` moves from 0.027 to 0.571, and the measured coverage follows `1 - alpha`.
+#    below the frozen one by up to 0.090 (`c = 0.15`: 0.585 against 0.675). It was below `U_E` only in the
+#    same check as item 4 (repetition 12, `c = 0.6`, where the two coincide). The tuned `alpha` moves from
+#    0.030 to 0.521, and the measured coverage follows `1 - alpha` (within 0.008).
 # 10. **Most errors of this model are confident errors, and they are what the label-free bound misses.**
 #    On clean data 97 % of the top-1 errors come with a non-empty set that excludes the true class, so
-#    `U_inf` on the evaluation set is 0.001 while `U_empirical` is 0.028: `U_empirical - U_inf` = 0.026,
-#    almost the whole of it. Under AWGN the confident share stays at 0.95 to 0.99 at every level, `U_inf`
-#    never exceeds 0.012, and `U_empirical - U_inf` grows with the error to 0.785 at `sigma = 2`
-#    (`U_empirical` 0.791). Under contrast loss the flagged share rises from 0.03 to 0.49 at `c = 0.15`,
-#    `U_inf` reaches 0.363, and the label-free bound misses 0.295 of `U_empirical`'s 0.658 (45 %).
+#    `U_inf` on the evaluation set is 0.001 while `U_empirical` is 0.030: `U_empirical - U_inf` = 0.029,
+#    almost the whole of it. Under AWGN the confident share stays at 0.97 to 0.995 at every level, `U_inf`
+#    never exceeds 0.013, and `U_empirical - U_inf` grows with the error to 0.786 at `sigma = 2`
+#    (`U_empirical` 0.792). Under contrast loss the flagged share rises from 0.02 to 0.53 at `c = 0.15`,
+#    `U_inf` reaches 0.399, and the label-free bound misses 0.249 of `U_empirical`'s 0.648 (38 %).
 #    Covered-but-wrong errors are below 1 % throughout. So a label-free bound tracks the error only to the
 #    extent that errors produce empty sets: here under contrast loss, not under noise.
 # 11. **Under AWGN max-softmax becomes badly over-confident; under contrast loss it stays roughly
-#    calibrated much longer, and its resolution falls more slowly.** On clean data the AUROC is 0.94 to
-#    0.95 and the top-label ECE 0.020 to 0.021 (only 5 equal-mass bins remain, because of the ties at 1.0). At a similar error rate, about 0.21 (`c = 0.25`
-#    against `sigma = 0.75`), the AUROC is 0.880 against 0.852 but the ECE 0.036 against 0.170. At the
-#    strongest levels the AUROC is 0.765 (`c = 0.15`, `U_E` 0.58) and 0.622 (`sigma = 2`, `U_E` 0.79),
-#    the ECE 0.198 and 0.753. The AWGN reliability diagrams show why: many images keep a confidence near
-#    1 while the accuracy in those bins falls to roughly 0.35 to 0.9 (`sigma = 1`). The ECE is a binned
-#    descriptive estimate, not a guarantee, and nothing here tests whether recalibration would help.
+#    calibrated much longer. Its resolution falls at about the same rate against the error under
+#    both.** On clean data the AUROC is 0.94 and the top-label ECE 0.021 (only 6 or 7 equal-mass bins
+#    remain, because of the ties at 1.0). At a similar error rate, about 0.25 (`c = 0.25` against
+#    `sigma = 0.75`), the AUROC is 0.824 against 0.838 but the ECE 0.026 against 0.222; at about 0.5
+#    (`c = 0.15` against `sigma = 1`) the AUROC is 0.737 against 0.740 and the ECE 0.131 against 0.440.
+#    At the strongest AWGN level (`sigma = 2`, `U_E` 0.79) the AUROC is 0.633 and the ECE 0.746. The AWGN
+#    reliability diagrams show why: many images keep a confidence near 1 while the accuracy in those bins
+#    falls to roughly 0.35 to 0.9 (`sigma = 1`). The ECE is a binned descriptive estimate, not a
+#    guarantee, and nothing here tests whether recalibration would help.
