@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- `scripts/btorch_MNIST_test.py` gains `--json PATH` (writes the plotted numbers), `--iterations N`
+  (repetitions of the noise sweep) and `--seed N` (a reproducible run). Without them its behaviour
+  is unchanged.
+
+### Fixed
+- `scripts/btorch_MNIST_test.py` now moves the Bayesian model and the test batch to the selected
+  device. Before, on a GPU machine only the training used the GPU and the Monte Carlo loop silently
+  ran on the CPU.
+
+### Documentation
+- `notebooks/periodic_verification_demo.py` (jupytext) commissions one frozen `utrace` instrument on
+  an MNIST classifier and verifies it periodically under contrast loss and AWGN: what `U`,
+  `U_empirical` and `U_delta` say against the measured error, the drift tests and the label-free
+  alarms, and what recalibrating hides.
+- `notebooks/acdc_periodic_verification.py` (jupytext) does the same for a pre-trained cardiac MRI
+  segmentation model on the ACDC data, with one frozen quantifier per class, under AWGN, blur and a
+  bias field, and states the bound at patient level, the unit of independence.
+- The two notebooks are not part of the installed package.
+
 ## [0.3.0] - 2026-10-17
 
 Upgrading from 0.2.x: three changes can affect existing code. Labels outside `[0, K)`, and
