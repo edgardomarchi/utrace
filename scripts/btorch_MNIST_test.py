@@ -42,7 +42,14 @@ class AddGaussianNoise:
 
 
 def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./data/'), model_path:Path=Path('./saved_models/'),
-         json_path:Path|None=None, iterations:int=1) -> None:
+         json_path:Path|None=None, iterations:int=1, seed:int|None=None) -> None:
+
+    if seed is not None:
+        # One seed fixes the model init, the training shuffles, the splits, the noise and the MC samples
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     BATCH_SIZE = 1200  # Number of images per batch
     num_classes = 10
@@ -180,7 +187,7 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps({
             "config": {"iterations": iterations, "num_monte_carlo": num_monte_carlo, "splits": splits,
-                       "batch_size": BATCH_SIZE, "prior": const_bnn_prior_parameters, "device": str(device)},
+                       "batch_size": BATCH_SIZE, "seed": seed, "prior": const_bnn_prior_parameters, "device": str(device)},
             "noises": noises.tolist(),
             "U_E": (1 - iter_accuracies).tolist(), "predictive_entropy": iter_puncertainties.tolist(),
             "mutual_information": iter_muncertainties.tolist(),
@@ -242,6 +249,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", type=Path, default=None, help="also write the plotted numbers to this JSON file")
     parser.add_argument("--iterations", type=int, default=1, help="repetitions of the noise sweep (the paper uses 10)")
+    parser.add_argument("--seed", type=int, default=None, help="seed for a reproducible run (default: unseeded)")
     args = parser.parse_args()
     log_path = Path("log/btorch_test.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,5 +287,5 @@ if __name__ == "__main__":
     mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
 
     main(train_model=True, img_path=img_path, data_path=data_path, model_path=model_path, json_path=args.json,
-         iterations=args.iterations)
+         iterations=args.iterations, seed=args.seed)
     plt.show()
