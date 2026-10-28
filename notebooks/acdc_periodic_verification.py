@@ -1194,6 +1194,21 @@ handles += [Patch(facecolor=OUTCOME_COL[o], edgecolor="#666666", lw=0.8, label=O
 fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.47, 0.08), ncol=4, frameon=False, fontsize=13)
 save(fig, "acdc_overlay")
 
+# The arrays the figure draws, cropped as drawn, so it can be redrawn without the cache (not in the results JSON)
+OVERLAY_ARRAYS_PATH = BUILD / f"acdc_overlay_arrays_{MODE}.npz"
+np.savez_compressed(
+    OVERLAY_ARRAYS_PATH,
+    **{f"{name}_{a}": OV[name][a][CROP] for name in MISS_KEYS for a in ("img", "gt", "pred", "outcome", "u")},
+    crop_box=np.array([CROP[0].start, CROP[0].stop, CROP[1].start, CROP[1].stop]),   # rows y0:y1, columns x0:x1
+    conditions=np.array(list(MISS_KEYS)), condition_levels=np.array([MISS_KEYS[n][1] for n in MISS_KEYS], dtype=float),
+    thresholds_rep0=np.array([COMM[0]["classes"][k]["threshold"] for k in CLASSES]),  # judge the outcome map
+    thresholds_all=THRESH, colorbar_mark=np.array(1 - thr_),                         # mark: 1 - mean of all of THRESH
+    class_codes=np.array(list(CLASSES)), class_names=np.array(list(CLASSES.values())),
+    patient=np.array(OVERLAY["patient"]), phase=np.array("ED"), ed_slice=np.array(OVERLAY["ed_slice"]),
+    global_slice=np.array(OV_G), outcome_codes=np.arange(-1, len(OUTCOMES)),
+    outcome_names=np.array(["background", *OUTCOMES]))
+print(OVERLAY_ARRAYS_PATH)
+
 # %% [markdown]
 # **Figure `acdc_overlay`.** The slice chosen by rule: patient095 (group RV), ED slice 6 of 14 (all 14
 # contain the three classes), cropped around the heart. Rows: clean, the middle AWGN level and the middle

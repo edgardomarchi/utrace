@@ -10,6 +10,8 @@
 # [[tool.uv.index]]
 # url = "https://download.pytorch.org/whl/cu124"
 # ///
+import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -39,14 +41,20 @@ class AddGaussianNoise:
         return self.__class__.__name__ + f'(mean={self.mean:.2f}, std={self.std:.2f})'
 
 
-def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./data/'), model_path:Path=Path('./saved_models/')) -> None:
+def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./data/'), model_path:Path=Path('./saved_models/'),
+         json_path:Path|None=None, iterations:int=1, seed:int|None=None) -> None:
+
+    if seed is not None:
+        # One seed fixes the model init, the training shuffles, the splits, the noise and the MC samples
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     BATCH_SIZE = 1200  # Number of images per batch
     num_classes = 10
     num_monte_carlo = 1000
     splits = [0.2, 0.2, 0.6]
-    
-    iterations = 1
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ImageClassifierCNN().to(device)
@@ -79,6 +87,7 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
     }
 
     dnn_to_bnn(model, const_bnn_prior_parameters)
+    model.to(device)  # dnn_to_bnn builds the Bayesian layers on the CPU
 
     noises = np.arange(0, 2.5, 0.5)
 
@@ -107,6 +116,7 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
             testDataLoader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
             x_test, y_test = next(iter(testDataLoader))
+            x_test = x_test.to(device)
 
             model.eval()
             with torch.no_grad():
@@ -173,6 +183,21 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
     std_puncertainties = iter_puncertainties.std(axis=0)
     std_muncertainties = iter_muncertainties.std(axis=0)
 
+    if json_path is not None:  # the plotted numbers, per iteration and summarised
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps({
+            "config": {"iterations": iterations, "num_monte_carlo": num_monte_carlo, "splits": splits,
+                       "batch_size": BATCH_SIZE, "seed": seed, "prior": const_bnn_prior_parameters, "device": str(device)},
+            "noises": noises.tolist(),
+            "U_E": (1 - iter_accuracies).tolist(), "predictive_entropy": iter_puncertainties.tolist(),
+            "mutual_information": iter_muncertainties.tolist(),
+            "mean": {"U_E": (1 - mean_accuracies).tolist(), "predictive_entropy": mean_puncertainties.tolist(),
+                     "mutual_information": mean_muncertainties.tolist()},
+            "std": {"U_E": std_accuracies.tolist(), "predictive_entropy": std_puncertainties.tolist(),
+                    "mutual_information": std_muncertainties.tolist()},
+        }, indent=1))
+        logger.info("Plotted numbers written to %s", json_path)
+
     
 
     ## Plot:
@@ -221,6 +246,11 @@ def main(train_model=True, img_path:Path=Path('./img/'), data_path:Path=Path('./
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", type=Path, default=None, help="also write the plotted numbers to this JSON file")
+    parser.add_argument("--iterations", type=int, default=1, help="repetitions of the noise sweep (the paper uses 10)")
+    parser.add_argument("--seed", type=int, default=None, help="seed for a reproducible run (default: unseeded)")
+    args = parser.parse_args()
     log_path = Path("log/btorch_test.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     img_path = Path("img/MNIST_bayesian_approach/")
@@ -256,5 +286,6 @@ if __name__ == "__main__":
     mpl_logger = logging.getLogger('matplotlib')
     mpl_logger.setLevel(logging.WARNING)  # Set matplotlib logger to WARNING level
 
-    main(train_model=True, img_path=img_path, data_path=data_path, model_path=model_path)
+    main(train_model=True, img_path=img_path, data_path=data_path, model_path=model_path, json_path=args.json,
+         iterations=args.iterations, seed=args.seed)
     plt.show()
