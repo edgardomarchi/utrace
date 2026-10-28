@@ -15,7 +15,9 @@
 #
 # The companion of `notebooks/periodic_verification_demo.py` (MNIST) for a real black box: KM, a
 # pre-trained residual U-Net that segments the left-ventricle pool (LV), the myocardium (MYO) and the
-# right-ventricle pool (RV) in short-axis cardiac MRI (Kerfoot et al. 2019), on the ACDC data (Bernard
+# right-ventricle pool (RV) in short-axis cardiac MRI (Kerfoot et al. 2019; with `UTRACE_NB_MODEL=bm`, the
+# fully convolutional network of Bai et al. 2018 instead, from a cache built by `notebooks/acdc_bm_cache.py`;
+# below, "KM" is the default model), on the ACDC data (Bernard
 # et al. 2018), which the model never saw. As there, the instrument is commissioned once on clean data,
 # one `utrace` quantifier per class, and frozen; then the input degrades and the frozen instrument is
 # checked again on fresh labelled patients.
@@ -80,6 +82,12 @@ import os
 QUICK = os.environ.get("UTRACE_NB_QUICK", "1") != "0"
 MODE = "quick" if QUICK else "full"                 # every output carries it, so the two modes never overwrite each other
 SEED = 20261112
+# The model under verification: "km" (default) or "bm" (Bai et al., a TensorFlow 1 checkpoint, run by notebooks/acdc_bm_cache.py
+# in a separate environment; this notebook reads its softmax cache). Everything else (seeds, splits, sizes, repetitions, level
+# grids) is the same for both; the outputs of a non-default model carry its name.
+MODEL = os.environ.get("UTRACE_NB_MODEL", "km")
+assert MODEL in ("km", "bm"), f"UTRACE_NB_MODEL must be 'km' or 'bm', not {MODEL!r}"
+MTAG = "" if MODEL == "km" else f"{MODEL}_"         # "" for the default, so its output names do not change
 
 SPLIT_PER_GROUP = (6, 4, 20)                        # calibration, tuning, evaluation patients per pathology group (x 5 groups)
 L = 2 if QUICK else 20                              # repetitions (each redraws the patient split)
@@ -91,6 +99,9 @@ CLASSES = {1: "LV", 2: "MYO", 3: "RV"}              # model channels after the p
 LEVELS = {"awgn": [0.0, 0.1, 0.3, 0.5, 0.75] if QUICK else [0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.75],
           "blur": [0.0, 1.5, 3.0, 4.0] if QUICK else [0.0, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0],
           "bias": [0.0, 0.5] if QUICK else [0.0, 0.25, 0.5]}
+
+if MODEL == "bm":       # BM collapses under the smallest common noise levels: finer levels are ADDED, no common level is dropped
+    LEVELS["awgn"] = sorted(set(LEVELS["awgn"]) | {0.005, 0.01, 0.02, 0.03})
 
 MISS_DRAWS = 100 if QUICK else 500                  # section 8: draws of evaluation subsets per class and level
 MISS_N = (20, 40)                                   # their sizes (patients)
@@ -106,6 +117,8 @@ PARAMS = {"QUICK": QUICK, "MODE": MODE, "SEED": SEED, "SPLIT_PER_GROUP": SPLIT_P
           "CLASSES": CLASSES, "LEVELS": LEVELS, "MISS_DRAWS": MISS_DRAWS, "MISS_N": MISS_N, "MARGIN_N": MARGIN_N,
           "MARGIN_DRAWS": MARGIN_DRAWS, "BOOT_N": BOOT_N, "SIM_DRAWS": SIM_DRAWS, "EW_REF_PER_GROUP": EW_REF_PER_GROUP,
           "EW_ALPHA": EW_ALPHA, "NULL_SPLITS": NULL_SPLITS}
+if MODEL != "km":
+    PARAMS["MODEL"] = MODEL                         # a new key only for a non-default model: the default's results are unchanged
 print(PARAMS)
 
 # %% [markdown]
@@ -173,8 +186,8 @@ def _find_repo_root() -> Path:
 
 REPO = _find_repo_root()
 BUILD = REPO / "notebooks" / "_build"
-FIG = BUILD / "figures" / f"acdc_periodic_verification_{MODE}"
-RESULTS_PATH = BUILD / f"acdc_periodic_verification_results_{MODE}.json"
+FIG = BUILD / "figures" / f"acdc_periodic_verification_{MTAG}{MODE}"
+RESULTS_PATH = BUILD / f"acdc_periodic_verification_results_{MTAG}{MODE}.json"
 CACHE = BUILD / "cache"
 for d_ in (CACHE, FIG):
     d_.mkdir(parents=True, exist_ok=True)
@@ -183,8 +196,12 @@ for d_ in (CACHE, FIG):
 # scripts/ACDC_example.py uses relative to scripts/ (see its docstring for where to get them).
 DATA_DIR = Path(os.environ.get("UTRACE_ACDC_DATA", REPO / "scripts" / "../../data/ACDC")).resolve()
 MODEL_DIR = Path(os.environ.get("UTRACE_ACDC_MODEL", REPO / "scripts" / "../../models/ventricular_short_axis")).resolve()
+BM_DIR = Path(os.environ.get("UTRACE_ACDC_BM", REPO / "scripts" / "../../models/kaggle")).resolve()   # FCN_sa.{meta,index,data-*}
 assert (DATA_DIR / "training").is_dir() and (DATA_DIR / "testing").is_dir(), f"ACDC not found under {DATA_DIR}"
-assert (MODEL_DIR / "models" / "model.pt").exists(), f"KM bundle not found under {MODEL_DIR}"
+if MODEL == "km":
+    assert (MODEL_DIR / "models" / "model.pt").exists(), f"KM bundle not found under {MODEL_DIR}"
+else:
+    assert (BM_DIR / "FCN_sa.index").exists(), f"BM checkpoint not found under {BM_DIR}"
 
 
 def _git(*args) -> str:
@@ -199,7 +216,7 @@ DIRTY = bool(_git("status", "--porcelain", "--", "src"))
 print("commit", COMMIT, "(src dirty)" if DIRTY else "", "| python", sys.version.split()[0], "| jax", jax.__version__,
       jax.default_backend(), "| torch", torch.__version__, torch.get_num_threads(), "threads | monai", monai.__version__,
       "| utrace", utrace.__version__)
-print("data", DATA_DIR, "| model", MODEL_DIR)
+print("data", DATA_DIR, "| model", MODEL_DIR if MODEL == "km" else BM_DIR)
 
 # --- patients: training/ and testing/ only ---
 def read_info(path: Path) -> dict:
@@ -271,14 +288,22 @@ NPIX = {k: np.bincount(PK[k], minlength=N_PAT) for k in CLASSES}
 assert all(NPIX[k].min() > 0 for k in CLASSES)
 
 # --- KM: loaded as scripts/ACDC_example.py loads it, on CPU, in eval mode ---
-parser = load_bundle_config(str(MODEL_DIR), "train.json")
-net = parser.get_parsed_content("network_def")
-net.load_state_dict(torch.load(MODEL_DIR / "models" / "model.pt", map_location=DEVICE))
-net.eval()
-model = Pytorch_wrapper(net.to(DEVICE), device=DEVICE, classes=np.arange(4))
-MODEL_SHA256 = hashlib.sha256((MODEL_DIR / "models" / "model.pt").read_bytes()).hexdigest()
-MODEL_VERSION = json.loads((MODEL_DIR / "configs" / "metadata.json").read_text())["version"]
-print("KM bundle version", MODEL_VERSION, "| model.pt sha256", MODEL_SHA256[:16] + "...")
+if MODEL == "km":
+    parser = load_bundle_config(str(MODEL_DIR), "train.json")
+    net = parser.get_parsed_content("network_def")
+    net.load_state_dict(torch.load(MODEL_DIR / "models" / "model.pt", map_location=DEVICE))
+    net.eval()
+    model = Pytorch_wrapper(net.to(DEVICE), device=DEVICE, classes=np.arange(4))
+    MODEL_SHA256 = hashlib.sha256((MODEL_DIR / "models" / "model.pt").read_bytes()).hexdigest()
+    MODEL_VERSION = json.loads((MODEL_DIR / "configs" / "metadata.json").read_text())["version"]
+    print("KM bundle version", MODEL_VERSION, "| model.pt sha256", MODEL_SHA256[:16] + "...")
+else:   # BM runs in notebooks/acdc_bm_cache.py (TensorFlow, a separate environment); only its cache is read here
+    net = model = None
+    MODEL_SHA256 = hashlib.sha256((BM_DIR / "FCN_sa.data-00000-of-00001").read_bytes()).hexdigest()
+    MODEL_VERSION = "ukbb_cardiac FCN_sa (Bai et al. 2018), TensorFlow 1 checkpoint"
+    BM_META = json.loads((CACHE / "acdc_bm_cache_meta.json").read_text())
+    assert BM_META["checkpoint_sha256"]["FCN_sa.data-00000-of-00001"] == MODEL_SHA256, "the cache was built from another checkpoint"
+    print("BM checkpoint sha256", MODEL_SHA256[:16] + "... | cache built with TensorFlow", BM_META["tensorflow"])
 
 # --- degradations, in the diagnostic's order of operations; seeds fixed per (degradation, level, patient, slice) ---
 DEG_ID = {"clean": 0, "awgn": 1, "blur": 2, "bias": 3}
@@ -326,7 +351,7 @@ def level_key(deg: str, level: float) -> tuple[str, float]:
 
 
 def cache_file(key) -> Path:
-    return CACHE / ("acdc_km_fg_clean.npz" if key[0] == "clean" else f"acdc_km_fg_{key[0]}_{key[1]:g}.npz")
+    return CACHE / (f"acdc_{MODEL}_fg_clean.npz" if key[0] == "clean" else f"acdc_{MODEL}_fg_{key[0]}_{key[1]:g}.npz")
 
 
 def fp_cache_file(key) -> Path:
@@ -337,10 +362,23 @@ BATCH = 32
 INFER_SECONDS = {}
 
 
+OVERLAY_PATIENT = "patient095"      # a non-default model shows the default model's rule-chosen patient (section 7)
+
+
+def bm_overlay(key, pi: int) -> tuple[np.ndarray, np.ndarray]:
+    """BM: the softmax (S * 65536, 4) and the model input (S, 256, 256) of the overlay patient's slices, from the cache builder."""
+    assert PATIENTS[pi]["id"] == OVERLAY_PATIENT, "BM's cache holds whole-patient softmax only for the overlay patient"
+    f = CACHE / ("acdc_bm_ov_clean.npz" if key[0] == "clean" else f"acdc_bm_ov_{key[0]}_{key[1]:g}.npz")
+    z = np.load(f)
+    return z["smx"], z["x"]
+
+
 def patient_softmax(key, pi: int) -> np.ndarray:
     """Softmax of every pixel of one patient's slices at one level, (S * 65536, 4) float32, in fixed batches of
     BATCH slices inside the patient: the batching of the cache, so the values are the cached ones bitwise."""
     a, b = PAT_RANGE[pi]
+    if MODEL == "bm":
+        return bm_overlay(key, pi)[0]
     x = degrade(X_RAW[a:b], key[0], key[1], pi)
     return np.concatenate([model.predict_proba(x[s0:min(b - a, s0 + BATCH)]).numpy() for s0 in range(0, b - a, BATCH)])
 
@@ -357,6 +395,8 @@ def level_softmax(key) -> tuple[np.ndarray, dict]:
     of every background-labelled pixel the model labels LV, MYO or RV (a false positive), with its patient and
     slice. Both cached. If only the first file exists, it is re-inferred and checked bitwise against the file."""
     f, f_fp = cache_file(key), fp_cache_file(key)
+    if MODEL == "bm" and not (f.exists() and f_fp.exists()):
+        raise FileNotFoundError(f"{f.name}: build BM's cache first with notebooks/acdc_bm_cache.py (see CONTRIBUTING.md)")
     if not (f.exists() and f_fp.exists()):
         parts, fp, fp_pat, fp_sl, t_all = [], [], [], [], time.time()
         for pi, (a, b) in enumerate(PAT_RANGE):
@@ -456,6 +496,8 @@ LOADER_CHECK = {"package_items": len(ds), "package_items_in_validation": n_val_i
                 "slices_compared": len(sample), "bitwise_equal": True}
 print(LOADER_CHECK)
 del ds
+if MODEL == "bm":
+    EVAL_CHECK = None       # BM is a TensorFlow graph: the train/eval comparison below is about KM's PyTorch modules
 
 pd.DataFrame({"pixels": {CLASSES[k]: int(NPIX[k].sum()) for k in CLASSES},
               "per patient, median": {CLASSES[k]: int(np.median(NPIX[k])) for k in CLASSES},
@@ -466,11 +508,12 @@ pd.DataFrame({"pixels": {CLASSES[k]: int(NPIX[k].sum()) for k in CLASSES},
 # `ACDCDataset` holds 3542 slices, 564 of them the `validation/` copies; the notebook's loader holds
 # the 2978 unique ones. On the sampled slices the image after crop/pad, the label after `relabel` and the
 # min-max-normalised image are bitwise equal to the package's.
-#
+
+# %% [markdown] tags=["only-km"]
 # **`eval()` against train mode.** This notebook calls `net.eval()`; `scripts/ACDC_example.py` does
 # not, so the script runs KM in train mode. On 20 seeded clean slices, the softmax in both modes:
 
-# %%
+# %% tags=["only-km"]
 _net_train = copy.deepcopy(net).train()            # a copy: train mode must not touch the instrument's model
 _layers = {type(m_).__name__ for m_ in net.modules()}
 _norms = {(m_.affine, m_.track_running_stats) for m_ in net.modules() if isinstance(m_, torch.nn.InstanceNorm2d)}
@@ -486,7 +529,7 @@ print(EVAL_CHECK)
 assert _d == 0.0, "train and eval mode differ; the text below no longer holds"
 del _net_train
 
-# %% [markdown]
+# %% [markdown] tags=["only-km"]
 # The two modes give the same softmax, bitwise: KM normalises with `InstanceNorm2d` without running
 # statistics, which normalises each image by its own statistics in either mode, has no batch
 # normalisation, and its dropout has `p = 0`. The missing `eval()` in the script changes nothing.
@@ -496,7 +539,7 @@ del _net_train
 #
 # With patients as the unit, the bound is on a mean of `n` independent values in `[0, 1]`, `v_ik`
 # (or `1 - err_ik`), with `n` around 100: small. Hoeffding's margin, `sqrt(ln(1/delta) / (2n))`, ignores
-# the variance, and KM's per-patient values vary little (sd 0.02 to 0.04 on clean data). The betting
+# the variance, and the per-patient values vary little when the model is good (KM: sd 0.02 to 0.04 on clean data). The betting
 # confidence interval of Waudby-Smith and Ramdas, *Estimating means of bounded random variables by
 # betting*, J. R. Stat. Soc. B 86(1):1-27 (2024), doi:10.1093/jrsssb/qkad009 (Theorem 3 and Remark 3,
 # the hedged capital process), adapts to the variance and is valid at every `n`. One-sided, at level
@@ -675,7 +718,8 @@ pd.DataFrame([{"rep": c["rep"], "class": CLASSES[k], **{f: c["classes"][k][f] fo
 # labels (the softmax sums to 1), so the mean size is `1 - empty fraction <= 1` and the search keeps
 # lowering `alpha`, i.e. the threshold; below 0.5 two-label sets appear, and the mean size passes 1 as
 # soon as they outnumber the empty sets, which are just as rare, so the search stops at or just below 0.5.
-#
+
+# %% [markdown] tags=["only-km"]
 # So KM's frozen sets are, essentially, singletons holding the top-1 label or empty, and a covered pixel
 # is, almost always, a correctly labelled pixel: `U_empirical` is almost exactly the error, and U-TraCE
 # here is close to its degenerate case, a direct bound on the error with almost no structural part
@@ -703,6 +747,8 @@ def pixel_bound(n_valid: int, n_cov: int, S: float, S2: float, d: float = DELTA)
     """The package's (U_delta, U_empirical) from pooled counts (_confidence_bound in uncertaintyQuantifier.py),
     for the resampling of section 8, where calling uncertainty_at 9000 times is not needed. With LAC a covered
     pixel has a non-empty set, so n_succ = n_covered. Checked against uncertainty_at at every level below."""
+    if n_cov == 0:      # nothing covered (BM under noise): the package's convention, coverage_lower = EC_lower = 0
+        return 1.0, 1.0
     EC = S / n_cov
     cov_lo = float(betaincinv(float(n_cov), float(n_valid - n_cov + 1), d / 2))
     m = np.sqrt(np.log(4 / d) / (2 * n_cov))
@@ -940,11 +986,14 @@ fig.tight_layout()
 save(fig, "acdc_clean_snapshot")
 
 # %% [markdown]
-# **Figure `acdc_clean_snapshot`.** KM on clean data, per class. Star: the patient-averaged error over all
+# **Figure `acdc_clean_snapshot`.** The model on clean data, per class. Star: the patient-averaged error over all
 # 150 patients. Points with whiskers: the mean and the 5th-95th percentiles over the repetitions of
 # `U_empirical` on each repetition's 100 evaluation patients, of the patient-level bound `U_delta_patient`,
 # and of the package's pixel-level `U_delta` (open). Markers are not connected: the classes are not a
-# series. `U_empirical` sits on the reference error because with KM's frozen sets a covered pixel is
+# series.
+
+# %% [markdown] tags=["only-km"]
+# `U_empirical` sits on the reference error because with KM's frozen sets a covered pixel is
 # almost always a correctly labelled one (section 3), and the evaluation patients are drawn from the same
 # 150; the pixel-level `U_delta` sits on it too, which is the problem of section 8, not a virtue.
 
@@ -990,7 +1039,10 @@ print("bias field, change from clean over its levels", LEVELS["bias"], ":", BIAS
 # the horizontal axis, from clean (0). Black stars: the patient-averaged error of all 150 patients at that
 # level, the reference. Red: `U_empirical` of the frozen instrument on the evaluation patients (mean, and its
 # 5th-95th percentiles over repetitions as thin lines); orange: `U_delta_patient`, shaded between its 5th and
-# 95th percentiles; violet dashed: the package's pixel-level `U_delta`. `U_empirical` and `U_E` almost
+# 95th percentiles; violet dashed: the package's pixel-level `U_delta`.
+
+# %% [markdown] tags=["only-km"]
+# `U_empirical` and `U_E` almost
 # coincide: KM's frozen sets are, nearly always, the top-1 label or empty (section 3), so `U_empirical`
 # is nearly the error itself, and the mean over repetitions of a subsample's error is the error of the 150.
 # The bound sits a roughly constant margin above them, narrowing at the strongest AWGN levels. The
@@ -1105,6 +1157,9 @@ ev0 = COMM[0]["ev"]
 _pat_err = np.mean([1 - FROZEN[0][CK]["classes"][k]["_per"]["correct"] / FROZEN[0][CK]["classes"][k]["_per"]["n"]
                     for k in CLASSES], axis=0)                              # clean mean per-class error, per patient
 OV_PI = int(ev0[np.argsort(_pat_err, kind="stable")[(len(ev0) - 1) // 2]])
+if MODEL != "km":       # the same patient and slice for every model: the one the default model's rule chooses (patient095)
+    OV_PI = next(i_ for i_, p_ in enumerate(PATIENTS) if p_["id"] == OVERLAY_PATIENT)
+    assert OV_PI in ev0
 _a, _b = PAT_RANGE[OV_PI]
 _ed = next(v["img"] for v in PATIENTS[OV_PI]["vols"] if v["phase"] == "ED")
 _full = [g for g in range(_a, _b) if SLICE_INFO[g][0] == _ed and set(np.unique(Y_ALL[g])) >= set(CLASSES)]
@@ -1135,7 +1190,8 @@ for name, key in MISS_KEYS.items():
         for oi, o in enumerate(OUTCOMES):
             outcome[r_[kinds[o]]] = oi
     assert np.all(outcome[y_ > 0] >= 0)
-    OV[name] = {"img": degrade(X_RAW[_a:_b], key[0], key[1], OV_PI)[OV_G - _a, 0].numpy(), "gt": Y_ALL[OV_G],
+    OV[name] = {"img": (degrade(X_RAW[_a:_b], key[0], key[1], OV_PI)[OV_G - _a, 0].numpy() if MODEL == "km"
+                        else bm_overlay(key, OV_PI)[1][OV_G - _a]), "gt": Y_ALL[OV_G],
                 "pred": s_.argmax(1).reshape(256, 256), "outcome": outcome.reshape(256, 256),
                 "u": doubt(s_).reshape(256, 256)}
     e_ = OV[name]["pred"] != OV[name]["gt"]
@@ -1195,7 +1251,7 @@ fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.47, 0.08), nco
 save(fig, "acdc_overlay")
 
 # The arrays the figure draws, cropped as drawn, so it can be redrawn without the cache (not in the results JSON)
-OVERLAY_ARRAYS_PATH = BUILD / f"acdc_overlay_arrays_{MODE}.npz"
+OVERLAY_ARRAYS_PATH = BUILD / f"acdc_overlay_arrays_{MTAG}{MODE}.npz"
 np.savez_compressed(
     OVERLAY_ARRAYS_PATH,
     **{f"{name}_{a}": OV[name][a][CROP] for name in MISS_KEYS for a in ("img", "gt", "pred", "outcome", "u")},
@@ -1217,7 +1273,8 @@ print(OVERLAY_ARRAYS_PATH)
 # (background uncoloured); and `1 - max-softmax` on a log scale over the image, with the pixels whose top-1
 # label is wrong outlined in black. The black bar on the colour bar is where a set becomes empty: a pixel
 # is flagged only if `1 - max-softmax` exceeds about 0.5.
-#
+
+# %% [markdown] tags=["only-km"]
 # What the figure shows, read with the table above: on this slice **every error is a confident error**,
 # in all three conditions. Not one pixel has an empty or multi-label set, so the outcome map has only two
 # colours, white and red. The wrong pixels are less confident than the right ones (median
@@ -1643,7 +1700,8 @@ save(fig, "acdc_alarm_rates")
 # a false alarm; the dash-dotted line is 5 %. With `L` repetitions a rate is resolved only to `1/L`. The
 # lines are offset vertically by -0.024 to +0.024, so that rules with equal rates do not hide each other;
 # the exact rates are in the table above.
-#
+
+# %% [markdown] tags=["only-km"]
 # On clean data no label-free rule fired in the 20 repetitions; on 500 random reference/monitoring splits of
 # clean data the rates are 3.6 % (A1, A3), 2.0 % (A4), 3.8 % (L1b) and 0 % (L2 formal), all compatible with
 # the nominal 5 % or below it (table above). Against the expectation, **A1 does react**: empty sets are
@@ -1940,7 +1998,10 @@ for deg, deg_levels in LEVELS.items():
 # The inferences below are hand-written from one specific full run, identified by the SHA-256 of the
 # non-volatile part of its results file. If THIS run differs (mode, seed, parameters, versions, code),
 # they may not follow from the numbers above.
-INFERENCES_WRITTEN_FROM_SHA256 = "db2153862962e4f4f1cfae3b54a6645a899a7ec615a36ffd42f4e62a05ddb144"
+INFERENCES_WRITTEN_FROM_SHA256 = {
+    "km": "db2153862962e4f4f1cfae3b54a6645a899a7ec615a36ffd42f4e62a05ddb144",
+    "bm": "d8a1b73b35a6ea22d82e396be134bc23905f2aef19f3f51b43ed58d2130e4fd4",
+}[MODEL]
 if NONVOLATILE_SHA256 == INFERENCES_WRITTEN_FROM_SHA256:
     print("inferences match this run (non-volatile sha256", NONVOLATILE_SHA256[:16] + "...)")
 else:
@@ -1950,7 +2011,7 @@ else:
     print(f"        (QUICK={QUICK}, L={L}). Do not rely on the inferences below without re-reading the facts above.")
     print("*" * 100)
 
-# %% [markdown]
+# %% [markdown] tags=["only-km"]
 # Written from the full run with non-volatile SHA-256
 # `db2153862962e4f4f1cfae3b54a6645a899a7ec615a36ffd42f4e62a05ddb144` (`QUICK=False`, `L=20`, seed
 # 20261112, CPU). One model (KM), one dataset (ACDC, 150 patients from one centre, balanced by design
@@ -2026,3 +2087,48 @@ else:
 #    nothing to a direct bound on the error; what the experiment adds is the patient as the unit.
 # 10. **The paper's script runs KM without `eval()`, and that changes nothing.** KM uses `InstanceNorm2d`
 #     without running statistics and dropout with `p = 0`, so the softmax is bitwise the same in both modes.
+
+# %% [markdown] tags=["only-bm"]
+# Written from the full run with non-volatile SHA-256
+# `d8a1b73b35a6ea22d82e396be134bc23905f2aef19f3f51b43ed58d2130e4fd4` (`UTRACE_NB_MODEL=bm`, `QUICK=False`,
+# `L=20`, seed 20261112, CPU; BM checkpoint `FCN_sa` data file SHA-256 `7a9c4275ea32f924...`, softmax cache built by
+# `notebooks/acdc_bm_cache.py` with TensorFlow 2.21.0). One model (BM), one dataset (ACDC, 150 patients from one centre),
+# three degradations: these are observations about this setup, not properties of the method in general. Numbers are
+# means over the 20 repetitions; the errors are patient-averaged unless stated.
+#
+# 1. **BM is a poor segmenter of ACDC even with its own preprocessing: a domain shift, not a fault of the instrument.**
+#    With `ukbb_cardiac`'s preprocessing (1st-99th percentile rescaling per volume, no resampling, zero padding), the
+#    clean error over the 150 patients is LV 0.153, MYO 0.401 and RV 0.307 (pixel-weighted 0.171, 0.428, 0.339). Most
+#    errors are foreground pixels labelled background. The preprocessing was fixed from the original code before any
+#    result was seen, not chosen by its error.
+# 2. **The frozen instrument stays in the near-degenerate regime, with a threshold just below 0.5.** The structural part
+#    `U_empirical - err` is 0.0019 (LV), 0.0059 (MYO) and 0.0015 (RV) on clean data, and at most 0.0039, 0.0071 and
+#    0.0020 at any level before the collapse. The largest fraction of empty sets is 0.018 and of multi-label sets 0.018
+#    (MYO). The frozen thresholds `1 - q_hat` are 0.474, 0.480 and 0.493: below 0.5, so two-label sets exist, but rarely.
+#    `U_delta_patient` differs from the patient-level bound on the error by at most 0.009.
+# 3. **Nearly all of BM's errors are confident errors, and the max-softmax does not rank them.** The confident share of
+#    the errors is 0.970 (LV), 0.964 (MYO) and 0.988 (RV) on clean data, the flagged share at most 0.021. The AUROC of
+#    the max-softmax is 0.496, 0.464 and 0.368: at or below 0.5, i.e. no resolution, and for RV correct pixels get
+#    a lower confidence than wrong ones. The top-label ECE is 0.202. (On the overlay slice, patient095, ED slice 6,
+#    the wrong pixels do have the larger doubt, median `1 - max-softmax` 0.27 against 0.013, but still below the
+#    0.5 at which a set would flag them.)
+# 4. **The statistical margin dominates `U_delta - error`.** `U_delta_patient - U_empirical` is 0.057 (LV), 0.045 (MYO)
+#    and 0.074 (RV) on clean data; the betting margin at `n = 100` is 0.062, 0.047 and 0.078 (at `n = 50`: 0.105, 0.078,
+#    0.112), against 7.7e-4 to 1.0e-3 for the package's pixel-level margin. As in the default model, the patient-level
+#    bound is the one with a margin worth the name. The patient-level bound was below the patient-averaged error of
+#    the 150 patients in 0 to 5 % of the (repetition, level) cells (largest, 5 %, RV under the bias field).
+# 5. **Under AWGN BM collapses at noise levels that are invisible in the image.** The error rises from 0.153 (LV) to
+#    0.171 at `sigma = 0.01`, 0.267 at 0.02, 0.486 at 0.03 and 0.887 at 0.05 (MYO 0.401 -> 0.959, RV 0.307 -> 0.930). From
+#    `sigma = 0.1` to 0.75 every class has error 1.000: no pixel is predicted as foreground, the coverage is 0 and
+#    `U_delta = U_empirical = 1`. The levels 0.005 to 0.03 were added to BM's grid for this reason; all common levels are
+#    kept. Under blur the error rises from 0.153 to 0.317 (LV, `sigma = 1.5`), 0.794 (3) and 0.957 (4). The bias field, the
+#    negative control, changes the error by at most 0.042 (LV), 0.019 (MYO) and 0.037 (RV).
+# 6. **Alarms.** Under AWGN the first level at which a rule alarms in at least 50 % of repetitions is `sigma = 0.02` for A1,
+#    A3 and L1b, 0.03 for A4 and the formal L2. At `sigma >= 0.1` A1 and A3 alarm in 0 % of the repetitions, because they
+#    are computed on the pixels BM predicts as foreground and there are none; A4 (the segmented area), L1b and
+#    the formal L2 alarm in 100 %. Under blur, A1, A3, L1b and A4 reach 50 % at `sigma = 1.5` (A4: 60 %) and the formal L2 at 2.
+#    Under the bias field no rule exceeds 30 % (L1b at `c = 0.5`). On clean data A1 alarmed in 3 of 20 repetitions and
+#    A3 in 1; in 500 clean splits A1 3.2 %, A3 2.8 %, A4 3.8 %, L1b 2.4 % and the formal L2 0 %, all compatible with 5 % or below.
+# 7. **A label-free rule that tests only the predicted foreground cannot see a model that predicts none.** This is
+#    the lesson of the collapse: the rules that alarm first (A1, A3) are blind once nothing is segmented, and the area
+#    rule A4 and the labelled rules carry the alarm.
