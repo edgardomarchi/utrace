@@ -13,7 +13,8 @@
 # %% [markdown]
 # # Periodic verification of a fixed model under progressive degradation
 #
-# A worked example of `utrace` for practitioners. A digit classifier is put into service
+# A worked example of `utrace` for practitioners. A digit classifier (the CNN by default, the fully
+# connected model with `UTRACE_NB_MODEL=fc`) is put into service
 # (*commissioning*): we calibrate `utrace` once and choose its operating point `alpha0` once. Then the
 # input degrades slowly, the way an ageing sensor would, and every so often we check the model again
 # on fresh labelled data **with the same, frozen instrument**. The question is what each number tells
@@ -55,6 +56,11 @@ import os
 QUICK = os.environ.get("UTRACE_NB_QUICK", "1") != "0"
 MODE = "quick" if QUICK else "full"                 # every output carries it, so the two modes never overwrite each other
 SEED = 20261020
+# The model under verification: "cnn" (default) or "fc" (the fully connected classifier). Everything else (seeds,
+# sizes, repetitions, level grids) is the same for both; the outputs of a non-default model carry its name.
+MODEL = os.environ.get("UTRACE_NB_MODEL", "cnn")
+assert MODEL in ("cnn", "fc"), f"UTRACE_NB_MODEL must be 'cnn' or 'fc', not {MODEL!r}"
+MTAG = "" if MODEL == "cnn" else f"{MODEL}_"        # "" for the default, so its output names do not change
 
 CAL_SIZE, TUNE_SIZE, EVAL_SIZE = 2000, 2000, 2000   # commissioning: calibration, tuning; labelled evaluation per level
 N_UNLABELED = 5000                                  # unlabelled batch per level (labels are expensive, images are not)
@@ -70,13 +76,16 @@ AWGN_LEVELS = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]              # noise std, in
 PARAMS = {"QUICK": QUICK, "MODE": MODE, "SEED": SEED, "CAL_SIZE": CAL_SIZE, "TUNE_SIZE": TUNE_SIZE,
           "EVAL_SIZE": EVAL_SIZE, "N_UNLABELED": N_UNLABELED, "L": L, "DELTA": DELTA,
           "DEGRADATION": DEGRADATION, "LEVELS": LEVELS, "AWGN_LEVELS": AWGN_LEVELS}
+if MODEL != "cnn":
+    PARAMS["MODEL"] = MODEL                         # a new key only for a non-default model: the default's results are unchanged
 print(PARAMS)
 
 # %% [markdown]
 # ## Model, data and degradations (helper code)
 #
 # Not about `utrace`: loads the classifier and MNIST, degrades images and caches the classifier's
-# softmax outputs. The model is a small CNN trained on the 10 000 MNIST `t10k` images, exactly as in
+# softmax outputs. The model is a small CNN (or, with `UTRACE_NB_MODEL=fc`, the fully connected
+# classifier `ImageClassifierLinear`) trained on the 10 000 MNIST `t10k` images, exactly as in
 # `notebooks/mnist_method_evaluation.py` (same checkpoint file, so it is trained only once). The 60 000
 # MNIST training images, never seen by the model, form the *pool* everything below is drawn from.
 
@@ -101,7 +110,11 @@ from torchvision.transforms.functional import gaussian_blur
 
 import utrace
 from utrace import SearchStatusWarning, UncertaintyQuantifier
-from utrace.utils.pytorch.example_models import ImageClassifierCNN, train_and_save
+from utrace.utils.pytorch.example_models import (
+    ImageClassifierCNN,
+    ImageClassifierLinear,
+    train_and_save,
+)
 from utrace.utils.pytorch.model_wrapper import Pytorch_wrapper
 
 T_START = time.time()
@@ -117,8 +130,8 @@ def _find_repo_root() -> Path:
 
 REPO = _find_repo_root()
 BUILD = REPO / "notebooks" / "_build"
-FIG = BUILD / "figures" / f"periodic_verification_{MODE}"
-RESULTS_PATH = BUILD / f"periodic_verification_results_{MODE}.json"
+FIG = BUILD / "figures" / f"periodic_verification_{MTAG}{MODE}"
+RESULTS_PATH = BUILD / f"periodic_verification_results_{MTAG}{MODE}.json"
 CACHE = BUILD / "cache"
 for d_ in (CACHE, FIG, BUILD / "model"):
     d_.mkdir(parents=True, exist_ok=True)
@@ -139,11 +152,12 @@ print("commit", COMMIT, "(src dirty)" if DIRTY else "", "| python", sys.version.
       jax.default_backend(), "| torch", torch.__version__, "| utrace", utrace.__version__)
 
 # --- model: as in mnist_method_evaluation.py (same file name, so the checkpoint is shared) ---
-MODEL_PTH = BUILD / "model" / "ImageClassifierCNN_t10k_seed42.pt"
+NET_CLASS = {"cnn": ImageClassifierCNN, "fc": ImageClassifierLinear}[MODEL]
+MODEL_PTH = BUILD / "model" / f"{NET_CLASS.__name__}_t10k_seed42.pt"
 TRAIN_SEED, TRAIN_BATCH, TRAIN_EPOCHS = 42, 300, 20
 base_tf = [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
 torch.manual_seed(TRAIN_SEED)
-net = ImageClassifierCNN()
+net = NET_CLASS()
 if not MODEL_PTH.exists():
     train_ds = datasets.MNIST(root=str(DATA_ROOT), train=False, download=False, transform=transforms.Compose(base_tf))
     assert len(train_ds) == 10_000
@@ -196,7 +210,7 @@ def degrade(name: str, level: float) -> torch.Tensor:
 def pool_softmax(name: str, level: float) -> np.ndarray:
     """Softmax of the whole pool at one degradation level (float64, (60000, 10)); cached in the build directory."""
     tag = "clean" if level == IDENTITY[name] else f"{name}_{level:g}"
-    f = CACHE / f"periodic_verification_pool_{tag}.npz"
+    f = CACHE / f"periodic_verification_pool_{MTAG}{tag}.npz"
     if not f.exists():
         x = degrade(name, level)
         smx = np.concatenate([np.asarray(model.predict_proba(x[i:i + 1000]).cpu()) for i in range(0, POOL_N, 1000)])
@@ -259,7 +273,7 @@ def band(x):
 # [README](https://github.com/edgardomarchi/utrace#readme).
 #
 # `utrace` works on softmax outputs only, so any model and framework can be used: here a PyTorch
-# CNN, whose outputs were computed in the helper cell above.
+# classifier (see the parameters), whose outputs were computed in the helper cell above.
 
 # %% [markdown]
 # ## 2. Commissioning, in four calls
@@ -343,8 +357,7 @@ save(fig, "commissioning_sets")
 # %% [markdown]
 # **Figure `commissioning_sets`.** Clean evaluation images with their prediction set at `alpha0` and
 # their true label. "Missed" means the true label is outside the set. Multi-label sets are shown only
-# if the counts printed above are non-zero: with this model they are rare (a few per thousand at this
-# repetition's `alpha0`, printed above), so almost every set is a singleton or empty.
+# if the counts printed above are non-zero. When they are small, almost every set is a singleton or empty.
 
 # %% [markdown]
 # ## 3. Periodic verification with a frozen instrument
@@ -1441,7 +1454,10 @@ for k, v in S["null_check"]["rules"].items():
 # The inferences below are hand-written from one specific full run, identified by the SHA-256 of the
 # non-volatile part of its results file. If THIS run differs (mode, seed, parameters, versions, code),
 # they may not follow from the numbers above.
-INFERENCES_WRITTEN_FROM_SHA256 = "5ffb206ff5ddff024e8c9e454b9c315d8b1fcac5b12dcc0aef5e626b2478ec27"
+INFERENCES_WRITTEN_FROM_SHA256 = {
+    "cnn": "5ffb206ff5ddff024e8c9e454b9c315d8b1fcac5b12dcc0aef5e626b2478ec27",
+    "fc": "dba5bed8c153d02098fe841a59785bc9d8926c52985dc364f10570617bf83928",
+}[MODEL]
 if NONVOLATILE_SHA256 == INFERENCES_WRITTEN_FROM_SHA256:
     print("inferences match this run (non-volatile sha256", NONVOLATILE_SHA256[:16] + "...)")
 else:
@@ -1451,7 +1467,7 @@ else:
     print(f"        (QUICK={QUICK}, L={L}). Do not rely on the inferences below without re-reading the facts above.")
     print("*" * 100)
 
-# %% [markdown]
+# %% [markdown] tags=["only-cnn"]
 # Written from the full run with non-volatile SHA-256
 # `5ffb206ff5ddff024e8c9e454b9c315d8b1fcac5b12dcc0aef5e626b2478ec27` (`QUICK=False`, `L=20`, seed
 # 20261020, CPU). One model, one dataset, two degradations: these are observations about this setup,
@@ -1540,3 +1556,52 @@ else:
 #    reliability diagrams show why: many images keep a confidence near 1 while the accuracy in those bins
 #    falls to roughly 0.35 to 0.9 (`sigma = 1`). The ECE is a binned descriptive estimate, not a
 #    guarantee, and nothing here tests whether recalibration would help.
+
+# %% [markdown] tags=["only-fc"]
+# Written from the full run with non-volatile SHA-256
+# `dba5bed8c153d02098fe841a59785bc9d8926c52985dc364f10570617bf83928` (`UTRACE_NB_MODEL=fc`, `QUICK=False`,
+# `L=20`, seed 20261020, CPU, FC checkpoint SHA-256 `2b116354454c0311...`). One model, one dataset, two
+# degradations: these are observations about this setup, not properties of the method in general.
+# Numbers are means over the 20 repetitions.
+#
+# 1. **The "confidence drops before errors rise" pattern was not observed, here either.** `U_E` rises
+#    from 0.0758 to 0.0803 at `c = 0.8` (+0.45 pp), where `U_delta - U` has grown from 0.0208 to 0.0272
+#    (x1.3). At `c = 0.6` `U_E` is already +2.0 pp (0.0958) and `U_delta - U` x2.4. None of the five
+#    screened degradations meets the rule.
+# 2. **This model is not in the near-degenerate regime of a very accurate classifier.** On clean data
+#    the error is 0.076, the coverage 0.924, and 567 pool images have a multi-label set at repetition
+#    0's `alpha0`. The structural part of `U_delta - err_eval` is nevertheless small, 0.0034 (empty
+#    sets on correct answers 0.0030, multi-label 0.0004), against a statistical margin of 0.0212
+#    (coverage term 0.0124, `EC` term 0.0088).
+# 3. **Under contrast loss the structural part overtakes the statistical margin; under AWGN it does
+#    not.** Structural: 0.0034 -> 0.0183 (`c = 0.5`) -> 0.0789 (`c = 0.3`) -> 0.1208 (`c = 0.2`, against
+#    a statistical 0.0289) and then 0.0758 at `c = 0.15`, where the coverage has fallen to 0.25. Under
+#    AWGN it stays between 0.0036 and 0.0066, and the statistical margin rises from 0.0210 to 0.0318
+#    (`sigma = 2`, coverage 0.57). The statistical margin peaks near coverage 0.5 under contrast loss
+#    (0.0300 at `c = 0.25`).
+# 4. **`U_empirical` follows the error, `U` does not.** `U` stays at 0.080 to 0.090 while `U_E` reaches
+#    0.668 (contrast) and 0.431 (AWGN). `U_empirical - err_eval` equals the structural part at every
+#    level (0.0034 and 0.0034 clean; 0.1087 and 0.1087 at `c = 0.25`). `U_delta` is above `U_E` at the
+#    mean of every level, by 0.0247 on clean data and up to 0.1037 (`c = 0.15`).
+# 5. **The uniform-selection term is not measurable.** Its mean is between -0.0007 and +0.0005 at every
+#    level, with 0.0004 on clean data.
+# 6. **Alarms.** Under contrast loss the first level at which a rule reaches 50 % of repetitions is
+#    `c = 0.8` for A1 and A3 (A3 has 5 % false alarms at level 0), `c = 0.6` for L1 and L1b, `c = 0.5`
+#    for the formal L2 and `c = 0.35` for the formal `U_inf_lower` rule (A2). Under AWGN A3 reaches
+#    50 % at `sigma = 0.25` but already alarms in 15 % of repetitions on clean data, L1 and L1b and the
+#    formal L2 at `sigma = 0.5`, A1 at 0.75, and A2 never fires. In the 1000 clean draws L1 alarmed in
+#    12.2 % (10.2 % to 14.4 %), above its nominal 5 %; L1b in 3.5 %, A1 in 4.2 %, A3 in 4.9 %, A2 in
+#    none and the formal L2 in 1.1 %. The literal L2 alarmed in 50.5 %.
+# 7. **Most errors are confident, and they are what the label-free bound misses.** On clean data 0.879
+#    of the errors are confident, 0.080 flagged and 0.041 covered but wrong, and `U_empirical - U_inf`
+#    is 0.066 of `U_empirical`'s 0.079. Under AWGN the confident share stays at 0.87 to 0.94 and the gap
+#    grows to 0.400 at `sigma = 2`. Under contrast loss the flagged share rises from 0.08 to 0.40
+#    (`c = 0.2`), and the gap is 0.430 of `U_empirical`'s 0.746 at `c = 0.15`.
+# 8. **Resolution and calibration.** On clean data the AUROC is 0.914 and the top-label ECE 0.013. At
+#    errors of about 0.1: contrast `c = 0.5` AUROC 0.881, ECE 0.063; AWGN `sigma = 0.5` 0.896 and 0.023.
+#    At errors of about 0.45: contrast `c = 0.2` (0.498) AUROC 0.669, ECE 0.082; AWGN `sigma = 2` (0.431)
+#    0.725 and 0.280. So at similar error AWGN leaves the confidence much worse calibrated than contrast
+#    loss does, while its resolution is no worse.
+# 9. **Recalibrating the frozen instrument at each level gives a slightly tighter bound.** The
+#    recalibrated `U_delta` is below the frozen one by up to 0.047 (`c = 0.15`: 0.725 against 0.772) and
+#    its `alpha` moves from 0.076 to 0.644.

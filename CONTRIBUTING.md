@@ -140,6 +140,48 @@ in the full grid; the quick levels are a subset, so both modes share it). A seco
 which the label-free alarms need; if only the first file is present, the level is re-inferred and checked
 bitwise against it.
 
+### A second model per notebook
+
+`UTRACE_NB_MODEL` selects the model a notebook verifies: `cnn` (default) or `fc` for
+`periodic_verification_demo.py` (`fc` is `ImageClassifierLinear`, the paper's fully connected model, trained
+exactly like the CNN: `t10k` only, seed 42, CPU), and `km` (default) or `bm` for
+`acdc_periodic_verification.py`. The seeds, splits, sizes, repetitions and level grids are the same for both
+models. The default model's outputs and cache names are unchanged (its results file has no `MODEL` key);
+every output of the other model carries its name: `..._fc_<mode>.ipynb`, `..._results_fc_<mode>.json`,
+`figures/..._fc_<mode>/`, `periodic_verification_pool_fc_*.npz`, `acdc_bm_*.npz`. The hand-written Inferences
+of each model are cells tagged `only-<model>`, written from that model's own run and hash.
+
+`notebooks/run_notebook.py` executes a notebook for the selected model (it drops the cells tagged for the
+other model) and names the executed notebook after it:
+
+```bash
+JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES= UTRACE_NB_MODEL=fc UTRACE_NB_QUICK=0 uv run --locked --extra=viz --group notebooks python notebooks/run_notebook.py periodic_verification_demo
+JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES= UTRACE_NB_MODEL=bm UTRACE_NB_QUICK=0 uv run --locked --extra=viz --extra=acdc --group notebooks python notebooks/run_notebook.py acdc_periodic_verification
+```
+
+BM is Bai et al.'s fully convolutional network from `ukbb_cardiac`, a TensorFlow 1 checkpoint
+(`FCN_sa.{meta,index,data-00000-of-00001}`, by default in `../../models/kaggle/` relative to `scripts/`, or
+`UTRACE_ACDC_BM`). TensorFlow has no wheel for the project's Python, so its softmax cache is built by a separate
+script in an isolated environment; the notebook only reads the cache (and stops with that instruction if it
+is missing). From the repository root, after the KM cache exists (the script asserts that its labels, patients
+and slices equal KM's):
+
+```bash
+uv run --no-project --python 3.13 --with tensorflow-cpu==2.21.0 --with numpy==2.4.4 --with nibabel==5.4.2 --with torch==2.13.0 --with monai==1.3.2 --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match python notebooks/acdc_bm_cache.py
+```
+
+It follows `ukbb_cardiac`'s preprocessing (1st-99th percentile rescaling of each volume, no resampling, zero
+padding to a multiple of 16; see the script's docstring), applies the notebook's degradations with its
+seeds to that input, and writes `acdc_bm_fg_*.npz`, `acdc_bm_fp_*.npz`, the whole-patient softmax of the
+overlay patient `acdc_bm_ov_*.npz` and `acdc_bm_cache_meta.json` (versions, checkpoint SHA-256, the clean
+confusion matrix that asserts BM's class order). The files are written with fixed timestamps, so two builds are
+byte-identical. About 35 minutes on 16 CPU threads.
+
+`notebooks/model_comparison.py` reads the four full-mode results files (`cnn`, `fc`, `km`, `bm`) and shows the
+two pairs side by side; it recomputes nothing. Run it with
+`uv run --locked --extra=viz --group notebooks python notebooks/run_notebook.py model_comparison` after the
+four full runs; it writes `notebooks/_build/model_comparison.ipynb` and `figures/model_comparison/`.
+
 ## Linting
 
 ```bash
