@@ -457,14 +457,15 @@ else:
 # 3. **What the instrument can see depends on the model's resolution, and the models differ most there.** The AUROC of
 #    the max-softmax on clean data is 0.942 (CNN) and 0.914 (FC); 0.765, 0.787, 0.755 (KM) and 0.496, 0.464, 0.368 (BM),
 #    i.e. no resolution at all for BM, and for RV below 0.5. The top-label ECE is 0.020 (CNN), 0.013 (FC), 0.067 (KM) and 0.202
-#    (BM). The bound `U_delta` does not use the confidence, only the coverage, so it is as valid for BM as for KM; but
+#    (BM). The bound U_delta does not depend on how well the confidence ranks correct and wrong predictions (it uses
+ #   the coverage and the set sizes, both counted against the labels), so it is as valid for BM as for KM; but
 #    the label-free rules, which do use it, have little to work with on BM: 0.964 to 0.988 of BM's errors are confident
 #    (KM: 0.999), only 0.007 to 0.021 flagged.
 # 4. **The ranking of two models can reverse with the degradation.** The FC is less accurate than the CNN on clean data
 #    (0.076 against 0.028) and under contrast loss (0.116 against 0.041 at `c = 0.5`), yet more robust to AWGN: at `sigma = 0.75`
 #    its error is 0.135 against 0.213, at `sigma = 2` 0.431 against 0.786, with a better calibration (ECE 0.280 against 0.753).
-#    On ACDC the same happens in a smaller way: BM is worse than KM everywhere, and collapses under AWGN at levels that
-#    leave KM almost unchanged: at `sigma = 0.05` BM's errors are 0.887, 0.959, 0.930 and KM's 0.052, 0.120, 0.074; from
+#    On ACDC there is no reversal: BM is worse than KM everywhere, and collapses under AWGN at levels that leave KM 
+#    almost unchanged: at `sigma = 0.05` BM's errors are 0.887, 0.959, 0.930 and KM's 0.052, 0.120, 0.074; from
 #    `sigma = 0.1` BM predicts no foreground at all. Under blur 4 BM's errors are 0.957 to 0.991 and KM's 0.108, 0.408, 0.300.
 # 5. **The decomposition of `U_delta - error` differs where a model collapses.** For BM at `sigma >= 0.1` the
 #    coverage is 0, `U_empirical = U_delta = 1` and both parts are 0; at blur 4 the statistical margin has shrunk to
