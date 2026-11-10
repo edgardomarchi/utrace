@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `120 passed, 4 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those four tests run and pass instead (124 passed). The four skips are the GPU-only device-reconciliation tests for calibrate and get_uncertainty — inert without GPU hardware, not a failure.
+Expect `548 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (555 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
@@ -74,6 +74,114 @@ still works.
   where they do not reach disk.
 - Run sequentially and, for timing, interleave the variants.
 
+## Notebooks
+
+`notebooks/*.py` are jupytext percent-format sources; the executed `.ipynb`, the cached arrays, the
+figures and the results file go to `notebooks/_build/` (git-ignored). They need the `notebooks`
+dependency group (`jupytext`, `ipykernel`, `nbclient`), which is ADDED to the group you already use
+(`dev` by default; with a GPU environment, repeat its flags too: `--no-default-groups --group
+dev-cuda13 --group notebooks --extra=viz --extra=cuda13`), never a replacement for it.
+
+`notebooks/mnist_method_evaluation.py` evaluates how the method behaves on a trained MNIST model (the
+evidence behind decisions about the method; not a user tutorial). On CPU, from the repository root:
+
+```bash
+UTRACE_NB_QUICK=1 uv run --extra=viz --group notebooks python -c "import os, jupytext, nbclient; nb = jupytext.read('notebooks/mnist_method_evaluation.py'); nbclient.NotebookClient(nb, timeout=-1, resources={'metadata': {'path': '.'}}).execute(); jupytext.write(nb, 'notebooks/_build/mnist_method_evaluation_' + ('full' if os.environ.get('UTRACE_NB_QUICK', '1') == '0' else 'quick') + '.ipynb')"
+```
+
+`UTRACE_NB_QUICK=1` (the default when the variable is unset) runs the reduced version; `UTRACE_NB_QUICK=0`
+runs the full one. Every output carries the mode so the two never overwrite each other: the executed
+notebook is `notebooks/_build/mnist_method_evaluation_<quick|full>.ipynb`, the results `results_<mode>.json`
+and the figures go to `figures/<mode>/`. It expects MNIST already present under `data/` (it never downloads), trains a CNN on
+the 10 000 `t10k` images the first time (a few minutes on CPU; cached in `notebooks/_build/model/`) and
+caches the pool's softmax per noise level. It is NOT run in CI: it needs data and trains a model. (`jupytext
+--execute` is not used because it also requires `nbconvert`, which the group does not carry.)
+
+`notebooks/periodic_verification_demo.py` is a user-facing demonstration: commission once on clean data,
+then verify periodically with the frozen quantifier while the input degrades (contrast loss, with AWGN as
+a reference), including label-free early-warning rules. On CPU, from the repository root:
+
+```bash
+UTRACE_NB_QUICK=1 uv run --extra=viz --group notebooks python -c "import os, jupytext, nbclient; nb = jupytext.read('notebooks/periodic_verification_demo.py'); nbclient.NotebookClient(nb, timeout=-1, resources={'metadata': {'path': '.'}}).execute(); jupytext.write(nb, 'notebooks/_build/periodic_verification_demo_' + ('full' if os.environ.get('UTRACE_NB_QUICK', '1') == '0' else 'quick') + '.ipynb')"
+```
+
+The same `UTRACE_NB_QUICK` switch applies (quick: 3 repetitions; full: 20). Outputs carry the mode: the
+executed notebook `notebooks/_build/periodic_verification_demo_<quick|full>.ipynb`, the results
+`periodic_verification_results_<mode>.json` and the slide figures (PNG at 200 dpi and PDF) in
+`figures/periodic_verification_<mode>/`. It shares the model checkpoint with the notebook above
+(training it the first time if absent) and caches the pool's softmax per degradation level in
+`notebooks/_build/cache/`, including the levels of the degradation screening in its appendix (about
+8 minutes on CPU the first time; both modes then reuse it, and a cached run takes under a minute).
+Besides the per-level results, its results file holds a 1000-draw false-alarm check of every
+alarm rule on clean data (`summary.null_check`) and the single-seed screening of five degradations
+(`summary.screening`). Run it with
+`JAX_PLATFORMS=cpu` for bitwise-reproducible results.
+
+`notebooks/acdc_periodic_verification.py` is the same verification on a real black box: the KM
+cardiac segmentation model on the 150 unique ACDC patients, one frozen quantifier per class (LV, MYO,
+RV), with the bound stated at patient level (a betting confidence interval computed in the notebook)
+next to the package's pixel-level `U_delta`. It needs the `acdc` extra (`monai`, `nibabel`) and the
+third-party data and model at the paths `scripts/ACDC_example.py` uses (`../../data/ACDC/` and
+`../../models/ventricular_short_axis/`, relative to `scripts/`; see that script's docstring; the
+`UTRACE_ACDC_DATA` and `UTRACE_ACDC_MODEL` environment variables override them). It reads only
+`training/` and `testing/`, never `validation/`. CPU only, from the repository root:
+
+```bash
+JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES= UTRACE_NB_QUICK=1 uv run --locked --extra=viz --extra=acdc --group notebooks python -c "import os, jupytext, nbclient; nb = jupytext.read('notebooks/acdc_periodic_verification.py'); nbclient.NotebookClient(nb, timeout=-1, resources={'metadata': {'path': '.'}}).execute(); jupytext.write(nb, 'notebooks/_build/acdc_periodic_verification_' + ('full' if os.environ.get('UTRACE_NB_QUICK', '1') == '0' else 'quick') + '.ipynb')"
+```
+
+The same `UTRACE_NB_QUICK` switch applies (quick: 2 repetitions and thinned level grids; full: 20
+repetitions). Outputs carry the mode: `notebooks/_build/acdc_periodic_verification_<quick|full>.ipynb`,
+`acdc_periodic_verification_results_<mode>.json` and the slide figures in
+`figures/acdc_periodic_verification_<mode>/`. The float32 softmax of the foreground pixels is cached
+per degradation level in `notebooks/_build/cache/acdc_km_fg_*.npz` (about 123 MB per level, 18 levels
+in the full grid; the quick levels are a subset, so both modes share it). A second file per level,
+`acdc_km_fp_*.npz` (10 to 60 MB), keeps the background-labelled pixels the model labels as foreground,
+which the label-free alarms need; if only the first file is present, the level is re-inferred and checked
+bitwise against it.
+
+### A second model per notebook
+
+`UTRACE_NB_MODEL` selects the model a notebook verifies: `cnn` (default) or `fc` for
+`periodic_verification_demo.py` (`fc` is `ImageClassifierLinear`, the paper's fully connected model, trained
+exactly like the CNN: `t10k` only, seed 42, CPU), and `km` (default) or `bm` for
+`acdc_periodic_verification.py`. The seeds, splits, sizes, repetitions and level grids are the same for both
+models. The default model's outputs and cache names are unchanged (its results file has no `MODEL` key);
+every output of the other model carries its name: `..._fc_<mode>.ipynb`, `..._results_fc_<mode>.json`,
+`figures/..._fc_<mode>/`, `periodic_verification_pool_fc_*.npz`, `acdc_bm_*.npz`. The hand-written Inferences
+of each model are cells tagged `only-<model>`, written from that model's own run and hash.
+
+`notebooks/run_notebook.py` executes a notebook for the selected model (it drops the cells tagged for the
+other model) and names the executed notebook after it:
+
+```bash
+JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES= UTRACE_NB_MODEL=fc UTRACE_NB_QUICK=0 uv run --locked --extra=viz --group notebooks python notebooks/run_notebook.py periodic_verification_demo
+JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES= UTRACE_NB_MODEL=bm UTRACE_NB_QUICK=0 uv run --locked --extra=viz --extra=acdc --group notebooks python notebooks/run_notebook.py acdc_periodic_verification
+```
+
+BM is Bai et al.'s fully convolutional network from `ukbb_cardiac`, a TensorFlow 1 checkpoint
+(`FCN_sa.{meta,index,data-00000-of-00001}`, by default in `../../models/kaggle/` relative to `scripts/`, or
+`UTRACE_ACDC_BM`). TensorFlow has no wheel for the project's Python, so its softmax cache is built by a separate
+script in an isolated environment; the notebook only reads the cache (and stops with that instruction if it
+is missing). From the repository root, after the KM cache exists (the script asserts that its labels, patients
+and slices equal KM's):
+
+```bash
+uv run --no-project --python 3.13 --with tensorflow-cpu==2.21.0 --with numpy==2.4.4 --with nibabel==5.4.2 --with torch==2.13.0 --with monai==1.3.2 --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match python notebooks/acdc_bm_cache.py
+```
+
+It follows `ukbb_cardiac`'s preprocessing (1st-99th percentile rescaling of each volume, no resampling, zero
+padding to a multiple of 16; see the script's docstring), applies the notebook's degradations with its
+seeds to that input, and writes `acdc_bm_fg_*.npz`, `acdc_bm_fp_*.npz`, the whole-patient softmax of the
+overlay patient `acdc_bm_ov_*.npz` and `acdc_bm_cache_meta.json` (versions, checkpoint SHA-256, the clean
+confusion matrix that asserts BM's class order). The files are written with fixed timestamps, so two builds are
+byte-identical. About 35 minutes on 16 CPU threads.
+
+`notebooks/model_comparison.py` reads the four full-mode results files (`cnn`, `fc`, `km`, `bm`) and shows the
+two pairs side by side; it recomputes nothing. Run it with
+`uv run --locked --extra=viz --group notebooks python notebooks/run_notebook.py model_comparison` after the
+four full runs; it writes `notebooks/_build/model_comparison.ipynb` and `figures/model_comparison/`.
+
 ## Linting
 
 ```bash
@@ -105,9 +213,9 @@ push and pull request — a PR that doesn't pass it won't pass CI.
   `regenerate_baselines.py --api new` (paths in that script are relative to the file itself).
 - `tests/core/test_import_properties.py` asserts properties of the package as an importable
   artifact — global JAX x64 config, torch/matplotlib/pandas absent from `sys.modules` after
-  `import utrace` — rather than API behavior. The torch-absence check runs in a subprocess,
-  because the rest of the integration suite imports torch into the main test process and would
-  otherwise contaminate the check.
+  `import utrace` (scipy likewise, in `test_scipy_import_is_lazy.py`) — rather than API behavior.
+  The torch-absence check runs in a subprocess, because the rest of the integration suite imports
+  torch into the main test process and would otherwise contaminate the check.
 
 ## Working with `UncertaintyQuantifier`
 
@@ -144,6 +252,29 @@ The canonical alpha-search method is the **binary** one, `get_uncertainty`, whic
    tune_smx, tune_y = precompute_softmax(tuneDataLoader, model)
    U, alpha = uqs[C].get_uncertainty(tune_smx, tune_y, max_iters=30)
    ```
+   **That form measures `U` on the same samples that selected `alpha`**, so the two estimates are
+   correlated and their errors compound; it emits a `TuningDataReuseWarning` on every call.
+   To measure `U` on independent data, materialize a separate evaluation set (disjoint from the
+   calibration and tuning sets; the library cannot check this) and pass it:
+   ```python
+   eval_smx, eval_y = precompute_softmax(evalDataLoader, model)
+   U, alpha = uqs[C].get_uncertainty(tune_smx, tune_y, max_iters=30,
+                                     eval_softmax=eval_smx, eval_y=eval_y)
+   ```
+   This is exactly `alpha = uqs[C].tune_alpha(tune_smx, tune_y)` followed by
+   `uqs[C].uncertainty_at(eval_smx, eval_y, alpha)`. Call those two directly when you also want
+   `EC` and the counts (`n_covered`, `n_valid`, `n_succ`) that `uncertainty_at` returns in an
+   `UncertaintyEvaluation`. The evaluation set may be any size (it is padded to a multiple of 256,
+   independently of `max_batch_size`); `U` is `nan` if it holds no sample of the class group.
+
+   **Reporting a bound.** `U` is a point estimate with no confidence level. For a statement with a
+   level, pass `delta` to `uncertainty_at`: `r = uqs[C].uncertainty_at(eval_smx, eval_y, alpha,
+   delta=0.05)` and report `r.U_delta` as "with probability at least 95%, the error probability is
+   at most `U_delta`", together with the two assumptions it needs: independent evaluation samples
+   representative of use, and the paper's uniform-selection assumption (neither is checkable by the
+   code; pixels of one image are not independent). `r.coverage` and `r.U_empirical`
+   (`1 - EC * coverage`) are always returned and need no `delta`.
+
    **FORBIDDEN: `alpha = np.nanmean([alpha_per_batch...])`.** This is statistically incorrect —
    alpha is a non-linear function of the data, so averaging per-batch alphas does not converge to
    the correct value. Averaging over `L` distinct splits (a full experimental repetition, each
@@ -169,15 +300,37 @@ tensors (no numpy conversion), so the result can take the zero-copy DLPack path 
 
 ### Passing tensors to the core
 
-Pass backend tensors directly to `calibrate`/`predict`/`get_uncertainty`. `to_jax()` (in
+Pass backend tensors directly to `calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`. `to_jax()` (in
 `utils/tensors.py`) handles conversion via DLPack: a CPU PyTorch tensor is consumed zero-copy. Do
-NOT call `.cpu().numpy()` by hand on values that feed `calibrate`/`predict`/`get_uncertainty` —
+NOT call `.cpu().numpy()` by hand on values that feed `calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at` —
 that conversion is the library's job, and writing it yourself defeats the zero-copy path and
 clutters the example.
 
 `.cpu().numpy()` is still legitimate for values that do NOT go into the core — e.g. computing
 accuracy, building arrays for matplotlib. Only avoid it on the path into
-`calibrate`/`predict`/`get_uncertainty`.
+`calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`.
+
+### Input contract for labels and shapes
+
+Labels must be integers in `[0, K)`, `K` being the number of softmax columns. `calibrate`,
+`get_uncertainty`/`tune_alpha` and `uncertainty_at` raise `ValueError` naming the offending min/max
+and `K` otherwise; `calibrate` also rejects `classes` outside `[0, K)`. There is no `ignore_index`:
+drop ignored samples before the call. (Before this check a label `-1` wrapped to the last class and
+any label `>= K` clamped to it, silently giving a wrong coverage and `EC`.) A softmax whose trailing
+shape differs from the one `calibrate` recorded raises too, on the tuning and evaluation paths and on
+a batched `calibrate`; column checks run before the range check.
+
+Before the integer cast, the same entry points (including the evaluation labels of
+`get_uncertainty(..., eval_*)`) check the label dtype. Integer dtypes pass; boolean dtypes pass
+and map to 0/1; floating dtypes pass only if every value is finite and integral (`2.0` is class 2,
+with results identical to `2`); anything else (complex, object, string) raises `ValueError`. A
+float label that is non-integral or non-finite (`0.9`, `-0.5`, `nan`, `inf`) raises `ValueError`
+naming the first offending value, how often it occurs, and the total of invalid labels. (Before,
+`astype(int)` truncated toward zero: `0.9` became class 0, and `-0.5` became 0 and passed the
+range check.) Numpy arrays and lists are checked before conversion to jax; torch and jax inputs
+after it. The dtype check runs where the labels are converted: after the batched shape check in
+`calibrate`, but before the column check on the tuning path and in `uncertainty_at`. An integral
+float outside `[0, K)` passes the dtype check and is reported by the range check.
 
 ## Decisions to respect (do NOT "fix" without confirming)
 
@@ -206,13 +359,33 @@ is deliberate.
   change of definition: conditioning on coverage forces `|C| >= 1`, so the conditioned quantity is
   bounded above by 1 and becomes flat once every covering set is a singleton. An equality criterion
   on a plateau cannot be attacked by bisection. The unconditional mean crosses 1 monotonically and
-  can. The bound U itself is unchanged: it is eq. (6) of the paper, computed with the conditioned
-  expectation over covered tuning samples -- verified directly against
+  can. The point estimate U itself is unchanged: it is eq. (6) of the paper, computed with the conditioned
+  expectation over covered samples -- of the tuning set when `get_uncertainty` is called without
+  an evaluation set, of the evaluation set (`eval_softmax`/`eval_y`, or `uncertainty_at`) when one
+  is passed -- verified directly against
   `_evaluate_alpha`'s `EC` (`uncertaintyQuantifier.py`, `is_covered`/`mask_succ` gating `inv_succ`
   on samples where the true label is actually in the prediction set) and the `U_out = 1.0 - EC_out
   * (1.0 - alpha_out)` line in `_search_uncertainty`. Since eq. (5) holds for any alpha, the proxy
   affects how tight the bound is, never whether it is valid. Do not "restore" the conditioned
   criterion in the search without first deriving a criterion that actually crosses.
+
+- **`U_delta` uses the measured coverage, not the nominal `1 - alpha`.** `U = 1 - EC * (1 - alpha)`
+  (the paper's eq. (6)) is a point estimate with no confidence level. `uncertainty_at(...,
+  delta=...)` instead bounds the population value `U* = 1 - e * p`, `p` the coverage and
+  `e = E[1/|C| | covered]` at the given alpha: `U_delta = 1 - EC_lower * coverage_lower`, with a
+  Clopper-Pearson lower bound on `p` and a lower bound on `e` (clipped at 0), each at level
+  `delta/2` (a fixed split, union bound, valid on the same evaluation set). The bound on `e` is
+  `EC - min(m_H, m_EB)`: `m_H = sqrt(ln(4/delta) / (2 n))` (Hoeffding) and
+  `m_EB = sqrt(2 V ln(8/delta) / n) + 7 ln(8/delta) / (3 (n - 1))` (empirical Bernstein, Maurer
+  and Pontil (2009), COLT, arXiv:0907.3740, Theorem 4), with `n = n_succ` and `V` the unbiased
+  sample variance of `1/|C|` over the covered samples; each is one-sided at `delta/4`, so taking
+  the smaller is a union bound, not a data-dependent level. `n_succ == 1` uses `m_H` alone and
+  `n_succ == 0` gives 0. The range `[1/K, 1]` of `1/|C|` is not used (a rescaled variant is in
+  `BACKLOG.md`). It therefore
+  uses the empirical coverage that the evaluation set supports, which can be above or below
+  `1 - alpha`, so `U_delta` is not guaranteed to be `>= U`; it is always `>= U_empirical =
+  1 - EC * coverage`. It holds at level `1 - delta` under independent, representative evaluation
+  samples and the paper's uniform-selection assumption. Both are assumptions, not checks.
 
 - **Quantile index: one order statistic above the canonical split-conformal quantile.**
   `_masked_quantile_higher` (`utils/utils_jax.py`) computes `idx = ceil(q * (n_valid - 1))` with
@@ -236,7 +409,8 @@ is deliberate.
   floor `1/(N+1)` -- **not** whatever smaller alpha the paper's own definition of the search target
   would imply, if that value lies below what this calibration set's size can resolve. Below the
   floor, no quantile level in an `N`-score calibration set can express a smaller alpha (the level
-  formula would need to exceed 1); returning the floor, with `U` evaluated at that same point, is
+  formula would need to exceed 1); returning the floor, with `U` evaluated at that same alpha (on the tuning set, or on the evaluation
+  set if one is passed), is
   the tightest claim this calibration set can back. This replaces the coverage-guarantee argument
   the pre-fix code relied on (it silently clipped the quantile
   level instead, without adjusting the returned alpha to match, voiding the guarantee below the
@@ -249,10 +423,12 @@ contains backend-specific code; what matters is where it lives and the direction
 
 ### Dependency rule
 
-- **Core** (`uncertaintyQuantifier`, alpha-search functions, masked quantile): imports ONLY numpy
-  and jax. NEVER imports torch, onnx, or any backend, and NEVER imports from the backend
-  subpackages below. Data flow is always: user code → backend wrapper → softmax output → core
-  (`calibrate`/`predict`/`get_uncertainty`).
+- **Core** (`uncertaintyQuantifier`, alpha-search functions, masked quantile): imports ONLY numpy,
+  jax and scipy. scipy (a declared dependency, `scipy>=1.13`; jax requires it too) is imported
+  lazily, inside the confidence-bound computation of `uncertainty_at`, so `import utrace` and every
+  call without `delta` never load it (`tests/core/test_scipy_import_is_lazy.py`). NEVER imports
+  torch, onnx, or any backend, and NEVER imports from the backend subpackages below. Data flow is always: user code → backend wrapper → softmax output → core
+  (`calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`).
 - **`utrace.utils.pytorch.*`**: everything that touches torch — `Pytorch_wrapper`, example
   models, dataset loaders, transforms, and any helper that needs torch (e.g. `flatten_batch` /
   `unflatten_batch` when operating on torch tensors).

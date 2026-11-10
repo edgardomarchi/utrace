@@ -3,6 +3,8 @@ from importlib.metadata import PackageNotFoundError, version
 from .uncertaintyQuantifier import (
     SearchStatus,
     SearchStatusWarning,
+    TuningDataReuseWarning,
+    UncertaintyEvaluation,
     UncertaintyQuantifier,
 )
 
