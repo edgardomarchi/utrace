@@ -218,7 +218,7 @@ def _check_label_dtype(y: np.ndarray | jax.Array, where: str,
         Integer and floating-point dtypes pass, provided all valuer are finite.
         Boolean, complex, object and string dtypes are rejected.
     """
-    is_integer = jnp.isubdtype(y.dtype, jnp.integer)
+    is_integer = jnp.issubdtype(y.dtype, jnp.integer)
     is_float = jnp.issubdtype(y.dtype, jnp.floating)
 
     if task == "classification":
@@ -523,7 +523,7 @@ def _search_uncertainty(
     aux_data: tuple = (),           # () for clf, (lower_tol, upper_tol) for reg.
     risk_fn: Callable = clf_risk_fn,
     direction: float = 1.0          # +1.0 if metric decreases w/alpha (clf), -1.0 if it increases (reg)  
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Binary search for the optimal alpha that meets the target metric ratio
     on the domain `[1/(n_cs+1), 1]`.
 
@@ -643,12 +643,13 @@ def _search_uncertainty(
         # Universal step decision (handle both tasks + float precision)
         # Clf (dir = 1) setsize >= target -> sign=+1 (increase alpha to shrink sets)
         # Reg (dir = -1) setsize >= target -> sign=-1 (decrease alpha to expand intervals)
-
+        
         sign = jnp.where(
                 direction > 0,
                 jnp.where(setsize > target_ratio, 1.0, -1.0),
                 jnp.where(setsize < target_ratio, 1.0, -1.0)
         )
+       
         alpha_proposed = alpha + sign*delta_new
 
         # Freeze if out of bounds
@@ -676,6 +677,7 @@ def _search_uncertainty(
             setsize_curr >= target_ratio - 1e-6
         )
         should_update_best = feasible_here & (alpha_next < best_alpha)
+       
         best_alpha_next = jnp.where(should_update_best, alpha_next, best_alpha)
         best_EC_next = jnp.where(should_update_best, EC_yt_curr, best_EC)
         any_feasible_next = any_feasible | feasible_here
@@ -785,7 +787,7 @@ def _evaluate_at_alpha(
     cs_padded: jnp.ndarray,
     n_cs: jnp.ndarray,
     score_fn: Callable,
-    risk_fn: Callable,
+    risk_fn: Callable = clf_risk_fn,
     aux_data: tuple = (),
     task: str = "classification"
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -839,6 +841,19 @@ def _evaluate_at_alpha(
     
     return U, EC, n_covered, n_valid, n_succ, sum_sq_dev
 
+def _validate_regression_parameters(eps, target_ratio) -> tuple[float, float]:
+    """Validate the tolerance radius and target overlap raio used by regression-"""
+
+    eps_value = float(eps)
+    ratio_value = float(target_ratio)
+
+    if not np.isfinite(eps_value) or eps_value < 0.0:
+        raise ValueError(f"eps must be finite and non-negative; got {eps!r}.")
+    if not np.isfinite(ratio_value) or not (0.0 <= ratio_value <= 1.0):
+        raise ValueError(
+            f"target_ratio must be finite and lie in [0, 1]; got {target_ratio!r}."
+        )
+    return eps_value, ratio_value
 
 class UncertaintyQuantifier:
     """Wrapper for uncertainty quantification using U-TraCE.
@@ -1179,9 +1194,9 @@ class UncertaintyQuantifier:
                                        task = self._task)
         return np.array(y_pred), np.array(y_sets)
 
-    def get_uncertainty(self, softmax, y, max_iters: int = 30, eps:float = 0.1,
-                        target_ratio: float = 1.0, *,
-                        eval_softmax=None, eval_y=None,
+    def get_uncertainty(self, softmax, y, max_iters: int = 30, *,
+                        eval_softmax=None, eval_y=None,eps:float = 0.1,
+                        target_ratio: float = 1.0,
                         ) -> tuple[np.float64, np.float64]:
         """Estimate model uncertainty over a tuning set via conformal prediction.
 
@@ -1324,7 +1339,7 @@ class UncertaintyQuantifier:
         alpha = self.tune_alpha(softmax, y, max_iters=max_iters, eps = eps, target_ratio = target_ratio)
         if np.isnan(alpha):
             return np.float64('nan'), np.float64('nan')
-        return self.uncertainty_at(eval_softmax, eval_y, alpha).U, alpha
+        return self.uncertainty_at(eval_softmax, eval_y, alpha, eps = eps).U, alpha
 
     def _search_single_dataset(self, softmax, y, max_iters, eps, target_ratio):
         """Alpha search and `U` on the one tuning set: the pre-evaluation-set body of
@@ -1345,7 +1360,7 @@ class UncertaintyQuantifier:
         y_arr = np.asarray(_labels_to_jax(y, where, task = self._task))
         if self._task == "classification":
             y_arr = y_arr.flatten().astype(self.label_dtype_)
-        elif self._task == "regerssion":
+        elif self._task == "regression":
             if y_arr.shape != softmax.shape:
                 raise ValueError(
                     f"{where}: regression predictions and targets must "
@@ -1355,6 +1370,9 @@ class UncertaintyQuantifier:
         # Host-side validation, outside _get_uncertainty_jit_impl: columns first, then labels.
         self._check_item_shape(softmax)
         _check_labels(y_arr, self._label_range(), where, task=self._task)
+
+        if self._task == "regression":
+            _validate_regression_parameters(eps, target_ratio)
 
         return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters, eps = eps, target_ratio = target_ratio)
 
@@ -1416,6 +1434,12 @@ class UncertaintyQuantifier:
             Maximum iterations for the binary search over alpha, forwarded to
             `_search_uncertainty`.
         """
+
+        if self._task == "regression":
+            eps, target_ratio = _validate_regression_parameters(eps, target_ratio)
+            if smx.ndim != 1 or y.shape != smx.shape:
+                raise ValueError("Regression currently supports scañar predictions and targets "
+                                 "with matching shape (n_samples, )")
         B = y.shape[0]
         K = smx.shape[1] if smx.ndim > 1 else 1
 
@@ -1489,8 +1513,7 @@ class UncertaintyQuantifier:
                                            risk_fn = reg_risk_fn,
                                            direction = -1.0)
 
-        # CHEQUEAR PARA REGESSION.
-
+       
         alpha = np.float64(alpha)
         U = np.float64(U)
         status = _STATUS_CODE_TO_ENUM[int(status_code)]
@@ -1565,7 +1588,7 @@ class UncertaintyQuantifier:
                                                target_ratio = target_ratio)
         return alpha
 
-    def uncertainty_at(self, softmax, y, alpha, *, delta=None) -> UncertaintyEvaluation:
+    def uncertainty_at(self, softmax, y, alpha, *, eps = 0.1, delta=None) -> UncertaintyEvaluation:
         """Measure `U` at a given alpha on an evaluation set.
 
         Computes the point estimate `U = 1 - EC * (1 - alpha)` where `EC` is the mean of
@@ -1675,6 +1698,8 @@ class UncertaintyQuantifier:
 
         else:
             # Regression targets retain their original shape
+            eps, _ = _validate_regression_parameters(eps, 0.0)
+
             if y_arr.shape != smx.shape:
                 raise ValueError(
                     f"Regression predictions have shape {smx.shape}, "
@@ -1685,7 +1710,7 @@ class UncertaintyQuantifier:
             aux_data = (eps, eps)
 
             valid = np.ones(y_arr.shape[0], dtype = bool)
-            y_dtype = smx.dtype
+            y_dtype = np.float64
 
             # Ensure targets and predictions have compatible floating dtypes.
             y_arr = y_arr.astype(y_dtype, copy = False)
@@ -1700,18 +1725,17 @@ class UncertaintyQuantifier:
 
         B = y_arr.shape[0]
         target_size = _bucket_size(max(B, 1))
-        y_padded = np.zeros(target_size, dtype=np.int32)
+        y_padded = np.zeros(target_size, dtype=y_dtype)
         p_padded = np.zeros((target_size,) + smx.shape[1:], dtype=np.float64)
         mask_padded = np.zeros(target_size, dtype=bool)
-        y_padded[:B] = y_arr.astype(np.int32)
+        y_padded[:B] = y_arr.astype(y_dtype)
         p_padded[:B] = smx
         mask_padded[:B] = valid
 
         if task == "classification":
             y_safe = np.where(mask_padded, y_padded, 0)
         else:
-            mask_shape = (target_size,) + (1,)*(y_padded.ndim - 1)
-            y_safe = np.where(mask_padded.reshape(mask_shape), y_padded, 0)
+            y_safe = np.where(mask_padded, y_padded, 0.0)
 
         self._state = _ensure_sorted(self._state)
         U, EC, n_covered, n_valid, n_succ, sum_sq_dev = _evaluate_at_alpha(
