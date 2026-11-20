@@ -104,7 +104,49 @@ $ python
 >>> utrace.__version__
 ```
 
-Example scripts can be found in the `scripts` folder.
+The evaluation uses three data sets: one to calibrate the quantifier, one to tune `alpha`, and a
+separate one to measure `U` and its bound. They must be disjoint, and the library cannot check
+that. The example below runs on synthetic softmax outputs (numpy arrays only, no torch):
+
+```python
+import numpy as np
+from utrace import UncertaintyQuantifier
+
+rng = np.random.default_rng(0)
+K = 5
+
+
+def synthetic(n):
+    """Softmax outputs of a noisy 5-class classifier, and the true labels."""
+    y = rng.integers(0, K, size=n)
+    logits = rng.normal(size=(n, K))
+    logits[np.arange(n), y] += 2.5
+    softmax = np.exp(logits)
+    return softmax / softmax.sum(axis=1, keepdims=True), y
+
+
+cal_x, cal_y = synthetic(1000)    # calibration
+tune_x, tune_y = synthetic(1000)  # tuning
+eval_x, eval_y = synthetic(5000)  # evaluation
+
+uq = UncertaintyQuantifier(N=1000)
+uq.calibrate(cal_x, cal_y)
+alpha = uq.tune_alpha(tune_x, tune_y)
+result = uq.uncertainty_at(eval_x, eval_y, alpha, delta=0.05)
+
+print(f"alpha       = {alpha:.4f}")
+print(f"U           = {result.U:.4f}")
+print(f"U_empirical = {result.U_empirical:.4f}")
+print(f"U_delta     = {result.U_delta:.4f}")
+print(f"true error  = {np.mean(eval_x.argmax(axis=1) != eval_y):.4f}")
+```
+
+`U` is the point estimate, `U_empirical` is the same expression with the coverage measured on the
+evaluation set, and `U_delta` is the upper confidence bound at level `1 - delta` (see the two
+assumptions above).
+
+Example scripts can be found in the `scripts` folder, and the jupytext notebooks in `notebooks/`
+(how to run them is described in `CONTRIBUTING.md`, "Notebooks").
 
 ## Authors
 
