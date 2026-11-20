@@ -24,7 +24,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `notebooks/acdc_periodic_verification.py` (jupytext) does the same for a pre-trained cardiac MRI
   segmentation model on the ACDC data, with one frozen quantifier per class, under AWGN, blur and a
   bias field, and states the bound at patient level, the unit of independence.
-- The two notebooks are not part of the installed package.
+- Both notebooks take a model parameter, `UTRACE_NB_MODEL`: on MNIST the CNN (`cnn`, the default) or
+  a fully connected classifier (`fc`); on ACDC the Kerfoot network (`km`, the default) or the Bai et
+  al. network (`bm`). The default model's outputs and cache names are unchanged; the other model's
+  carry its name.
+- `notebooks/run_notebook.py` executes one of the notebooks for a chosen model and saves it under
+  `notebooks/_build/`, dropping the cells tagged for the other model.
+- `notebooks/acdc_bm_cache.py` builds the softmax cache of the Bai et al. network (`bm`) that
+  `notebooks/acdc_periodic_verification.py` reads. It needs TensorFlow, which has no wheel for the
+  project's Python, so it runs in an isolated environment (`CONTRIBUTING.md`, "Notebooks").
+- `notebooks/model_comparison.py` (jupytext) puts the full-mode results of the two models of each
+  dataset side by side. It recomputes nothing: it reads the four results files from
+  `notebooks/_build/`.
+- The notebooks are not part of the installed package.
 
 ## [0.3.0] - 2026-10-17
 

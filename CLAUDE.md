@@ -60,10 +60,16 @@ command, not a GPU sync command) has been observed to revert torch to `+cpu` whi
 `jax-cuda13-*` packages installed and `jax.default_backend()` still reporting `'gpu'`.
 
 ## Project status
-`utrace` reached `v0.1.0`: Phases 0-6 of the backend-agnostic migration are complete and tagged
-(`MIGRATION.md`'s `## Phase status`). What remains open — step-ladder items D and E, ruff rungs
+`utrace` is at `0.3.0` (`pyproject.toml`; it reached `v0.1.0` at the end of Phases 0-6 of the
+backend-agnostic migration, complete and tagged in `MIGRATION.md`'s `## Phase status`). What remains open — step-ladder items D and E2, ruff rungs
 2-3, and the items in `BACKLOG.md` — is scoped explicitly by `MIGRATION.md` itself as work beyond
 Phase 6, not a continuation of an ongoing refactor.
+
+0.3.0 added the evaluation API: `tune_alpha` selects alpha on a tuning set, and `uncertainty_at`
+measures `U` on a separate evaluation set and, given `delta`, the upper confidence bound `U_delta`
+(details in `CONTRIBUTING.md`). The `notebooks` dependency group carries what is needed to execute
+`notebooks/*.py` (jupytext, ipykernel, nbclient) alongside whichever `dev*` group is in use.
+Regression support is being developed on the branch `unify-clf-reg-utrace`; it is not merged.
 
 Read `CONTRIBUTING.md` before touching any code, tests, or example scripts — it holds the
 canonical conventions and the dependency rule (core never imports torch), and applies regardless

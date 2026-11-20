@@ -424,6 +424,9 @@ this "113 passed, 1 skipped" line was written. Batch 1
 passed count (113) is unchanged throughout — none of the four device-reconciliation tests run on
 a backend without GPU-backed jax.
 
+[UPDATED 2026-11-20] The "113 passed, 5 skipped" figure is historical. For the current figure see
+`CONTRIBUTING.md`, "Running the tests".
+
 ### scripts/ lint cleanup
 
 [ESTABLISHED] ruff found 53 findings in `scripts/` at the start of this pass, mostly dead
@@ -463,6 +466,8 @@ above; both produced byte-identical `.npy` output before and after.
   acted on. **[RESOLVED]** monai removed from the dev group entirely rather than given its own extra; it
 lives only in the `examples` extra now. Verified in a clean venv: syncing dev plus viz gives
 120 passing tests with monai absent from the installed set.
+  [UPDATED 2026-11-20] monai and nibabel now live in the separate `acdc` extra, not in `examples`
+  (see `pyproject.toml`).
 - [DONE] `_max_N` overflow guard (Phase 6 step 1): `_calibrate_impl` now checks capacity before writing, in both branches, raising `ValueError` instead of allowing an out-of-bounds write. The pre-fix diagnostic found the failure was not one mode but three distinct behaviours, empirically reproduced:
   1. Batched write whose start index (`_N`) is already `>= _max_N`: JAX's `.at[].set()` silently dropped the update; `_N` still incremented regardless; neither reading `conformity_scores_` afterward nor setting `alpha` raised anything — the only fully silent failure of the three, and the one a caller relying on repeated `batched=True` streaming calibration would hit first.
   2. Batched write straddling the boundary (starts in-bounds, overruns past `_max_N`): raised `ValueError` from JAX broadcasting (the in-bounds slice clips shorter than the incoming values).
@@ -582,6 +587,9 @@ removed the `torch` extra outright and rebuilt the extras around who installs wh
 | `rocm7-local` | jax[rocm7-local] | no |
 | `viz` | matplotlib, pandas | no |
 | `examples` | torch, torchvision, monai, nibabel | yes (CPU build, routed via `[tool.uv.sources]`) |
+
+[UPDATED 2026-11-20] monai and nibabel now live in a separate `acdc` extra; `examples` declares only
+torch and torchvision (see `pyproject.toml`).
 
 `utrace.utils.pytorch`'s helpers do not need `utrace` to install torch; they need it present. If
 it is not, importing them raises a plain `ImportError` — accepted as the honest failure mode
@@ -815,6 +823,9 @@ found during use of the package.
   `UserWarning` subclass, filterable independently) is raised via `warnings.warn` -- not
   `logger.warning` -- whenever the status is not `CONVERGED`, specifically because a logger call
   is how the quantile-clip defect above stayed invisible.
+
+[UPDATED 2026-11-20] The branch is now based on current `main` (merge base `32177ac`) and
+carries the fixed search; see BACKLOG.md, "Classifier/Regressor split", status 2026-11-20.
 
 Golden baselines (`tests/integration/torch/baselines/`) were regenerated after this fix: of the 20
 golden calls (10 classes x 2 noise levels), the 4 that converge to an interior alpha (classes 0

@@ -18,7 +18,7 @@ Open work only. Split out of MIGRATION.md on 2026-08-19 (see `.reports/2026-08-1
   ordinary `N`) works correctly across a range of models/data: only 4 of the 20 calls exercise
   that regime at all. A trained-model golden would shift the suite's own coverage toward the
   regime the package is meant to be used in.
-- `get_uncertainty_grid_from_proba`: alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
+- `get_uncertainty_grid` (a proposed name, not an existing method; the `_from_proba` suffix was dropped from the public API by the rename batch): alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
 - `tuning_stability(probs, y, n_splits)`: diagnostic for tuning-set size adequacy (runs the search on disjoint subsets and reports spread). This is the formalization of the "L random splits" scheme from the paper.
 - **A torch-free version of the max_iters-stability regression test (2026-09-22).** The only guard
   for "the search's returned `q_hat`/conditioned mean are independent of `max_iters`" currently
@@ -52,6 +52,7 @@ sklearn's check_is_fitted looks for, so the inheritance is deliberate scikit-lea
 compatibility. scikit-learn therefore stays a test dependency. The `# TODO: not needed
 anymore` comment on that import is stale and actively misleading — it produced one wrong
 backlog item already. Removing the comment, not the import, is the correct follow-up.
+  [RESOLVED] The comment on that import now reads `# base class; see __sklearn_is_fitted__ below`.
 - Performance benchmark per phase.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
 
@@ -112,27 +113,20 @@ Out of scope for the current script-migration work. Recorded here so the context
   not taken" under "ruff adoption, rung 1"), which cites "Architecture / design direction" in
   MIGRATION.md as if it documents the split — it does not; that section is entirely about
   jit/vmap/state-PyTree design for the existing single class. Recording only: the split has been
-  decided in principle. Not decided: the module layout, the API surface each subclass exposes, or
-  the definition of the regression uncertainty measure itself (the classification measure is
-  `1 - P(ŷ = y_t)`; regression has no analogous definition here yet). None of that is designed by
-  this entry.
+  decided in principle. Not decided: the module layout and the API surface each subclass exposes.
+  None of that is designed by this entry.
 
-  **2026-09-22 update, from the alpha-search fix.** The base class this split introduces must own
-  the *fixed* search (`_search_uncertainty` — as of the 2026-09-22 correction pass this is once
-  again the ONE canonical entry point, returning `(alpha, U, status)`; there is no separate
-  `_with_status` name to keep in sync — and its `SearchStatus`/`SearchStatusWarning` machinery, see
-  FINDINGS.md, "Alpha search: floor, feasible-alpha return, status propagation"), not the pre-fix
-  `[0,1]`-domain, last-iterate-return version — designing the shared base class around the old
-  search would relocate both defects into two call sites (classification and regression) instead
-  of one. `remotes/github/unify-clf-reg-utrace` (inspected read-only, not merged) already
-  generalizes `_search_uncertainty` toward a shared `risk_fn`-parameterized version used by both
-  tasks, with the two pre-fix defects present verbatim in it (byte-identical `_q_hat_from_alpha`
-  clip; the same discarded-`frozen`, last-iterate `return alpha_f, U`) — that branch should rebase
-  onto this fix rather than the fix being ported to it separately, since its generalization wraps
-  around the exact lines this fix touches without rewriting them, and it already generalizes
-  `_search_uncertainty` itself (the same name this fix now returns three values from directly, no
-  second name involved) rather than a wrapper around it. The rebase specifics are recorded above
-  in this entry.
+  **Status, 2026-11-20.** Regression is implemented on the branch `unify-clf-reg-utrace`
+  (`remotes/github/unify-clf-reg-utrace`) for the standard (absolute-residual) score, not merged.
+  The branch is based on current `main` and carries the fixed `_search_uncertainty` (floor at
+  `1/(N+1)`, smallest-feasible-alpha return, `SearchStatus`), generalized to a `risk_fn`-
+  parameterized search shared by both tasks. Its regression measure (`reg_risk_fn`) is the overlap
+  ratio between the conformal interval and a tolerance window. The split into two classes is still
+  not designed: the branch keeps a single class. Whatever base class the split introduces must own
+  that fixed search (`_search_uncertainty`, the one canonical entry point returning
+  `(alpha, U, status)`, with its `SearchStatus`/`SearchStatusWarning` machinery; see FINDINGS.md,
+  "Alpha search: floor, feasible-alpha return, status propagation"), not a copy of the pre-fix
+  version.
 
 - **Order-statistic search (candidate design for the Classifier/Regressor base class).** The
   search criterion depends on alpha only through `q_hat`, which itself takes only `N` distinct
