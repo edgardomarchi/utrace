@@ -124,8 +124,14 @@ def get_coverage(values: np.ndarray, sets: np.ndarray) -> float:
     is_in = sets[np.arange(V), values]
     coverage = is_in.sum() / V
     if coverage > 0.99:
-        print(f'get_coverage(): Coverage of: {coverage}!!!, V: {V}')
-        print(f'True values: {sets.flatten().sum()}, total values: {len(sets.flatten())}')
+        # Informational, not an error: near-total coverage is a legitimate
+        # outcome (e.g. large prediction sets), just unusual enough to be
+        # worth surfacing. Was an unconditional `print()` -- routed through
+        # the module logger instead so it respects the caller's logging
+        # configuration rather than always writing to stdout; message text
+        # unchanged.
+        logger.info('get_coverage(): Coverage of: %s!!!, V: %d', coverage, V)
+        logger.info('True values: %s, total values: %s', sets.flatten().sum(), len(sets.flatten()))
     return coverage
 
 def get_average_set_size(sets: np.ndarray) -> float:

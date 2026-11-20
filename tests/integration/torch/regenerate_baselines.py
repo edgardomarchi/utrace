@@ -4,7 +4,7 @@ Paths are resolved relative to THIS file (tests/integration/torch/), not the
 current working directory, so the script works regardless of where it is run.
 
 Usage:
-    uv run --extra=cpu python tests/integration/torch/regenerate_baselines.py --api new
+    uv run python tests/integration/torch/regenerate_baselines.py --api new
 
 Run only for an intentional change to the algorithm or test setup. Commit the
 regenerated .npy files alongside the change that motivated them, and explain
