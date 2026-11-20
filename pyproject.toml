@@ -55,7 +55,7 @@ acdc = [
 
 [project.urls]
 homepage = "https://github.com/edgardomarchi/utrace"
-documentation = "https://github.com/edgardomarchi/utrace/-/tree/main/docs"
+documentation = "https://github.com/edgardomarchi/utrace#readme"
 repository = "https://github.com/edgardomarchi/utrace"
 
 [tool.uv]

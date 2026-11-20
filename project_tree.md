@@ -12,7 +12,12 @@
 ├── LICENSE.md
 ├── MIGRATION.md
 ├── notebooks
-│   └── mnist_method_evaluation.py
+│   ├── acdc_bm_cache.py
+│   ├── acdc_periodic_verification.py
+│   ├── mnist_method_evaluation.py
+│   ├── model_comparison.py
+│   ├── periodic_verification_demo.py
+│   └── run_notebook.py
 ├── project_tree.md
 ├── pyproject.toml
 ├── README.md
@@ -88,4 +93,4 @@
 │           └── test_torch_label_input.py
 └── uv.lock
 
-15 directories, 74 files
+15 directories, 79 files
