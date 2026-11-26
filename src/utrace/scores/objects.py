@@ -77,8 +77,15 @@ class Score(abc.ABC):
         """`ValueError` if the dtype or values of `y` (host numpy or jax) are not acceptable."""
 
     @abc.abstractmethod
+    def check_output(self, output, y, where: str) -> None:
+        """`ValueError` if the model output (host numpy or jax) does not have the shape this
+        score expects, or (when the labels `y` are given) does not match them. Called by
+        `calibrate` (with `y`) and `predict` (with `y=None`)."""
+
+    @abc.abstractmethod
     def prepare_labels(self, y: np.ndarray, output: np.ndarray, where: str) -> np.ndarray:
-        """Host labels in canonical form, after `check_label_dtype` (tuning/evaluation paths)."""
+        """Host labels in canonical form, after `check_label_dtype` (tuning/evaluation paths).
+        Raises `ValueError` where `check_output` would."""
 
     @abc.abstractmethod
     def check_label_range(self, y, K: int | None, where: str) -> None:
@@ -211,6 +218,11 @@ class LAC(Score):
     def check_label_dtype(self, y, where: str) -> None:
         _check_integral_label_dtype(y, where)
 
+    def check_output(self, output, y, where: str) -> None:
+        # Classification's shape checks (columns, rows) live in UncertaintyQuantifier and run
+        # in their established order; nothing is added here.
+        return None
+
     def prepare_labels(self, y, output, where: str):
         return y.flatten().astype(int)
 
@@ -278,12 +290,13 @@ def _intersection_length(lower_cp, upper_cp, lower_tol, upper_tol):
 class AbsResidual(Score):
     """Absolute residual `s = |y - y_hat|`, interval `C = [y_hat - q_hat, y_hat + q_hat]`.
 
-    Input: point predictions `y_hat` of shape `(n,)`; targets finite numbers of the same shape.
+    Input: point predictions `y_hat`, a 1-D array of shape `(n,)` (an `(n, 1)` column is
+    rejected, not reshaped); targets finite numbers of the same shape.
     The acceptance region is the fixed window `B = y_hat ± tol` chosen by the user, and
     `pi = |C ∩ B| / |C|` (1 when `C` is the single point `y_hat`, since then `C ⊆ B`). The search
     steers by the mean of `pi` over valid covered samples, feasible when `>= target_ratio`.
     `tol` is required (finite, `> 0`, in the units of the target); `target_ratio` defaults to 1.0
-    (`C ⊆ B`) and must lie in `[0, 1]`. `classes` is not supported. `predict` returns
+    (`C ⊆ B`) and must lie in `(0, 1]`. `classes` is not supported. `predict` returns
     `(lower, upper)`.
 
     Because `C` and `B` share their centre, `pi = min(1, tol / q_hat)` is the same for every
@@ -314,11 +327,12 @@ class AbsResidual(Score):
                 ratio_value = float(target_ratio)
             except (TypeError, ValueError):
                 raise ValueError(
-                    f"{where}: target_ratio must be a finite number in [0, 1]; got {target_ratio!r}."
+                    f"{where}: target_ratio must be a finite number in (0, 1]; got {target_ratio!r}."
                 ) from None
-            if not np.isfinite(ratio_value) or not (0.0 <= ratio_value <= 1.0):
+            # 0 is excluded: every alpha would be feasible and the search always FLOOR_LIMITED.
+            if not np.isfinite(ratio_value) or not (0.0 < ratio_value <= 1.0):
                 raise ValueError(
-                    f"{where}: target_ratio must be a finite number in [0, 1]; got {target_ratio!r}."
+                    f"{where}: target_ratio must be a finite number in (0, 1]; got {target_ratio!r}."
                 )
         return TolParams(jnp.asarray(tol_value, dtype=jnp.float64),
                          jnp.asarray(ratio_value, dtype=jnp.float64))
@@ -333,12 +347,23 @@ class AbsResidual(Score):
         if not bool(xp.all(xp.isfinite(y))):
             raise ValueError(f"{where}: regression targets must contain only finite values.")
 
-    def prepare_labels(self, y, output, where: str):
-        if output.ndim != 1 or y.shape != output.shape:
+    def check_output(self, output, y, where: str) -> None:
+        if y is None:
+            if output.ndim != 1:
+                raise ValueError(
+                    f"{where}: score 'abs_error' expects the model output to be a 1-D array of "
+                    f"point predictions, shape (n_samples,); got shape {tuple(output.shape)}."
+                )
+            return
+        if output.ndim != 1 or tuple(y.shape) != tuple(output.shape):
             raise ValueError(
-                f"{where}: score 'abs_error' expects predictions and targets of the same shape "
-                f"(n_samples,); got predictions {output.shape} and targets {y.shape}."
+                f"{where}: score 'abs_error' expects the model output to be a 1-D array of "
+                f"point predictions, shape (n_samples,), and targets of the same shape; got "
+                f"predictions {tuple(output.shape)} and targets {tuple(y.shape)}."
             )
+
+    def prepare_labels(self, y, output, where: str):
+        self.check_output(output, y, where)
         return y.astype(np.float64)
 
     def check_label_range(self, y, K, where: str) -> None:

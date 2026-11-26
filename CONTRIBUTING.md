@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `695 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (702 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
+Expect `715 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (722 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
@@ -324,7 +324,7 @@ lower, upper = uq.predict(y_hat_test)                           # (lower, upper)
 ```
 
 - `tol` is required for `'abs_error'` (finite, `> 0`) on `get_uncertainty`, `tune_alpha` and
-  `uncertainty_at`; `target_ratio` (in `[0, 1]`) only on the first two. Both are keyword-only and
+  `uncertainty_at`; `target_ratio` (in `(0, 1]`) only on the first two. Both are keyword-only and
   belong to the call, not to the instance: sweeping them on one calibrated instance recompiles
   nothing. `U` is a scalar for a given `tol`; a curve `U(tol)` is built by calling repeatedly.
 - `LAC` takes neither: passing `tol` or `target_ratio` with `'lac'` raises `ValueError` (they used
@@ -356,9 +356,12 @@ accuracy, building arrays for matplotlib. Only avoid it on the path into
 
 ### Input contract for labels and shapes
 
-The rules are the score's (`Score.check_label_dtype`, `prepare_labels`, `check_label_range`).
+The rules are the score's (`Score.check_label_dtype`, `check_output`, `prepare_labels`,
+`check_label_range`).
 
-**`'abs_error'`.** Predictions and targets are 1-D arrays of the same shape `(n,)`; targets have an
+**`'abs_error'`.** Predictions and targets are 1-D arrays of the same shape `(n,)`: `calibrate`,
+the tuning and evaluation paths and `predict` raise `ValueError` naming the shapes otherwise (an
+`(n, 1)` column is rejected, not reshaped); targets have an
 integer or floating dtype and only finite values (boolean, complex, object and string dtypes, and
 `nan`/`inf`, raise `ValueError`). There is no range check.
 
@@ -394,7 +397,7 @@ float outside `[0, K)` passes the dtype check and is reported by the range check
 
 ## Departures from the published paper (do NOT "fix" without confirming)
 
-None of the three items below were documented anywhere in this repository before the
+None of the items below were documented anywhere in this repository before the
 2026-09-22 alpha-search fix added this
 section -- `git grep` for "departure" and "paper" across the prior state of every tracked `.md`
 file and `src/` returns nothing. They are recorded here now specifically so the next person does

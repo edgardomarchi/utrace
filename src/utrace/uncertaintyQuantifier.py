@@ -758,7 +758,9 @@ class UncertaintyQuantifier:
         check (`'lac'`: a floating dtype with a non-finite or non-integral value, which the
         integer cast would truncate toward zero, or a dtype that is not integer, boolean or
         floating; `'abs_error'`: a dtype that is not integer or floating, or a non-finite
-        value); then, for `'lac'`, if a label is outside `[0, K)` with `K` the number of
+        value); then, for `'abs_error'`, if `softmax` is not a 1-D array of point predictions
+        with as many entries as `y` has (an `(n, 1)` column is rejected, not reshaped); then,
+        for `'lac'`, if a label is outside `[0, K)` with `K` the number of
         softmax columns (labels outside it would otherwise alias silently to the last class),
         or if `classes` is not within `[0, K)`.
         """
@@ -771,6 +773,7 @@ class UncertaintyQuantifier:
                 f"with {self._item_shape}; a batched calibration must keep the same shape."
             )
         y_arr = _labels_to_jax(y, "calibrate", self.score_).astype(self.label_dtype_)
+        self.score_.check_output(softmax, y_arr, "calibrate")
         K = item_shape[0] if len(item_shape) == 1 else None
         self.score_.check_label_range(y_arr, K, "calibrate")
         if self.classes is not None:
@@ -893,6 +896,8 @@ class UncertaintyQuantifier:
             Model output (softmax for `'lac'`, point predictions for `'abs_error'`).
             Accepts any DLPack-compatible array.
 
+        Raises `ValueError` for `'abs_error'` if `softmax` is not a 1-D array.
+
         Returns
         -------
         `'lac'`:
@@ -905,6 +910,7 @@ class UncertaintyQuantifier:
                 The interval `[y_hat - q_hat, y_hat + q_hat]`.
         """
         softmax = to_jax(softmax)
+        self.score_.check_output(softmax, None, "predict")
         first, second = _predict_sets(softmax, self._state.q_hat, self.score_)
         return np.array(first), np.array(second)
 
@@ -1013,7 +1019,7 @@ class UncertaintyQuantifier:
             `B = y_hat ± tol`, in the units of the target; finite and `> 0`. `ValueError`
             if given with `'lac'`.
         target_ratio : float, optional
-            `'abs_error'` only: the search target for the mean overlap ratio, in `[0, 1]`;
+            `'abs_error'` only: the search target for the mean overlap ratio, in `(0, 1]`;
             default 1.0 (`C ⊆ B`). `ValueError` if given with `'lac'`.
         eps : float, optional
             Deprecated alias of `tol` (`DeprecationWarning`; removed in 0.5.0). Giving both
@@ -1241,7 +1247,8 @@ class UncertaintyQuantifier:
 
         Raises `ValueError` first if `tol`/`target_ratio` do not suit the score (see
         `get_uncertainty`). Then, if `y` fails the score's dtype check (see `calibrate`);
-        for `'abs_error'`, if predictions and targets are not both of shape `(n,)`; if the
+        for `'abs_error'`, if the output is not a 1-D array of point predictions of the same
+        shape `(n,)` as the targets; if the
         columns of `softmax` differ from those `calibrate` saw (when known); and, for
         `'lac'`, if a label is outside `[0, K)` (`K` the number of columns), the column check
         running first. `get_uncertainty` raises the same on its tuning set and, through

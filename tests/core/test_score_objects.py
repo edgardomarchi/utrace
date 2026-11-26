@@ -156,18 +156,97 @@ def test_tol_must_be_finite_and_positive(bad):
         uq.tune_alpha(y_hat, y, tol=bad)
 
 
-@pytest.mark.parametrize("bad", [-0.1, 1.5, np.nan])
-def test_target_ratio_must_lie_in_unit_interval(bad):
+@pytest.mark.parametrize("bad", [0.0, -0.1, 1.5, np.nan])
+def test_target_ratio_must_lie_in_half_open_unit_interval(bad):
     uq = _calibrated_reg()
     y_hat, y = _reg(7, 20)
-    with pytest.raises(ValueError, match="target_ratio"):
+    with pytest.raises(ValueError, match=r"target_ratio must be a finite number in \(0, 1\]"):
         uq.tune_alpha(y_hat, y, tol=0.2, target_ratio=bad)
+
+
+def test_target_ratio_one_is_accepted():
+    uq = _calibrated_reg()
+    y_hat, y = _reg(7, 20)
+    uq.tune_alpha(y_hat, y, tol=0.2, target_ratio=1.0)
 
 
 def test_abs_residual_target_ratio_defaults_to_one():
     uq = _calibrated_reg()
     y_hat, y = _reg(8, 200)
     assert uq.tune_alpha(y_hat, y, tol=0.3) == uq.tune_alpha(y_hat, y, tol=0.3, target_ratio=1.0)
+
+
+# ---- 3b. AbsResidual validates the shape of the model output -------------------------------
+
+_BAD_OUTPUTS = {"(n, 1)": lambda v: v.reshape(-1, 1), "(n, 2)": lambda v: np.c_[v, v]}
+_SHAPE_MSG = r"expects the model output to be a 1-D array of point predictions"
+
+
+@pytest.mark.parametrize("bad", list(_BAD_OUTPUTS))
+@pytest.mark.parametrize("entry", ["calibrate", "tune_alpha", "get_uncertainty",
+                                   "get_uncertainty_eval", "uncertainty_at", "predict"])
+def test_abs_residual_rejects_non_1d_output(entry, bad):
+    uq = _calibrated_reg()
+    uq.alpha = 0.2
+    y_hat, y = _reg(15, 40)
+    out = _BAD_OUTPUTS[bad](y_hat)
+    calls = {
+        "calibrate": lambda: UncertaintyQuantifier(N=100, score="abs_error").calibrate(out, y),
+        "tune_alpha": lambda: uq.tune_alpha(out, y, tol=0.2),
+        "get_uncertainty": lambda: uq.get_uncertainty(out, y, tol=0.2, eval_softmax=y_hat, eval_y=y),
+        "get_uncertainty_eval": lambda: uq.get_uncertainty(y_hat, y, tol=0.2, eval_softmax=out, eval_y=y),
+        "uncertainty_at": lambda: uq.uncertainty_at(out, y, 0.2, tol=0.2),
+        "predict": lambda: uq.predict(out),
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchStatusWarning)
+        with pytest.raises(ValueError, match=_SHAPE_MSG) as info:
+            calls[entry]()
+    assert str(tuple(out.shape)) in str(info.value)
+
+
+@pytest.mark.parametrize("entry", ["calibrate", "tune_alpha", "get_uncertainty_eval", "uncertainty_at"])
+def test_abs_residual_rejects_mismatched_lengths(entry):
+    uq = _calibrated_reg()
+    y_hat, y = _reg(16, 40)
+    short = y_hat[:39]
+    calls = {
+        "calibrate": lambda: UncertaintyQuantifier(N=100, score="abs_error").calibrate(short, y),
+        "tune_alpha": lambda: uq.tune_alpha(short, y, tol=0.2),
+        "get_uncertainty_eval": lambda: uq.get_uncertainty(y_hat, y, tol=0.2, eval_softmax=short, eval_y=y),
+        "uncertainty_at": lambda: uq.uncertainty_at(short, y, 0.2, tol=0.2),
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchStatusWarning)
+        with pytest.raises(ValueError, match=r"predictions \(39,\) and targets \(40,\)"):
+            calls[entry]()
+
+
+def test_abs_residual_rejected_calibration_leaves_state_unchanged():
+    uq = _calibrated_reg(N=200)
+    before = (uq._state.N, uq._item_shape, np.asarray(uq.conformity_scores_).tobytes())
+    y_hat, y = _reg(17, 30)
+    with pytest.raises(ValueError, match=_SHAPE_MSG):     # non-batched: would reset the buffer
+        uq.calibrate(y_hat.reshape(-1, 1), y)
+    with pytest.raises(ValueError, match="a batched calibration must keep the same shape"):
+        uq.calibrate(y_hat.reshape(-1, 1), y, batched=True)   # the existing check runs first
+    assert (uq._state.N, uq._item_shape, np.asarray(uq.conformity_scores_).tobytes()) == before
+
+
+def test_abs_residual_valid_1d_input_unchanged():
+    y_hat, y = _reg(18, 600)
+    uq = UncertaintyQuantifier(N=200, score="abs_error")
+    uq.calibrate(y_hat[:200], y[:200])
+    assert uq._state.N == 200 and uq._item_shape == ()
+    np.testing.assert_array_equal(np.sort(np.asarray(uq.conformity_scores_)[:200]),
+                                  np.sort(np.abs(y[:200] - y_hat[:200])))
+    alpha = uq.tune_alpha(y_hat[200:400], y[200:400], tol=0.3, target_ratio=0.9)
+    r = uq.uncertainty_at(y_hat[400:], y[400:], alpha, tol=0.3)
+    assert r.n_valid == 200
+    uq.alpha = alpha
+    lower, upper = uq.predict(y_hat[400:])
+    assert lower.shape == upper.shape == (200,)
+    np.testing.assert_allclose(upper - lower, 2 * uq._state.q_hat)
 
 
 # ---- 4. LAC rejects tol and target_ratio ---------------------------------------------------

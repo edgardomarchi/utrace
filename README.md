@@ -175,13 +175,18 @@ result = uq.uncertainty_at(eval_x, eval_y, alpha, tol=tol, delta=0.05)
 
 print(f"alpha       = {alpha:.4f}")
 print(f"U           = {result.U:.4f}")
+print(f"U_empirical = {result.U_empirical:.4f}")
 print(f"U_delta     = {result.U_delta:.4f}")
 print(f"true error  = {np.mean(np.abs(eval_y - eval_x) > tol):.4f}")
 ```
 
-`tune_alpha` also takes `target_ratio` (default 1.0): the search stops at the smallest alpha for
-which the prediction intervals overlap the tolerance window by at least that fraction on average.
-With the default the intervals lie inside the window, so `U` equals `alpha`.
+Here `U_delta` (0.1898) comes out below `U` (0.1978): `U_delta` uses the coverage measured on the
+evaluation set, not the nominal `1 - alpha`, so it is not guaranteed to be above `U`; it is always
+at least `U_empirical` (0.1766), the same expression as `U` with the measured coverage.
+
+`tune_alpha` also takes `target_ratio` (default 1.0, in `(0, 1]`): the search stops at the
+smallest alpha for which the prediction intervals overlap the tolerance window by at least that
+fraction on average. With the default the intervals lie inside the window, so `U` equals `alpha`.
 
 Example scripts can be found in the `scripts` folder, and the jupytext notebooks in `notebooks/`
 (how to run them is described in `CONTRIBUTING.md`, "Notebooks").

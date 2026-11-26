@@ -11,7 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   model's point predictions with the absolute residual `|y - y_hat|`. An error is a prediction
   outside a tolerance window chosen by the user, `B = y_hat ± tol`; the search finds the smallest
   alpha whose mean overlap ratio `|C ∩ B| / |C|` over covered samples is at least `target_ratio`,
-  and `predict` returns the interval `(lower, upper)`.
+  and `predict` returns the interval `(lower, upper)`. Predictions must be a 1-D array of point
+  predictions with the targets' shape; anything else (an `(n, 1)` column included) raises
+  `ValueError`.
 - Score objects (`src/utrace/scores/objects.py`): `Score`, the base class, and the two scores
   `LAC` (`score='lac'`) and `AbsResidual` (`score='abs_error'`), exported as `utrace.Score`,
   `utrace.LAC`, `utrace.AbsResidual` and from `utrace.scores` (with `TolParams`, the per-call
@@ -20,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unchanged.
 - `tol` and `target_ratio`, keyword-only, on `get_uncertainty` and `tune_alpha`; `tol` on
   `uncertainty_at`. `tol` is required for `'abs_error'`; `target_ratio` defaults to 1.0 and must
-  lie in `[0, 1]`. Both belong to the call, so one calibrated quantifier can be swept over them
+  lie in `(0, 1]`. Both belong to the call, so one calibrated quantifier can be swept over them
   without recalibrating or recompiling.
 
 ### Changed
