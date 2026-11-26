@@ -5,11 +5,11 @@
 
 **U**ncertainty **Tra**cking for **C**omplex **E**stimators.
 
-U-TraCE is a Python package for computing estimates and upper confidence bounds on the marginal or conditional uncertainty of any classification model with a softmax output.
+U-TraCE is a Python package for computing estimates and upper confidence bounds on the uncertainty of black-box models: the marginal or class-conditional uncertainty of a classification model with a softmax output, and the uncertainty of a regression model's point predictions with respect to a tolerance chosen by the user.
 
 The library is heavily based on Conformal Prediction, which allows its uncertainty estimates to be distribution-free. A key feature of this approach is that the resulting uncertainty measure relies on the model's actual accuracy (how often it is correct) rather than its confidence (e.g., raw softmax outputs).
 
-U-TraCE provides an evaluation method that reports an estimate of, and an upper confidence bound on, the model's uncertainty, defined as the probability of error: $1-P(\hat{y}​=y_t​)$, where $\hat{y}$ is the model's prediction and $y_t$​ is the true label.
+U-TraCE provides an evaluation method that reports an estimate of, and an upper confidence bound on, the model's uncertainty, defined as the probability of error: $1-P(\hat{y}​=y_t​)$, where $\hat{y}$ is the model's prediction and $y_t$​ is the true label. For regression, a prediction is correct when it lies within the tolerance $\tau$ (`tol`) of the truth, so the uncertainty is $P(|y_t - \hat{y}| > \tau)$.
 
 The point estimate `U` carries no confidence level. The bound `U_delta`, returned by `uncertainty_at(..., delta=...)`, holds with probability at least `1 - delta` only if (1) the evaluation samples are independent and representative of the data the model is used on, and (2) the uniform-selection assumption of the paper holds. The package cannot check either; in particular, pixels of one image are not independent samples.
 
@@ -144,6 +144,44 @@ print(f"true error  = {np.mean(eval_x.argmax(axis=1) != eval_y):.4f}")
 `U` is the point estimate, `U_empirical` is the same expression with the coverage measured on the
 evaluation set, and `U_delta` is the upper confidence bound at level `1 - delta` (see the two
 assumptions above).
+
+For regression, pass point predictions instead of softmax outputs, construct the quantifier with
+`score='abs_error'`, and give the tolerance `tol` (in the units of the target) on each call; it
+belongs to the call, so one calibrated quantifier can be evaluated for several tolerances:
+
+```python
+import numpy as np
+from utrace import UncertaintyQuantifier
+
+rng = np.random.default_rng(0)
+
+
+def synthetic(n):
+    """Point predictions of a regression model, and the true targets."""
+    x = rng.uniform(-3, 3, size=n)
+    y = np.sin(x) + rng.normal(scale=0.3, size=n)
+    return np.sin(x), y
+
+
+cal_x, cal_y = synthetic(1000)    # calibration
+tune_x, tune_y = synthetic(1000)  # tuning
+eval_x, eval_y = synthetic(5000)  # evaluation
+
+tol = 0.4                         # an error is |y - y_hat| > tol, in the units of y
+uq = UncertaintyQuantifier(N=1000, score="abs_error")
+uq.calibrate(cal_x, cal_y)
+alpha = uq.tune_alpha(tune_x, tune_y, tol=tol)
+result = uq.uncertainty_at(eval_x, eval_y, alpha, tol=tol, delta=0.05)
+
+print(f"alpha       = {alpha:.4f}")
+print(f"U           = {result.U:.4f}")
+print(f"U_delta     = {result.U_delta:.4f}")
+print(f"true error  = {np.mean(np.abs(eval_y - eval_x) > tol):.4f}")
+```
+
+`tune_alpha` also takes `target_ratio` (default 1.0): the search stops at the smallest alpha for
+which the prediction intervals overlap the tolerance window by at least that fraction on average.
+With the default the intervals lie inside the window, so `U` equals `alpha`.
 
 Example scripts can be found in the `scripts` folder, and the jupytext notebooks in `notebooks/`
 (how to run them is described in `CONTRIBUTING.md`, "Notebooks").

@@ -101,41 +101,80 @@ Out of scope for the current script-migration work. Recorded here so the context
 
 - Noise-sweep scripts rebuild the dataset (and DataLoader) inside the iteration loop, partly to reshuffle the split per iteration and partly to change the noise level. Reconstructing the full dataset per iteration is wasteful — only the noise (and the split) need to change, not the 60000-sample base. Optimization: instantiate the base dataset (and loader) ONCE outside the loop, and inside the loop either mutate the transform's sigma (transform.std sigma — valid because AddGaussianNoise reads self.std in __call__, not __init__) or reassign it (dataset.transform = AddGaussianNoise(0., sigma)). IMPORTANT: the random_split must STAY inside the loop (with a varying generator) to preserve per-iteration reshuffling — only the dataset/loader construction moves out. Caveat: mutating transform.std from the main process only propagates with num_workers=0; with spawn/fork workers, each worker holds its own copy and the loader would need rebuilding (ties into the num_workers decision). Applies to several sweep scripts (MNIST_class_conditional, and others with a noise sweep). Behavior-adjacent — revalidate numbers after the change. Its own diagnostic + commit.
 
-- **Classifier/Regressor split: decided in principle, not designed.** A future split of the
-  public `UncertaintyQuantifier` into `UncertaintyQuantifierClassifier` and
-  `UncertaintyQuantifierRegressor` is anticipated (regression support is the basis for the second
-  publication referenced under "Research questions" below, and the current public API —
-  `calibrate`, `predict`, `get_uncertainty` — was already named task-agnostically for this, per
-  "Naming convention now in force" in FINDINGS.md), but this decision is recorded in no document
-  as of this entry — confirmed by `git grep`, zero matches for either class name or the phrase
-  "classifier/regressor" anywhere in `src/`, `tests/`, `scripts/`, or the other five documents,
-  except FINDINGS.md's own passing mention (see "Two further rungs were measured and deliberately
-  not taken" under "ruff adoption, rung 1"), which cites "Architecture / design direction" in
-  MIGRATION.md as if it documents the split — it does not; that section is entirely about
-  jit/vmap/state-PyTree design for the existing single class. Recording only: the split has been
-  decided in principle. Not decided: the module layout and the API surface each subclass exposes.
-  None of that is designed by this entry.
+- **Classifier/Regressor split: decided — one class, driven by score objects.** There is no
+  split into `UncertaintyQuantifierClassifier`/`UncertaintyQuantifierRegressor`. A single
+  `UncertaintyQuantifier` holds a score object (`self.score_`), and everything task-specific lives
+  in it: `src/utrace/scores/objects.py` defines the frozen-dataclass base `Score` and the two
+  shipped scores, `LAC` (`score='lac'`) and `AbsResidual` (`score='abs_error'`). The core never
+  branches on the task. Per-call parameters (`tol`, `target_ratio`) are resolved by the score into
+  a traced pytree (`TolParams`), so sweeping them on one calibrated instance compiles once. The
+  fixed search (`_search_uncertainty`: floor at `1/(N+1)`, smallest-feasible-alpha return,
+  `SearchStatus`/`SearchStatusWarning`; see FINDINGS.md, "Alpha search: floor, feasible-alpha
+  return, status propagation") is the one shared search; it takes its metric (`score.evaluate`)
+  and its rule (`score.feasible`/`score.step_up`) from the score. Classification is bit-for-bit
+  unchanged. New scores are `Score` subclasses; see the entries below.
 
-  **Status, 2026-11-20.** Regression is implemented on the branch `unify-clf-reg-utrace`
-  (`remotes/github/unify-clf-reg-utrace`) for the standard (absolute-residual) score, not merged.
-  The branch is based on current `main` and carries the fixed `_search_uncertainty` (floor at
-  `1/(N+1)`, smallest-feasible-alpha return, `SearchStatus`), generalized to a `risk_fn`-
-  parameterized search shared by both tasks. Its regression measure (`reg_risk_fn`) is the overlap
-  ratio between the conformal interval and a tolerance window. The split into two classes is still
-  not designed: the branch keeps a single class. Whatever base class the split introduces must own
-  that fixed search (`_search_uncertainty`, the one canonical entry point returning
-  `(alpha, U, status)`, with its `SearchStatus`/`SearchStatusWarning` machinery; see FINDINGS.md,
-  "Alpha search: floor, feasible-alpha return, status propagation"), not a copy of the pre-fix
-  version.
+- **Order-statistic search (candidate for the shared search).** The search criterion depends on
+  alpha only through `q_hat`, which itself takes only `N` distinct values (one per
+  calibration-buffer order statistic) — the search could run directly on the integer
+  order-statistic index instead of on continuous alpha via `fori_loop` bisection: integer
+  bisection over `{0, ..., N-1}` in `ceil(log2 N)` steps, with no oscillation and no
+  `max_iters`-parity dependence, because there is no continuous step function to straddle. It
+  plugs into the shared search without changing the score protocol: `score.evaluate` already takes
+  `q_hat` (not alpha), so the loop would set `q_hat = cs_sorted[k]` and call the same
+  `score.evaluate`/`score.feasible`. Changes every classification alpha and golden value, so it
+  would be opt-in (a static argument or a score attribute). Not designed, not started.
 
-- **Order-statistic search (candidate design for the Classifier/Regressor base class).** The
-  search criterion depends on alpha only through `q_hat`, which itself takes only `N` distinct
-  values (one per calibration-buffer order statistic) — the search could run directly on the
-  integer order-statistic index instead of on continuous alpha via `fori_loop` bisection:
-  integer bisection over `{0, ..., N-1}` in `ceil(log2 N)` steps, with no oscillation and no
-  `max_iters`-parity dependence, because there is no continuous step function to straddle. Recorded
-  as a candidate for the shared search the Classifier/Regressor base class (above) would own — not
-  designed here, not started.
+- **Closed form for constant `pi` (optional fast path).** With `AbsResidual` and the fixed window
+  `B = y_hat ± tol`, the interval and the window share their centre, so every covered sample has
+  `pi = min(1, tol/q_hat)`: the search is feasible exactly when `q_hat <= tol/target_ratio` (and
+  some tuning sample is covered), and the smallest such alpha is a `searchsorted` on the sorted
+  calibration buffer. An optional score member (e.g. `closed_form_alpha(cs_sorted, n_cs, params)`
+  returning `None` when not applicable) with the bisection as fallback; it must be tested against
+  the bisection. It changes regression alphas (exact step boundaries instead of dyadic bisection
+  points) and the last ulp of `EC` (`min(1, tol/q_hat)` vs. the intersection ratio). Recorded in
+  CONTRIBUTING.md, "Departures from the published paper"; not implemented.
+
+- **CQR and normalized CP as `IntervalScore` subclasses.** An intermediate `IntervalScore(Score)`
+  would own what `AbsResidual` and these two share: the overlap efficiency over `B = center ± tol`
+  (with the `q_hat == 0` guard), coverage, `predict -> (lower, upper)`, `TolParams` and the
+  `>= target_ratio` rule. A subclass supplies `cal_score`, `region` and `center(output)`.
+  Normalized CP: output `(n, 2) = (y_hat, sigma_hat)`, `s = |y - y_hat| / sigma_hat`,
+  `region = y_hat ± q_hat * sigma_hat`, `center = y_hat`; `pi` varies per sample, so the search is
+  needed (no closed form). CQR: output `(n, 2) = (lo_hat, hi_hat)`,
+  `s = max(lo_hat - y, y - hi_hat)`, `region = [lo_hat - q_hat, hi_hat + q_hat]`; it has no native
+  point prediction, so `center` must be defined (midpoint, or a third output column), and `q_hat`
+  can be negative, so the region can be empty and needs its own branch. Both have rows of shape
+  `(2,)`: `UncertaintyQuantifier._label_range` then reports `K = 2`, which these scores' (no-op)
+  `check_label_range` must ignore, as `AbsResidual`'s does.
+
+- **Missing `N == 0` guard on the tuning path; `NaN` search metric.** `uncertainty_at` raises when
+  the instance is not calibrated, but `get_uncertainty`/`tune_alpha` do not check `N == 0` and run
+  the search on an empty buffer. Whether that (or `NaN` model outputs) can produce a `NaN` search
+  metric was not checked. The two score members `feasible` and `step_up` are kept separate so a
+  `NaN` metric behaves exactly as before the score objects (for `LAC`: `NaN <= 1` and `NaN > 1` are
+  both False); merging them into one rule is only safe once a `NaN` metric is known to be
+  unreachable or is rejected explicitly.
+
+- **`src/utrace/utils/regression_data/datasets.py` imports `sklearn` at module level inside the
+  installed package.** `scikit-learn` is only in the `dev*` dependency groups, so importing
+  `utrace.utils.regression_data.datasets` fails in a plain install; ruff also reports its two
+  imports unused. It belongs to the regression examples work: move it to `scripts/`, or make the
+  import lazy. Not done in the score-objects change, which leaves the examples untouched.
+
+- **Remove the `eps` alias in 0.5.0.** `get_uncertainty`, `tune_alpha` and `uncertainty_at` accept
+  `eps=` as a deprecated alias of `tol=` (`DeprecationWarning`; `TypeError` if both are given),
+  through `_resolve_tol_alias` in `uncertaintyQuantifier.py`. Regression is planned to ship in
+  0.4.0; in 0.5.0 delete the helper, the `eps=None` parameter of the three methods and the alias
+  tests in `tests/core/test_score_objects.py`, and add a `### Removed` CHANGELOG entry.
+
+- **A bound on a single estimand that includes the dropped term.** `U_delta` bounds
+  `U* = 1 - e * p` (`p` the coverage, `e = E[pi | covered]`), the product of two separately bounded
+  terms. The paper's identity drops the event that the prediction is acceptable although the truth
+  is not in the set, `P(y in B, y not in C)` (classification with `LAC`: `P(C empty, y_hat = y)`).
+  A tighter and simpler statement is one lower confidence bound, at level `delta`, on the mean of
+  `W = 1{y in C} * pi + 1{y in B, y not in C}`, which is in `[0, 1]` per sample, instead of the
+  current union bound over two bounds. Needs its own derivation and Monte Carlo check.
 
 - **Quantile-index departure: canonical order statistic or keep the conservative one?**
   `_masked_quantile_higher` returns one order statistic above the canonical split-conformal
