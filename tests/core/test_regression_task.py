@@ -1,16 +1,20 @@
+import warnings
+from collections.abc import Callable
+from dataclasses import dataclass
+
 import jax.numpy as jnp
 import numpy as np
-import warnings
-
 import pytest
 
-from utrace.uncertaintyQuantifier import (
-    _intersection_length, reg_risk_fn, _predict_sets, _evaluate_at_alpha
-)
-
 import utrace.uncertaintyQuantifier as uq
+from utrace.scores import AbsResidual, TolParams
+from utrace.scores.objects import _intersection_length
+from utrace.uncertaintyQuantifier import _evaluate_at_alpha, _predict_sets
 
-from utrace.scores import abs_error
+
+def _params(tol, target=1.0):
+    """`AbsResidual` per-call parameters, as `resolve_params` builds them (float64 leaves)."""
+    return TolParams(jnp.asarray(tol, dtype=jnp.float64), jnp.asarray(target, dtype=jnp.float64))
 
 @pytest.mark.parametrize(
     "lower_cp, upper_cp, lower_tol, upper_tol, expected",
@@ -50,10 +54,8 @@ def test_reg_risk_fn():
 
     # Prediction intervals: [0, 10] for every observation.
     # Tolerance intervals: [3, 7] for every observation.
-    aux_data = (2.0, 2.0)
-
-    steering, efficiency = reg_risk_fn(
-        y, y_hat, q_hat, valid_mask, abs_error, aux_data
+    steering, efficiency = AbsResidual().evaluate(
+        y, y_hat, q_hat, valid_mask, _params(2.0)
     )
 
     # Observation 1: covered, overlap ratio = 4/10.
@@ -69,8 +71,7 @@ def test_reg_risk_fn_no_covered_observations():
     y = jnp.array([20.0, 30.0])
     valid_mask = jnp.array([True, True])
 
-    result = reg_risk_fn(y, y_hat, 5.0,
-                         valid_mask, abs_error, (2.0, 2.0))
+    result = AbsResidual().evaluate(y, y_hat, 5.0, valid_mask, _params(2.0))
 
     np.testing.assert_allclose(result, (0.0, 0.0))
 
@@ -79,10 +80,7 @@ def test_predict_sets_regression():
     y_hat = jnp.array([2.0, 5.0, 8.0])
     q_hat = 1.5
 
-    lower, upper = _predict_sets(
-        y_hat, q_hat, score_fn = abs_error,
-        task = "regression"
-    )
+    lower, upper = _predict_sets(y_hat, q_hat, AbsResidual())
 
     np.testing.assert_allclose(lower, [0.5, 3.5, 6.5])
     np.testing.assert_allclose(upper, [3.5, 6.5, 9.5])
@@ -93,9 +91,8 @@ def test_reg_risk_fn_ignores_invalid_observations():
 
     valid_mask = jnp.array([True, False, True])
 
-    sttering, efficiency = reg_risk_fn(
-        y, y_hat, 5.0, valid_mask, abs_error,
-        (2.0, 2.0)
+    sttering, efficiency = AbsResidual().evaluate(
+        y, y_hat, 5.0, valid_mask, _params(2.0)
     )
 
     # Observation 1 and 3 are valid and covered-
@@ -113,8 +110,7 @@ def test_evaluate_at_alpha_regression():
     n_cs = 4
 
     result = _evaluate_at_alpha(alpha, y, y_hat, valid_mask,
-                                cs_padded, n_cs, abs_error, reg_risk_fn,
-                                (2.0, 2.0), "regression")
+                                cs_padded, n_cs, AbsResidual(), _params(2.0))
     U, EC, n_covered, n_valid, n_succ, sum_sq_dev = result
 
     # Prediction intervals: [0, 10].
@@ -142,9 +138,7 @@ def test_evaluate_At_alpha_regression_ignores_invalid():
 
     cs_padded = jnp.array([5.0, 5.0, 5.0, 5.0])
     result = _evaluate_at_alpha(alpha, y, y_hat, valid_mask,
-                                cs_padded, 4, abs_error,
-                                reg_risk_fn, (2.0, 2.0),
-                                "regression")
+                                cs_padded, 4, AbsResidual(), _params(2.0))
     U, EC, n_covered, n_valid, n_succ, sum_sq_dev = result
 
     np.testing.assert_allclose(U, 0.68)
@@ -159,59 +153,59 @@ def test_evaluate_At_alpha_regression_ignores_invalid():
 
 # Test search uncertainty for regression
 
-def run_mock_search(monkey_patch, metric_fn, *, n_cs = 9, max_iters = 30,
-                    target_ratio = 0.8):
-    """Run the regression alpha search with a controlled evaluation metric."""
+@dataclass(frozen=True)
+class FakeScore(AbsResidual):
+    """`AbsResidual` whose search metric is a controlled function of `q_hat` (EC fixed at 0.4)."""
+    metric_fn: Callable = None
 
-    def fake_evaluate_alpha(alpha, y, smx, valid_mask, cs_padded, n_cs, score_fn,
-                            risk_fn, aux_data):
-        metric = metric_fn(alpha)
-        ec = jnp.asarray(0.4, dtype = jnp.float64)
-        return jnp.asarray(metric, dtype = jnp.float64), ec
+    def evaluate(self, y, output, q_hat, valid_mask, params):
+        return (jnp.asarray(self.metric_fn(q_hat), dtype=jnp.float64),
+                jnp.asarray(0.4, dtype=jnp.float64))
 
-    monkey_patch.setattr(uq, "_evaluate_alpha", fake_evaluate_alpha)
 
-    # The JIT cache must not retain a trace made with a previous mock.
-    uq._search_uncertainty.clear_cache()
+def run_mock_search(metric_fn, *, n_cs = 9, max_iters = 30, target_ratio = 0.8):
+    """Run the regression alpha search with a controlled search metric.
 
+    The calibration scores are the grid `(i + 1) / n_cs`, so `q_hat` is close to `1 - alpha`.
+    """
     y = jnp.array([1.0, 2.0])
     y_hat = jnp.array([1.1, 2.1])
     valid_mask = jnp.array([True, True])
 
-    cs_padded = jnp.full((n_cs,), 0.5)
+    cs_padded = (jnp.arange(n_cs, dtype = jnp.float64) + 1.0) / n_cs
     n_cs_array = jnp.asarray(n_cs, dtype = jnp.int32)
 
     return uq._search_uncertainty(y, y_hat, valid_mask, cs_padded, n_cs_array,
-                                  max_iters = max_iters, score_fn = uq.abs_error,
-                                  target_ratio = target_ratio, aux_data = (0.1, 0.1),
-                                  risk_fn = uq.reg_risk_fn, direction = -1.0)
+                                  max_iters, FakeScore(metric_fn = metric_fn),
+                                  _params(0.1, target_ratio))
 
-def test_search_floor_limited(monkeypatch):
+def test_search_floor_limited():
     n_cs = 9
     floor = 1.0/(n_cs + 1)
-    alpha, U, status = run_mock_search(monkeypatch, metric_fn = lambda alpha:0.9,
-                                       n_cs = n_cs)
+    alpha, U, status = run_mock_search(metric_fn = lambda q_hat: 0.9, n_cs = n_cs)
 
     np.testing.assert_allclose(alpha, floor)
     np.testing.assert_allclose(U, 1.0 - 0.4*(1.0-floor))
 
     assert int(status) == uq._STATUS_FLOOR_LIMITED
 
-def test_search_returns_feasible_alpha(monkeypatch):
+def test_search_returns_feasible_alpha():
     n_cs = 9
+    # Feasible where q_hat <= 0.6, i.e. alpha >= 0.4 on this grid.
     alpha, U, status = run_mock_search(
-        monkeypatch, metric_fn = lambda a: jnp.where(a >= 0.4, 0.9, 0.2),
+        metric_fn = lambda q_hat: jnp.where(q_hat <= 0.6, 0.9, 0.2),
     )
-    assert 0.4 <= float(alpha) <= 1.0
+    q_hat = uq._q_hat_from_alpha((jnp.arange(n_cs, dtype = jnp.float64) + 1.0) / n_cs,
+                                 jnp.int32(n_cs), jnp.float64(alpha))
+    assert float(q_hat) <= 0.6
+    assert 0.39 <= float(alpha) <= 1.0
     assert float(alpha) > 1.0/ (n_cs + 1)
 
     np.testing.assert_allclose(U, 1.0 - 0.4*(1.0-alpha))
     assert int(status) == uq._STATUS_CONVERGED
 
-def test_search_infeasible(monkeypatch):
-    alpha, U, status = run_mock_search(
-        monkeypatch, metric_fn = lambda alpha: 0.2,
-    )
+def test_search_infeasible():
+    alpha, U, status = run_mock_search(metric_fn = lambda q_hat: 0.2)
     np.testing.assert_allclose(alpha, 1.0)
     np.testing.assert_allclose(U, 1.0)
 
@@ -242,13 +236,13 @@ def test_search_status_propagation(monkeypatch, status_code, expected_status, wa
 
     if warns:
         with pytest.warns(uq.SearchStatusWarning):
-            alpha = uncert_q.tune_alpha(y_hat_cal, y_cal,eps = 0.1, target_ratio=0.8)
+            alpha = uncert_q.tune_alpha(y_hat_cal, y_cal, tol = 0.1, target_ratio=0.8)
 
     else:
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
 
-            alpha = uncert_q.tune_alpha(y_hat_cal, y_cal, eps = 1.0, target_ratio = 0.8)
+            alpha = uncert_q.tune_alpha(y_hat_cal, y_cal, tol = 1.0, target_ratio = 0.8)
 
         assert not any(issubclass(w.category, uq.SearchStatusWarning) for w in record)
 
@@ -279,10 +273,8 @@ def test_regression_tune_alpha_runs_real_search():
     uncert_q = uq.UncertaintyQuantifier(N = n_cal, score = "abs_error")
     uncert_q.calibrate(y_hat_cal, y_cal)
 
-    with pytest.warns(
-        uq.SearchStatusWarning) if False else pytest.MonkeyPatch.context():
-        alpha = uncert_q.tune_alpha(y_hat_tune, y_tune, max_iters = 30,
-                                    eps = 0.1, target_ratio = 0.8)
+    alpha = uncert_q.tune_alpha(y_hat_tune, y_tune, max_iters = 30,
+                                tol = 0.1, target_ratio = 0.8)
 
     assert np.isfinite(alpha)
     assert 1.0/(n_cal + 1) <= alpha <= 1.0
@@ -294,17 +286,18 @@ def test_regression_tune_alpha_runs_real_search():
     )
 
 
-def test_regression_search_moves_in_correct_direction(monkeypatch):
-    def metric_fn(alpha):
-        # Overlap decreases as alpha increases.
-        return alpha
+def test_regression_search_moves_in_correct_direction():
+    def metric_fn(q_hat):
+        # Overlap grows as alpha grows (q_hat shrinks): here metric ~ alpha on the grid.
+        return 1.0 - q_hat
 
-    alpha, U, status = run_mock_search(
-        monkeypatch,
+    alpha, _U, status = run_mock_search(
         metric_fn,
-        n_cs=9,
+        n_cs=999,
         max_iters=30,
     )
 
-    assert alpha == pytest.approx(0.8, abs = 1e-5)
+    # Smallest alpha with 1 - q_hat >= 0.8, up to a few steps of the 1/999 grid (the quantile
+    # index is one order statistic above the canonical one; see CONTRIBUTING.md, "Departures").
+    assert alpha == pytest.approx(0.8, abs = 5e-3)
     assert status == uq._STATUS_CONVERGED

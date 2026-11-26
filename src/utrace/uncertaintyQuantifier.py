@@ -8,7 +8,6 @@
 
 import logging
 import warnings
-from collections.abc import Callable
 from enum import Enum
 from functools import partial
 from typing import Literal, NamedTuple
@@ -18,9 +17,7 @@ import numpy as np
 from jax import jit, lax
 from jax import numpy as jnp
 
-from .scores import lac, lac_cal, abs_error, abs_error_cal
-
-
+from .scores.objects import Score, resolve_score
 from .utils import _bucket_size, _masked_quantile_higher
 from .utils.tensors import to_jax
 
@@ -33,21 +30,24 @@ class SearchStatus(str, Enum):
     A `str` subclass so `uq.search_status_ == "converged"` works without importing
     this enum. See `_search_uncertainty` for how each is derived.
 
+    The tuning criterion is the score's: mean prediction-set size `<= 1` for `'lac'`,
+    mean overlap ratio over covered samples `>= target_ratio` for `'abs_error'`.
+
     Describes the alpha search on the tuning set only. When `get_uncertainty` is given
     an evaluation set (`eval_softmax`/`eval_y`), the `U` mentioned below is measured on
     that set at the alpha the search returned, not on the tuning set.
     """
     CONVERGED = "converged"
-    """The search bracketed the target (mean set size == 1) at an alpha strictly
+    """The search bracketed the tuning criterion at an alpha strictly
     above the domain floor `1/(N+1)`. `alpha`/`U` are the smallest feasible alpha
     visited and the conditioned mean evaluated at it."""
     FLOOR_LIMITED = "floor_limited"
-    """The target is already met (mean set size <= 1) at the domain floor
+    """The tuning criterion is already met at the domain floor
     `1/(N+1)` itself -- the calibration set is too small to resolve a tighter
     alpha. `alpha` is exactly the floor; `U` is evaluated there."""
     INFEASIBLE = "infeasible"
-    """No alpha in `[1/(N+1), 1]` visited during the search brought the mean set
-    size to <= 1. `alpha = 1.0` and `U = 1.0` exactly (the trivial bound: at
+    """No alpha in `[1/(N+1), 1]` visited during the search met the tuning
+    criterion. `alpha = 1.0` and `U = 1.0` exactly (the trivial bound: at
     alpha=1 the `(1 - alpha)` factor in the U formula is zero). The returned
     `alpha` is the search domain's boundary, not a usable operating point for
     `predict()` -- see `get_uncertainty`'s docstring for why reading it
@@ -80,12 +80,15 @@ class UncertaintyEvaluation(NamedTuple):
 
     All fields refer to the evaluation set, at the alpha that was passed in.
 
+    `pi` below is the per-sample efficiency of the score: `1/|C|` for `'lac'`,
+    `|C ∩ B| / |C|` with the tolerance window `B = y_hat ± tol` for `'abs_error'`.
+
     `U = 1 - EC * (1 - alpha)` is a POINT ESTIMATE (the paper's eq. (6), with the nominal
     coverage `1 - alpha`). It carries no confidence level. `U_empirical = 1 - EC * coverage`
     is the same expression with the coverage measured on the evaluation set. `U_delta`
     (only when `uncertainty_at` was given `delta`) is a one-sided upper confidence bound,
     at level `1 - delta`, on the population value `U* = 1 - e * p`, where `p` is the
-    coverage and `e = E[1/|C| | covered]` at this alpha. By the paper's theorem `U*` bounds
+    coverage and `e = E[pi | covered]` at this alpha. By the paper's theorem `U*` bounds
     the model's error probability, so `U_delta` does too, at level `1 - delta`, UNDER TWO
     ASSUMPTIONS the code cannot check: (1) the evaluation samples are independent and
     representative of the data the model is used on (pixels of one image, for example, are
@@ -97,14 +100,14 @@ class UncertaintyEvaluation(NamedTuple):
         Point estimate, see above. `nan` when the evaluation set has no sample of the
         calibrated group, or when `alpha` was `nan` (nothing was evaluated).
     EC : np.float64
-        Mean of `1/|C|` over valid, covered samples (0.0 if there are none; `nan`
+        Mean of `pi` over valid, covered samples (0.0 if there are none; `nan`
         only when `alpha` was `nan`).
     n_covered : int
-        Valid samples whose true label is in the prediction set.
+        Valid samples whose true label (or target) is in the prediction set (or interval).
     n_valid : int
         Samples belonging to the calibrated group (all samples if `classes` is None).
     n_succ : int
-        Valid, covered samples with a non-empty set: the denominator of `EC`.
+        Valid, covered samples (with a non-empty set, for `'lac'`): the denominator of `EC`.
     coverage : np.float64 or None
         `n_covered / n_valid`; `nan` if `n_valid == 0` or `alpha` was `nan`.
     U_empirical : np.float64 or None
@@ -117,7 +120,7 @@ class UncertaintyEvaluation(NamedTuple):
     EC_lower : np.float64 or None
         Lower bound on `e` at level `delta/2`, clipped at 0: `EC` minus the smaller of a
         Hoeffding margin and an empirical Bernstein margin (Maurer and Pontil, 2009,
-        Theorem 4), each one-sided at `delta/4` (`1/|C|` lies in `(0, 1]`; see
+        Theorem 4), each one-sided at `delta/4` (`pi` lies in `[0, 1]`; see
         `uncertainty_at`). `0.0` if `n_succ == 0`; only the Hoeffding margin if `n_succ == 1`.
         `None` when `delta` is `None`.
     U_delta : np.float64 or None
@@ -199,67 +202,8 @@ def _confidence_bound(
     return coverage_lower, EC_lower, np.float64(1.0 - EC_lower * coverage_lower)
 
 
-def _check_label_dtype(y: np.ndarray | jax.Array, where: str,
-                       task: str = "classification") -> None:
-    """Validate classification/regression labels.
-    
-    Classification:
-        Raise `ValueError` unless `y` holds labels that cast to integers without loss.
-
-        Integer and boolean dtypes pass. A floating dtype passes only if every value is finite
-        and integral (`2.0`); the error names the first other value and how often it occurs.
-        Any other dtype (complex, object, string) is rejected. `y` is host numpy or a jax
-        array (on any device).
-
-        Without it the integer cast truncates toward zero: `0.9` becomes class 0, and `-0.5`
-        becomes 0 and passes the `[0, K)` check of `_check_labels`.
-
-    Regression:
-        Integer and floating-point dtypes pass, provided all valuer are finite.
-        Boolean, complex, object and string dtypes are rejected.
-    """
-    is_integer = jnp.issubdtype(y.dtype, jnp.integer)
-    is_float = jnp.issubdtype(y.dtype, jnp.floating)
-
-    if task == "classification":
-        if is_integer or jnp.issubdtype(y.dtype, jnp.bool_):
-            return
-
-        if not is_float:
-            raise ValueError(
-                f"{where}: labels must have an integer, boolean or floating dtype; got {y.dtype}."
-            )
-        xp = jnp if isinstance(y, jax.Array) else np
-        flat = y.ravel()
-        bad = ~(xp.isfinite(flat) & (flat == xp.trunc(flat)))
-        n_bad = int(bad.sum())
-        if n_bad == 0:
-            return
-        first = np.asarray(flat[int(xp.argmax(bad))])[()]
-        n_first = int((xp.isnan(flat) if np.isnan(first) else flat == first).sum())
-        raise ValueError(
-            f"{where}: floating-point labels must be finite and integral (such as 2.0); "
-            f"got {first!s} ({n_first} occurrence{'s' if n_first != 1 else ''}; "
-            f"{n_bad} invalid label{'s' if n_bad != 1 else ''} in total)."
-        )
-    elif task == "regression":
-        if not (is_integer or is_float):
-            raise ValueError(
-                f"{where}: regression targets must have an integer "
-                f"or floating-point dtype; got {y.dtype}."
-            )
-        xp = jnp if isinstance(y, jax.Array) else np
-        if not bool(xp.all(xp.isfinite(y))):
-            raise ValueError(
-                f"{where}: regression targets must contain only finite values."
-            )
-    else:
-        raise ValueError(
-            f"Unknown task {task!r}. "
-            "Expected 'classification' or 'regression'."
-        )
-def _labels_to_jax(y, where: str, task: str = "classification") -> jax.Array:
-    """`to_jax(y)` with `_check_label_dtype` applied, without casting.
+def _labels_to_jax(y, where: str, score: Score) -> jax.Array:
+    """`to_jax(y)` with `score.check_label_dtype` applied, without casting.
 
     Host input (numpy, lists) is checked before conversion, because `to_jax` raises
     `TypeError` on a string or object array; framework tensors (torch, jax) are checked
@@ -267,54 +211,29 @@ def _labels_to_jax(y, where: str, task: str = "classification") -> jax.Array:
     """
     if isinstance(y, np.ndarray) or not hasattr(y, "__dlpack__"):
         y = np.asarray(y)
-        _check_label_dtype(y, where, task)
+        score.check_label_dtype(y, where)
         return to_jax(y)
     y = to_jax(y)
-    _check_label_dtype(y, where, task)
+    score.check_label_dtype(y, where)
     return y
 
 
-def _check_labels(y: np.ndarray | jax.Array, K: int | None, where: str,
-                  task: str = "classification") -> None:
-    """Raise `ValueError` if any label of the integer array `y` is outside `[0, K)`.
+def _resolve_tol_alias(tol, eps, where: str):
+    """`tol`, after resolving its deprecated alias `eps` (removed in 0.5.0).
 
-    `y` is host numpy on the tuning and evaluation paths, the device array on `calibrate`.
-
-    Without it a label `-1` wraps to the last class and any label `>= K` clamps to it (JAX
-    gather semantics), silently producing a wrong coverage and `EC`. Skipped when `K` is
-    unknown or `y` is empty.
+    `eps` given alone emits one `DeprecationWarning` (attributed to the caller of the public
+    method that called this) and is returned as `tol`; both given is a `TypeError`.
     """
-
-    if y.size == 0:
-        return
-
-    if task == "classification":
-        if K is None:
-            return
-        lo, hi = int(y.min()), int(y.max())
-        if lo < 0 or hi >= K:
-            raise ValueError(
-                f"{where}: labels must lie in [0, K) with K={K} (the number of softmax columns); "
-                f"got min={lo}, max={hi}."
-            )
-    elif task == "regression":
-        if not (
-            jnp.issubdtype(y.dtype, jnp.integer)
-            or jnp.issubdtype(y.dtype, jnp.floating)
-        ):
-            raise ValueError(
-                f"{where} targets must have integer or floating-point dtype."
-            )
-
-        if not bool(jnp.all(jnp.isfinite(y))):
-            raise ValueError(
-                f"{where}: targets must contain only finite values."
-            )
-    else:
-        raise ValueError(
-            f"Unknown task {task!r}. "
-            "Expected 'classification' or 'regression'."
-        )
+    if eps is None:
+        return tol
+    if tol is not None:
+        raise TypeError(f"{where}: got both tol and eps; eps is the deprecated alias of tol, pass tol only.")
+    warnings.warn(
+        f"{where}: eps is deprecated and will be removed in utrace 0.5.0; use tol instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return eps
 
 # Internal int32 status codes used inside the jitted search (jit cannot return a
 # Python str/Enum). `_get_uncertainty_jit_impl` maps these back to `SearchStatus`
@@ -332,42 +251,21 @@ _STATUS_CODE_TO_ENUM = {
 }
 
 
-@partial(jit, static_argnames = ["score_fn", "task"])
-def _predict_sets(smx: jnp.ndarray, q_hat: np.float64, score_fn: Callable,
-                  task: str = "classification") -> tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Construct classification prediction sets or regression intervals 
-    bounds.
+@partial(jit, static_argnames=["score"])
+def _predict_sets(output: jnp.ndarray, q_hat: np.float64, score: Score) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """What `UncertaintyQuantifier.predict` returns at `q_hat`: `score.predict` of
+    `score.region` -- `(argmax, boolean sets)` for `LAC`, `(lower, upper)` for `AbsResidual`.
 
     Parameters
     ----------
-    smx : np.ndarray
-        Softmax output for each class for classification.
-        y_hat output for regression
+    output : jnp.ndarray
+        Model output: softmax `(n, K)` for `LAC`, point predictions `(n,)` for `AbsResidual`.
     q_hat : jnp.float64
-        Calibrated quantile level.
-    score_fn : Callable
-        The scoring function to use.
-    task: str, optional
-        The task type ("classification or "regression").
-    
-    Returns
-    -------
-    y_pred : jnp.ndarray
-        The predicted class labels.
-    y_sets : jnp.ndarray
-        The sets of labels as a boolean array.
+        Calibrated quantile of the conformity scores.
+    score : Score
+        The score object (static).
     """
-    if task == "classification":
-        y_pred = jnp.argmax(smx, axis=1)  # -1 for tensorflow
-        scores = score_fn(smx)
-        y_sets = scores <= q_hat
-        return y_pred, y_sets
-    else:
-        # score_fn is the continuous region constructor
-        # score_fn(y_hat, q_hat) -> (lower, upper)
-        lower, upper = score_fn(smx, q_hat)
-        return lower, upper
+    return score.predict(output, score.region(output, q_hat))
 
 @jit
 def _q_hat_from_alpha(cs_padded: jnp.ndarray,
@@ -390,67 +288,7 @@ def _q_hat_from_alpha(cs_padded: jnp.ndarray,
     return _masked_quantile_higher(cs_padded, n_cs, q_level)
 
 
-@jit
-def _intersection_length(lower_cp: jnp.ndarray, upper_cp:jnp.ndarray,
-                         lower_tol: jnp.ndarray, upper_tol: jnp.ndarray) -> jnp.ndarray:
-    """Computes the geometric intersection between the Conformal
-        prediction intervals and the tolerance bounds."""
-    left = jnp.maximum(lower_cp, lower_tol)
-    right = jnp.minimum(upper_cp, upper_tol)
-    return jnp.maximum(0.0, right - left)
-
-@partial(jit, static_argnames=["score_fn"])
-def clf_risk_fn(y: jnp.ndarray, smx: jnp.ndarray, q_hat: jnp.ndarray,
-                valid_mask: jnp.ndarray, 
-                score_fn: Callable, 
-                aux_data: tuple = ()) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Classification risk function trgeting 'lac'."""
-    _, prediction_sets = _predict_sets(smx, q_hat, score_fn = score_fn)
-
-    n_valid = jnp.maximum(valid_mask.sum(), 1)
-    set_sizes = prediction_sets.sum(axis = 1)
-
-    # 1. Steering Metric: Average set size across valid samples
-    setsize_curr = jnp.where(valid_mask, set_sizes, 0.0).sum()/n_valid
-
-    # 2. Efficiency Metric (E): Average 1/|S| over valid covered samples
-    is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
-    mask_succ = is_covered & (set_sizes > 0) & valid_mask
-    safe_sizes = jnp.where(mask_succ, set_sizes, 1.0)
-    inv_succ = jnp.where(mask_succ, 1.0/safe_sizes, 0.0)
-    n_succ = mask_succ.sum()
-
-    EC_yt_curr = inv_succ.sum()/jnp.maximum(n_succ, 1)
-    return setsize_curr, EC_yt_curr
-
-@partial(jit, static_argnames=["score_fn"])
-def reg_risk_fn(y: jnp.ndarray, y_hat: jnp.ndarray, q_hat: jnp.ndarray, 
-                valid_mask: jnp.ndarray, score_fn: Callable,
-                aux_data: tuple) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Regression Risk function targeting 'abs_error'.
-    """
-    lower_tol, upper_tol = y_hat - aux_data[0], y_hat + aux_data[1]
-
-    lower_cp, upper_cp = _predict_sets(y_hat, q_hat, score_fn = score_fn,
-                                         task = "regression")
-
-    L = jnp.maximum(upper_cp - lower_cp, 1e-8)
-    delta = _intersection_length(lower_cp, upper_cp, lower_tol, upper_tol)
-
-    covered = (y >= lower_cp) & (y <= upper_cp)
-    valid_covered = covered & valid_mask
-    n_valid_covered = valid_covered.sum()
-    bounded_values = jnp.minimum(1.0, delta/L)
-
-    ratio = jnp.where(
-        n_valid_covered > 0,
-        (bounded_values*valid_covered).sum()/jnp.maximum(n_valid_covered,1),
-        0.0)
-
-    # For regression, steering metric and efficiency metric are both ratio
-    return ratio, ratio 
-
-@partial(jit, static_argnames=["score_fn", "risk_fn"])
+@partial(jit, static_argnames=["score"])
 def _evaluate_alpha(
     alpha: jnp.ndarray,
     y: jnp.ndarray,
@@ -458,229 +296,159 @@ def _evaluate_alpha(
     valid_mask: jnp.ndarray,
     cs_padded: jnp.ndarray,
     n_cs: jnp.ndarray,
-    score_fn: Callable,
-    risk_fn: Callable,
-    aux_data: tuple
+    score: Score,
+    params=(),
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Evaluates the search's feasibility predicate and conditioned efficiency
-    at a single alpha by deferring to the task-specific risk function.
+    """Evaluates the search's metric and conditioned efficiency at a single alpha.
 
-    Factored out of `_search_uncertainty`'s loop body so the exact same evaluation 
-    (q_hat -> prediction sets -> task metric / conditioned efficiency) runs both 
-    once at the domain floor `1/(n_cs+1)` and, unchanged, on every bisection iterate -- 
-    the floor check and the loop must agree on what "feasible" means.
-
-    Parameters:
-    ----------
-        alpha : jnp.ndarray
-            The candidate alpha level.
-        y : jnp.ndarray
-            Target labels or values.
-        smx : jnp.ndarray
-            Softmax output (classification) or predicted point estimates (regression).
-        valid_mask : jnp.ndarray
-            Boolean array of valid samples to compute the metric over.
-        cs_padded : jnp.ndarray
-            Padded array of calibration conformity scores.
-        n_cs : jnp.ndarray
-            Number of valid conformity scores.
-        score_fn: Callable
-            The conformity scoring function used to construc sets/intervals.
-        risk_fn : Callable
-            The task-specific risk function (`clf_risk_fn` or reg_risk_fn`).
-        aux_data : tuple
-            Auxiliary data for the risk function (e.g., tolerance bounds).
+    Factored out of `_search_uncertainty`'s loop body so the exact same evaluation
+    (q_hat -> `score.evaluate`) runs both once at the domain floor `1/(n_cs+1)` and,
+    unchanged, on every bisection iterate -- the floor check and the loop must agree on
+    what "feasible" means (`score.feasible`, the same rule in both places).
 
     Returns
     -------
-        setsize : jnp.ndarray
-            The sttering metric to compare against `target_ratio` (mean set size 
-            for classification, overla ratio for regression).
-            
-            Mean prediction-set size over `valid_mask` samples. Feasible means
-            `setsize <= 1.0`; this is the criterion the search steers by
-            (unconditional mean set size vs. 1, not the paper's conditioned
-            criterion (Section 3.2) -- see CONTRIBUTING.md, "Departures from the
-            published paper", for why).
-
-        EC : jnp.ndarray
-            The efficiency term used to construct the U-TraCE bound
-            `U = 1 - EC * (1 - alpha)`.
+    metric : jnp.ndarray
+        What the search steers by. `LAC`: mean prediction-set size over `valid_mask`
+        samples, feasible when `<= 1` -- the unconditional mean set size vs. 1, not the
+        paper's conditioned criterion (Section 3.2); see CONTRIBUTING.md, "Departures from
+        the published paper", for why. `AbsResidual`: mean of `pi` over valid covered
+        samples, feasible when `>= target_ratio`.
+    EC : jnp.ndarray
+        Mean of `pi` over valid, covered samples (`1/|C|` for `LAC`) -- the efficiency term
+        `U = 1 - EC * (1 - alpha)` is built from.
     """
     q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
-    return risk_fn(y, smx, q_hat, valid_mask, score_fn, aux_data)
+    return score.evaluate(y, smx, q_hat, valid_mask, params)
 
-@partial(jit, static_argnames = ["risk_fn", "score_fn", "max_iters"])
-def _search_uncertainty( 
-    y: jnp.ndarray,                 # (n,) Target Values or labels.
-    smx: jnp.ndarray,               # (n, K) softmax output (clf) or y_hat (reg)
-    valid_mask: jnp.ndarray,        # (n,) bool - True: sample from selected class(es) (clf) or valid samples (reg)
-    cs_padded: jnp.ndarray,         # (m,) calibration scores
-    n_cs: jnp.ndarray,              # (1,) number of calibration socres
-    max_iters: int, 
-    score_fn: Callable,
-    target_ratio: float = 1.0,
-    aux_data: tuple = (),           # () for clf, (lower_tol, upper_tol) for reg.
-    risk_fn: Callable = clf_risk_fn,
-    direction: float = 1.0          # +1.0 if metric decreases w/alpha (clf), -1.0 if it increases (reg)  
+@partial(jit, static_argnames=["score", "max_iters"])
+def _search_uncertainty(
+    y: jnp.ndarray,                  # (n,) labels or targets
+    smx: jnp.ndarray,                # (n, K) softmax output, or (n,) point predictions
+    valid_mask: jnp.ndarray,         # (n,) bool - True: sample from selected class(es)
+    cs_padded: jnp.ndarray,          # (m,) calibration scores
+    n_cs: jnp.ndarray,               # (1,) number of calibration scores
+    max_iters: int,
+    score: Score,
+    params=(),                       # per-call parameters (pytree): () for LAC, TolParams for AbsResidual
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Binary search for the optimal alpha that meets the target metric ratio
-    on the domain `[1/(n_cs+1), 1]`.
+    """Binary search for the smallest alpha whose search metric (`score.evaluate`, over
+    `valid_mask` samples) meets the target (`score.feasible`), on the domain `[1/(n_cs+1), 1]`.
 
-    Extends the 2026-09-22 search implementation to unify classification and 
-    regession worksflows. The search direction and feasibility criteria are
-    dictated by the task's monotonicity:
-    - Classification (`direction=1.0`): metric is average set size. Feasible 
-    when `metric <= target_ration = 1.0`. As alpha increases, sets shrink.
-    - Regression (`directioin=-1.0`): metric is overlap ratio. Feasible when
-    `metric >= target_ratio`. As alpha decreases, intervals expand and overlap
-    grows.
+    For `LAC` the metric is the mean prediction-set size and the target `<= 1`; for
+    `AbsResidual` it is the mean overlap ratio `pi` over covered samples and the target
+    `>= target_ratio`. In both, the feasible alphas form an upper interval of the domain (sets
+    shrink, and the overlap ratio grows, as alpha grows), so one search serves both: the step
+    goes up where `score.step_up(metric)` (the complement of `score.feasible` for every non-NaN
+    metric) and down otherwise. The same exact rule decides the floor check, the step and the
+    feasibility of every iterate, so no iterate can be recorded as feasible while the floor
+    check or the step treats the same metric value as infeasible.
 
-    Fixes two defects a 2026-09-22 diagnostic confirmed in earlier versions:
+    Fixes two defects a 2026-09-22 diagnostic confirmed in the previous,
+    domain-`[0,1]` version of this search:
 
-    1. Below `1/(n_cs+1)`, `q_hat`saturates at the maximum calibration score.
-       The old search had no floor and would walk to `2**-max_iters`, returning
-       an invalid bound.
+    1. Below `1/(n_cs+1)` the quantile level `_q_hat_from_alpha` computes
+       exceeds 1 and is clipped, so `q_hat` saturates at the maximum
+       calibration score and stops responding to alpha -- the old search had
+       no floor and would walk straight to `2**-max_iters` in that regime,
+       returning a U that is not a valid bound (coverage there is actually
+       `n_cs/(n_cs+1)`, not `1-alpha`; see the diagnostic, Hypothesis 1).
+    2. The old search returned whatever the *last* loop iterate happened to
+       be, feasible or not. Because the criterion is a step function (jumps
+       at the quantile's discrete order-statistic grid), bisection can
+       oscillate across the jump near convergence, and whether the final
+       iterate lands on the feasible or infeasible side depends on
+       `max_iters`' parity -- observed to shift U by up to ~0.1 on this
+       repo's own golden configuration, in ordinary (non-saturated) cases,
+       not only the sub-floor regime (diagnostic, Hypothesis 2).
 
-    2. The old search returned whatever the *last* loop iterate happened to be, 
-       feasible or not, which oscillated across the metric step function jump
-       depending on `max_iters` parity. 
+    **The evaluated sequence of alphas the loop visits is bit-for-bit
+    unchanged from the old search** (same `sign`/`alpha_proposed`/
+    `out_of_bounds`/`will_freeze` update, still bisecting nominally over
+    `[0,1]`, not an explicit bracket on `[1/(n_cs+1),1]`) -- sub-floor
+    iterates are now harmless (see `_q_hat_from_alpha`'s docstring) because
+    they can never be the value this function returns; only what gets
+    *selected* as the final answer changes. This is deliberate: reformulating
+    the loop as bisection directly on `[1/(n_cs+1),1]` would change every
+    evaluated midpoint and move every golden value for no statistical gain.
+    The loop starts from `score.init_metric`, a metric value for which the first step goes
+    down (alpha 1.0 -> 0.5), and carries the metric of the last committed iterate, as before.
 
-    **The evaluated sequence of alphas the loop visits is bit-for-bit unchanged**
-    from the original `[1.0, 0.5, ...]` bisection sequence. A dummy initialization
-    guarantees the first delta step is always `-0.5' regardless of the task
-    or initial metric. Sub-floor iterates evaluate safely but are never returned.
-    
     Three mutually exclusive outcomes (see `SearchStatus`), decided in this
     priority order:
 
-    1. `FLOOR_LIMITED` -- the predicate is already feasible  at the floor `1/(n_cs+1)`. 
-        By monotonicity of `q_hat` in alpha, the floor is the smallest feasible 
-        alpha in the whole domain. Returns `alpha = floor`,
-    2. `CONVERGED` -- the loop visited at least one feasible alpha. Returns the 
-        *smallest* feasible alpha visited (tracked explicitly through the loop, 
-        not read off the final iterate). 
+    1. `FLOOR_LIMITED` -- the predicate is already feasible at the floor
+       `1/(n_cs+1)` itself. By monotonicity of `q_hat` in alpha
+       (`_q_hat_from_alpha`'s level is non-increasing in alpha), the floor is
+       then the smallest feasible alpha in the whole domain. Returns
+       `alpha = floor`, `U` evaluated at that same alpha.
+    2. `CONVERGED` -- otherwise: the loop visited at least one feasible
+       alpha. Returns the *smallest* feasible alpha visited (tracked
+       explicitly through the loop, not read off the final iterate) and `U`
+       evaluated at that same alpha.
     3. `INFEASIBLE` -- the loop never visited a feasible alpha. Returns
-       `alpha = 1.0`, `U = 1.0` exactly -- the trivial bound value.
+       `alpha = 1.0`, `U = 1.0` exactly -- the value the `U` formula itself
+       gives at the domain's upper boundary (`(1 - alpha)` is exactly zero
+       there), not an ad hoc sentinel.
 
-    Parameters:
-    -----------
-        y : jnp.ndarray
-            Target labels or values, shape (n,).
-        smx :  jnp.ndarray
-            Softmax output or predicted values, shape (n, K) or (n,).
-        valid_mask : jnp.ndarray
-            Boolean mask of valid samples to evaluate the metric over, shape (n,).
-        cs_padded : jnp.ndarray
-            Padded calibration scores, shape (m,).
-        n_cs ; jnp.ndarray
-            Number of valid calibration scores in `cs_padded'.
-        max_iters: int
-            Maximum number of bisection loop iterations.
-        score_fn: Callable
-            Conformity scoring function.
-        target_ratio : float, default=1.0
-            The metric target. 1.0 for classification (mean set size = 1); generally
-            0.9, 1.0 for regression (overlap ratio).
-        aux_data : tuple, default = ()
-            Auxiliary data for the risk function (e.g., tolerance bounds).
-        risk_fn: Callable, default=clf_risk_fn
-            Risk function evaluating the task-specific metric and efficiency.
-        direction : float, default = 1.0
-            +1.0 if the metric decreases as alpha increases (classification).
-            -1.0 if the metric increases as alpha increases (regression).
     Returns
     -------
-        alpha : jnp.ndarray
-            The selected conformal alpha.
-        U : jnp.ndarray
-            The U-TraCE estimated uncertainty bound `1-EC*(1-alpha)`.
-        status : jnp.ndarray
-            int32 code mapping to `SearchStatus` (`0=CONVERGED`, `1=FLOOR_LIMITED`,
-            `2=INFEASIBLE`), decoded host-side by `_get_uncertainty_jit_impl`.
+    alpha : jnp.ndarray
+    U : jnp.ndarray
+    status : jnp.ndarray
+        int32 code; see `_STATUS_CODE_TO_ENUM` for the mapping to
+        `SearchStatus`, applied host-side by `_get_uncertainty_jit_impl`
+        (jit cannot return a Python `str`/`Enum`).
     """
-
     floor = 1.0 / (n_cs.astype(jnp.float64) + 1.0)
     setsize_floor, EC_floor = _evaluate_alpha(
-            floor, y, smx, valid_mask, cs_padded, n_cs, score_fn, risk_fn, aux_data
+        floor, y, smx, valid_mask, cs_padded, n_cs, score, params
     )
-
-    # Task-dependent feasibility:
-    # Classification (dir > 0): wants set size <= target
-    # Regression (dir < 0): wants overlap ratio >= target
-
-    floor_feasible = jnp.where(
-        direction > 0, 
-        setsize_floor <= target_ratio,
-        setsize_floor >= target_ratio
-    )
-
-    # Dummy initialization to force alpha_proposed = 0.5 on the very first step,
-    # satisfying the docstring's strict requirement for an unchanged alpha sequence.
-    # Force sign = -1.0 on step 0 so alpha_proposed = 1.0 -0.5 = 0.5
-    # Clf (dir > 0): wants metric > target to be False -> init_setsize = 0.0 
-    # Reg (dir < 0): wnats metric < target to be False -> init_setsize = target_ratio + 1
-    
-    init_setsize = jnp.where(direction > 0, 0.0, target_ratio + 1.0)
+    floor_feasible = score.feasible(setsize_floor, params)
 
     init_state = (
-        jnp.asarray(1.0),                # alpha: last committed iterate (drives 'sign', unchange role)
-        jnp.asarray(1.0),                # delta
-        jnp.asarray(init_setsize),                # setsize: last commited iterate's mean set size
-        jnp.asarray(0.0),                # Ec_yt: last committed iterate's conditioned mean
-        jnp.asarray(False),              # frozen: alpha is out from [0,1]
-        jnp.asarray(jnp.inf),            # best_alpha: smallest feasible alpha visited so far
-        jnp.asarray(0.0),                # best_EC: EC_yt evaluated at best_alpha
-        jnp.asarray(False),              # any_feasible: whether any iterate has been feasible.
+        jnp.asarray(1.0),        # alpha: last committed iterate (drives `sign`, unchanged role)
+        jnp.asarray(1.0),        # delta
+        jnp.asarray(score.init_metric(params)),  # setsize: last committed iterate's search metric
+        jnp.asarray(0.0),        # EC_yt: last committed iterate's conditioned mean
+        jnp.asarray(False),      # frozen: alpha is out from [0,1]
+        jnp.asarray(jnp.inf),    # best_alpha: smallest feasible alpha visited so far
+        jnp.asarray(0.0),        # best_EC: EC_yt evaluated at best_alpha
+        jnp.asarray(False),      # any_feasible: whether any iterate has been feasible
     )
-    
+
     def body(i, state):
         alpha, delta, setsize, EC_yt, frozen, best_alpha, best_EC, any_feasible = state
 
         # Update -- IDENTICAL to the pre-fix search; do not change (see docstring).
-        delta_new = delta/2.0
-
-        # Universal step decision (handle both tasks + float precision)
-        # Clf (dir = 1) setsize >= target -> sign=+1 (increase alpha to shrink sets)
-        # Reg (dir = -1) setsize >= target -> sign=-1 (decrease alpha to expand intervals)
-        
-        sign = jnp.where(
-                direction > 0,
-                jnp.where(setsize > target_ratio, 1.0, -1.0),
-                jnp.where(setsize < target_ratio, 1.0, -1.0)
-        )
-       
-        alpha_proposed = alpha + sign*delta_new
+        delta_new      = delta / 2.0
+        sign           = jnp.where(score.step_up(setsize, params), 1.0, -1.0)
+        alpha_proposed = alpha + sign * delta_new
 
         # Freeze if out of bounds
         out_of_bounds = (alpha_proposed < 0.0) | (alpha_proposed > 1.0)
-        will_freeze = frozen | out_of_bounds
+        will_freeze   = frozen | out_of_bounds
 
         # If frozen, we do not update
         alpha_next = jnp.where(will_freeze, alpha, alpha_proposed)
         delta_next = jnp.where(will_freeze, delta, delta_new)
 
         setsize_curr, EC_yt_curr = _evaluate_alpha(
-            alpha_next, y, smx, valid_mask, cs_padded, n_cs, score_fn, risk_fn, aux_data
+            alpha_next, y, smx, valid_mask, cs_padded, n_cs, score, params
         )
 
         # If frozen:
         setsize_next = jnp.where(will_freeze, setsize, setsize_curr)
-        EC_yt_next = jnp.where(will_freeze, EC_yt, EC_yt_curr)
+        EC_yt_next   = jnp.where(will_freeze, EC_yt, EC_yt_curr)
 
         # Track the smallest feasible alpha visited (and its EC), regardless
         # of freeze -- this is the "last feasible" fix for Defect 2. Every
         # iterate the loop visits is a candidate, not just the final one.
-        feasible_here = jnp.where(
-            direction > 0,
-            setsize_curr <= target_ratio,
-            setsize_curr >= target_ratio - 1e-6
-        )
+        feasible_here      = score.feasible(setsize_curr, params)
         should_update_best = feasible_here & (alpha_next < best_alpha)
-       
-        best_alpha_next = jnp.where(should_update_best, alpha_next, best_alpha)
-        best_EC_next = jnp.where(should_update_best, EC_yt_curr, best_EC)
-        any_feasible_next = any_feasible | feasible_here
+        best_alpha_next     = jnp.where(should_update_best, alpha_next, best_alpha)
+        best_EC_next        = jnp.where(should_update_best, EC_yt_curr, best_EC)
+        any_feasible_next   = any_feasible | feasible_here
 
         return (alpha_next, delta_next, setsize_next, EC_yt_next, will_freeze,
                 best_alpha_next, best_EC_next, any_feasible_next)
@@ -692,18 +460,15 @@ def _search_uncertainty(
     alpha_out = jnp.where(
         floor_feasible, floor, jnp.where(any_feasible_f, best_alpha_f, 1.0)
     )
-
     EC_out = jnp.where(
         floor_feasible, EC_floor, jnp.where(any_feasible_f, best_EC_f, 0.0)
     )
-
-    U_out = 1.0 - EC_out*(1.0 - alpha_out)
+    U_out = 1.0 - EC_out * (1.0 - alpha_out)
     status = jnp.where(
         floor_feasible,
         jnp.int32(_STATUS_FLOOR_LIMITED),
         jnp.where(any_feasible_f, jnp.int32(_STATUS_CONVERGED), jnp.int32(_STATUS_INFEASIBLE)),
     )
-
     return alpha_out, U_out, status
 
 
@@ -778,7 +543,7 @@ def _ensure_sorted(state: _UQState) -> _UQState:
     return state._replace(conformity_scores=jnp.sort(state.conformity_scores), sorted=True)
 
 
-@partial(jit, static_argnames=["score_fn", "risk_fn", "task"])
+@partial(jit, static_argnames=["score"])
 def _evaluate_at_alpha(
     alpha: jnp.ndarray,
     y: jnp.ndarray,
@@ -786,88 +551,54 @@ def _evaluate_at_alpha(
     valid_mask: jnp.ndarray,
     cs_padded: jnp.ndarray,
     n_cs: jnp.ndarray,
-    score_fn: Callable,
-    risk_fn: Callable = clf_risk_fn,
-    aux_data: tuple = (),
-    task: str = "classification"
+    score: Score,
+    params=(),
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """`U`, `EC`, the counts behind them, at one fixed alpha, on one dataset.
 
-    `EC` comes from `_evaluate_alpha`, called unchanged. The prediction sets are
-    recomputed here (same `_q_hat_from_alpha`/`_predict_sets` calls) for the counts
-    `_evaluate_alpha` does not return; both calls sit in one trace, so XLA is free
+    `EC` comes from `_evaluate_alpha`, called unchanged. The per-sample coverage and `pi`
+    are recomputed here (same `_q_hat_from_alpha` call, then `score.per_sample`) for the
+    counts `_evaluate_alpha` does not return; both calls sit in one trace, so XLA is free
     to share the work. `U` is formed inside this jit on purpose: the same expression
     evaluated eagerly on the host differs from the jitted one by one ulp in a
     noticeable fraction of cases.
 
     Returns `(U, EC, n_covered, n_valid, n_succ, sum_sq_dev)`; `U` is `nan` when
     `n_valid == 0` (without that guard an empty group would silently give `U = 1.0`).
-    `sum_sq_dev` is the centred sum of squares `sum((z - mean(z))^2)` of `z = 1/|C|` over the
-    `n_succ` valid, covered, non-empty samples (the mean is formed here, in the same trace),
-    for the empirical Bernstein bound; it is exactly 0 when all those sets are singletons.
+    `sum_sq_dev` is the centred sum of squares `sum((z - mean(z))^2)` of `z = pi` over the
+    `n_succ` samples `EC` averages over (valid, covered and, for `LAC`, non-empty; the mean is
+    formed here, in the same trace), for the empirical Bernstein bound; it is exactly 0 when
+    all those `pi` are equal (singleton sets for `LAC`; always, for `AbsResidual`).
     It is internal and does not affect the other five outputs.
     """
-    _, EC = _evaluate_alpha(alpha, y, smx, valid_mask, cs_padded, n_cs, score_fn, risk_fn, aux_data)
+    _, EC = _evaluate_alpha(alpha, y, smx, valid_mask, cs_padded, n_cs, score, params)
     q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
-    lower_or_pred, upper_or_sets = _predict_sets(smx, q_hat, score_fn=score_fn, task = task)
+    is_covered, succ, z = score.per_sample(y, smx, q_hat, valid_mask, params)
 
     n_valid = valid_mask.sum()
-
-    if task == "classification":
-        prediction_sets = upper_or_sets
-        set_sizes = prediction_sets.sum(axis=1)
-        is_covered = prediction_sets[jnp.arange(y.shape[0]), y]
-        succ = is_covered & (set_sizes > 0) & valid_mask
-        z = jnp.where(succ, 1.0 / jnp.maximum(set_sizes, 1), 0.0)
-    else:
-        lower_cp, upper_cp = lower_or_pred, upper_or_sets
-
-        is_covered = (y >= lower_cp) & (y <= upper_cp)
-        succ = is_covered & valid_mask
-
-        lower_tol = smx - aux_data[0]
-        upper_tol = smx + aux_data[1]
-        L = jnp.maximum(upper_cp-lower_cp, 1e-8)
-        delta = _intersection_length(lower_cp, upper_cp, lower_tol, upper_tol)
-        z = jnp.minimum(1.0, delta/L)
-        z = jnp.where(succ, z, 0.0)
-
     n_covered = (is_covered & valid_mask).sum()
     n_succ = succ.sum()
     mean_z = z.sum() / jnp.maximum(n_succ, 1)
     sum_sq_dev = jnp.where(succ, (z - mean_z) ** 2, 0.0).sum()
     U = jnp.where(n_valid > 0, 1.0 - EC * (1.0 - alpha), jnp.nan)
-
-    
     return U, EC, n_covered, n_valid, n_succ, sum_sq_dev
-
-def _validate_regression_parameters(eps, target_ratio) -> tuple[float, float]:
-    """Validate the tolerance radius and target overlap raio used by regression-"""
-
-    eps_value = float(eps)
-    ratio_value = float(target_ratio)
-
-    if not np.isfinite(eps_value) or eps_value < 0.0:
-        raise ValueError(f"eps must be finite and non-negative; got {eps!r}.")
-    if not np.isfinite(ratio_value) or not (0.0 <= ratio_value <= 1.0):
-        raise ValueError(
-            f"target_ratio must be finite and lie in [0, 1]; got {target_ratio!r}."
-        )
-    return eps_value, ratio_value
-
 class UncertaintyQuantifier:
     """Wrapper for uncertainty quantification using U-TraCE.
+
+    Everything task-specific is held by a score object (`self.score_`, see
+    `utrace.scores.objects`): `'lac'`/`LAC()` for classification from a softmax output,
+    `'abs_error'`/`AbsResidual()` for regression from point predictions.
 
     Parameters
     ----------
     classes : Union[list[int], np.ndarray, None], optional
         labels defining the conditioning group; instantiate one object per class/group; None → marginal calibration.
-    score : Literal['lac'], optional
-        The scoring function to use, by default 'lac'
+    score : str or Score, optional
+        The score, by default 'lac'.
     """
     def __init__(self, N: int = 1000,
                  classes: list[int] | np.ndarray | None = None,
-                 score: Literal['lac', 'abs_error'] = 'lac',
+                 score: Literal['lac', 'abs_error'] | Score = 'lac',
                  max_batch_size: int | None = None):
         """Wrapper for uncertainty quantification using U-TraCE.
 
@@ -877,46 +608,30 @@ class UncertaintyQuantifier:
             Maximum number of calibration scores to retain.
         classes : list[int] or array, optional
             labels defining the conditioning group; instantiate one object per class/group; None → marginal calibration.
-        score : {'lac', 'abs_error'}, default='lac'
-            Scoring function for nonconformity. For now, only 'lac' for clf and 'abs_error' for reg is supported.
+            Only for scores that support it (`LAC`); `ValueError` otherwise.
+        score : {'lac', 'abs_error'} or Score, default='lac'
+            `'lac'` (classification, `LAC`) or `'abs_error'` (regression with the absolute
+            residual, `AbsResidual`), or a `Score` instance. Available as `self.score_`.
         max_batch_size : int, optional
             Fixed padding size for input batches. See _get_uncertainty_jit_impl.
         """
+        self.score_ = resolve_score(score)
+        if classes is not None and not self.score_.uses_classes:
+            raise ValueError(
+                f"classes={classes!r} is not supported by score {self.score_.name!r}: "
+                f"class-conditional calibration needs class labels. Omit classes."
+            )
         self.classes = classes
         self._classes_jax = jnp.asarray(classes) if classes is not None else None
         self._max_batch_size = max_batch_size
 
-        self.score_name = score
-
-        
-        match score:
-            case 'lac':
-                self.cal_score_ = lac_cal
-                self.score_ = lac
-                # Declared by the score family, not hardcoded at the boundary: a future
-                # regression score would declare a float dtype here, and hardcoding an
-                # integer cast in calibrate would silently truncate continuous
-                # targets.
-                self.label_dtype_ = jnp.int32
-                self._task = "classification"
-            case 'aps':
-                raise ValueError(
-                    "score='aps' is not implemented in the JAX backend. "
-                    "The only implementation of APS lived in the numpy "
-                    "backend, which is unreachable in the current "
-                    "configuration. This is a known gap, not a typo. "
-                    "'lac' is the supported value."
-                )
-            case 'abs_error':
-                self.cal_score_ = abs_error_cal
-                self.score_ = abs_error
-                self.label_dtype_ = jnp.float64
-                self._task = "regression"
-
-            case _:
-                raise ValueError(
-                    f"Unknown score {score!r}. The supported value is 'lac' (clf) and 'abs_error' (reg)."
-                )
+        self.score_name = self.score_.name
+        # A top-level call in calibrate, outside any trace (see _calibrate_write_jit), and an
+        # instance attribute so it can be replaced for inspection.
+        self.cal_score_ = self.score_.cal_score
+        # Declared by the score, not hardcoded at the boundary: hardcoding an integer cast
+        # in calibrate would silently truncate continuous regression targets.
+        self.label_dtype_ = self.score_.label_dtype
 
         self._max_N = N
         self.reset()
@@ -1016,18 +731,19 @@ class UncertaintyQuantifier:
         return self._state.conformity_scores
 
     def calibrate(self, softmax, y, batched: bool = False):
-        
         """
-        Calibrate the conformal predictor with precomputed softmax output.
+        Calibrate the conformal predictor with precomputed model output.
 
         Parameters
         ----------
-        softmax : array-like, shape (n_samples, n_classes) or (n_samples)
-            Predicted output. Accepts any array that implements
-            DLPack (jax, numpy, torch, tensorflow, ...). Zero-copy when possible.
+        softmax : array-like, shape (n_samples, n_classes) or (n_samples,)
+            Model output: a softmax output for `'lac'`, point predictions for `'abs_error'`.
+            Accepts any array that implements DLPack (jax, numpy, torch, tensorflow, ...).
+            Zero-copy when possible.
         y : array-like, shape (n_samples,)
-            Integer class labels. Boolean labels are read as 0/1; floating labels are
-            accepted only if every value is finite and integral (`2.0`).
+            `'lac'`: integer class labels; boolean labels are read as 0/1, floating labels
+            are accepted only if every value is finite and integral (`2.0`).
+            `'abs_error'`: finite integer or floating targets.
         batched : bool, default=False
             If True, append to existing calibration scores instead of replacing.
 
@@ -1037,16 +753,15 @@ class UncertaintyQuantifier:
         model output alongside host-resident labels); this method reconciles them by
         moving `y` to `softmax`'s device before scoring, rather than raising.
 
-        Raises `ValueError` if a label is outside `[0, K)` with `K` the number of softmax
-        columns (labels outside it would otherwise alias silently to the last class), if
-        `classes` is not within `[0, K)`, or if `batched` and the trailing shape of `softmax`
-        differs from the one already calibrated. Also raises `ValueError`, after the shape
-        check and before the range check, if `y` has a floating dtype with a non-finite or
-        non-integral value (the integer cast would truncate it toward zero) or a dtype that
-        is not integer, boolean or floating.
+        Raises `ValueError` if `batched` and the trailing shape of `softmax` differs from the
+        one already calibrated; then, after that shape check, if `y` fails the score's dtype
+        check (`'lac'`: a floating dtype with a non-finite or non-integral value, which the
+        integer cast would truncate toward zero, or a dtype that is not integer, boolean or
+        floating; `'abs_error'`: a dtype that is not integer or floating, or a non-finite
+        value); then, for `'lac'`, if a label is outside `[0, K)` with `K` the number of
+        softmax columns (labels outside it would otherwise alias silently to the last class),
+        or if `classes` is not within `[0, K)`.
         """
-       
-
         softmax = to_jax(softmax)
         item_shape = tuple(softmax.shape[1:])
         # Shape check first, label checks second: a column mismatch keeps its own message.
@@ -1055,16 +770,11 @@ class UncertaintyQuantifier:
                 f"softmax has shape {item_shape} per row, but this instance was calibrated "
                 f"with {self._item_shape}; a batched calibration must keep the same shape."
             )
-        # Convert and validate labels
-        y_arr = _labels_to_jax(y, "calibrate", task = self._task).astype(self.label_dtype_)
-
-        if self._task == "classification":
-            K = item_shape[0] if len(item_shape) == 1 else None
-            _check_labels(y_arr, K, "calibrate", task = self._task)
-            if self.classes is not None:
-                _check_labels(np.asarray(self.classes), K, "calibrate (classes)", task = self._task)
-        elif self._task == "regression":
-            _check_labels(y_arr, None, "calibrate", task = self._task)
+        y_arr = _labels_to_jax(y, "calibrate", self.score_).astype(self.label_dtype_)
+        K = item_shape[0] if len(item_shape) == 1 else None
+        self.score_.check_label_range(y_arr, K, "calibrate")
+        if self.classes is not None:
+            self.score_.check_label_range(np.asarray(self.classes), K, "calibrate (classes)")
         # to_jax converts each argument independently and does NOT reconcile devices
         # (see its docstring) -- two genuine framework tensors sourced from different
         # devices (e.g. a CUDA-resident softmax output alongside host-resident labels,
@@ -1175,38 +885,44 @@ class UncertaintyQuantifier:
             logger.warning("No calibration scores for the requested class group %s after calibration.", self.classes)
 
     def predict(self, softmax) -> tuple[np.ndarray, np.ndarray]:
-        """Predict class labels/values and prediction sets/intervals from precomputed output.
+        """Prediction sets or intervals at the current `self.alpha`, from precomputed output.
 
         Parameters
         ----------
-        preds : array-like, shape (n_samples, n_classes)
-            Predicted class/labels output. Accepts any DLPack-compatible array.
+        softmax : array-like, shape (n_samples, n_classes) or (n_samples,)
+            Model output (softmax for `'lac'`, point predictions for `'abs_error'`).
+            Accepts any DLPack-compatible array.
 
         Returns
         -------
-        y_pred : np.ndarray, shape (n_samples,)
-            Predicted class labels.
-        y_sets : np.ndarray, shape (n_samples, n_classes)
-            Boolean prediction sets.
+        `'lac'`:
+            y_pred : np.ndarray, shape (n_samples,)
+                Predicted class labels (argmax).
+            y_sets : np.ndarray, shape (n_samples, n_classes)
+                Boolean prediction sets.
+        `'abs_error'`:
+            lower, upper : np.ndarray, shape (n_samples,)
+                The interval `[y_hat - q_hat, y_hat + q_hat]`.
         """
         softmax = to_jax(softmax)
-        y_pred, y_sets = _predict_sets(softmax, self._state.q_hat, score_fn = self.score_, 
-                                       task = self._task)
-        return np.array(y_pred), np.array(y_sets)
+        first, second = _predict_sets(softmax, self._state.q_hat, self.score_)
+        return np.array(first), np.array(second)
 
     def get_uncertainty(self, softmax, y, max_iters: int = 30, *,
-                        eval_softmax=None, eval_y=None,eps:float = 0.1,
-                        target_ratio: float = 1.0,
+                        eval_softmax=None, eval_y=None,
+                        tol=None, target_ratio=None, eps=None,
                         ) -> tuple[np.float64, np.float64]:
         """Estimate model uncertainty over a tuning set via conformal prediction.
 
-        Searches for the alpha that yields the target average prediction-set size,
-        using ALL provided samples as a single tuning set. The estimate converges
-        to the true error probability with the tuning set size (conformal
+        Searches for the smallest alpha that meets the score's tuning criterion, using ALL
+        provided samples as a single tuning set: for `'lac'`, mean prediction-set size
+        `<= 1`; for `'abs_error'`, mean overlap ratio `pi = |C ∩ B| / |C|` over covered
+        samples `>= target_ratio`, with the tolerance window `B = y_hat ± tol`. The estimate
+        converges to the true error probability with the tuning set size (conformal
         guarantee); it does NOT require batching.
 
         **Where `U` is measured.** `U = 1 - EC * (1 - alpha)` needs `EC`, the mean of
-        `1/|C|` over covered samples, evaluated at the selected alpha. Without
+        `pi` (`1/|C|` for `'lac'`) over covered samples, evaluated at the selected alpha. Without
         `eval_softmax`/`eval_y`, `EC` is measured on the tuning set itself, the same
         samples that selected alpha. Because the selected alpha is a function of
         that data, the errors in alpha and in `EC` are correlated and compound
@@ -1217,9 +933,10 @@ class UncertaintyQuantifier:
                                           eval_softmax=eval_probs, eval_y=eval_y)
 
         This is `tune_alpha(tune_probs, tune_y)` followed by
-        `uncertainty_at(eval_probs, eval_y, alpha).U`; call those two directly to also
-        get `EC` and the counts. The evaluation set must be disjoint from both the
-        calibration and the tuning sets for the guarantee to hold; this method cannot check that.
+        `uncertainty_at(eval_probs, eval_y, alpha).U` (with the same `tol`); call those two
+        directly to also get `EC` and the counts. The evaluation set must be disjoint from
+        both the calibration and the tuning sets for the guarantee to hold; this method
+        cannot check that.
 
         This method does not set self.alpha or self.q_hat -- the caller decides
         whether and how to apply the returned alpha. It is NOT fully free of
@@ -1243,9 +960,8 @@ class UncertaintyQuantifier:
         outcomes -- see `SearchStatus` for the full description of each:
 
         - `SearchStatus.CONVERGED`: the ordinary case. `alpha`/`U` are the
-          smallest feasible alpha the search visited (mean prediction-set
-          size <= 1 over the tuning set) and `U` evaluated at that same
-          alpha.
+          smallest feasible alpha the search visited (tuning criterion met
+          over the tuning set) and `U` evaluated at that same alpha.
         - `SearchStatus.FLOOR_LIMITED`: the tuning criterion is already met at
           the domain floor `alpha = 1/(N+1)` -- this calibration set is too
           small to resolve a smaller alpha; `U` is evaluated at the floor.
@@ -1277,22 +993,31 @@ class UncertaintyQuantifier:
 
         Parameters
         ----------
-        softmax : array-like, shape (n_tuning, n_classes)
-            Predicted softmax output for the tuning set. Any DLPack-compatible array.
-            All samples are used; the caller controls the tuning set size by
-            choosing how many samples to pass.
+        softmax : array-like, shape (n_tuning, n_classes) or (n_tuning,)
+            Model output for the tuning set (softmax for `'lac'`, point predictions for
+            `'abs_error'`). Any DLPack-compatible array. All samples are used; the caller
+            controls the tuning set size by choosing how many samples to pass.
         y : array-like, shape (n_tuning,)
-            Integer class labels for the tuning set; boolean and integral floating
-            labels are accepted, see `calibrate`.
+            Labels or targets for the tuning set, under the same rule as in `calibrate`.
         max_iters : int, default=30
             Maximum iterations for the binary search over alpha.
-        eval_softmax : array-like, shape (n_eval, n_classes), optional
-            Softmax output of an independent evaluation set, on which `U` is measured
+        eval_softmax : array-like, optional
+            Model output of an independent evaluation set, on which `U` is measured
             at the selected alpha. Keyword-only. Must be given together with `eval_y`
             (giving only one raises `ValueError`). Its size is independent of
             `max_batch_size`.
         eval_y : array-like, shape (n_eval,), optional
-            Integer class labels of the evaluation set, under the same dtype rule as `y`.
+            Labels or targets of the evaluation set, under the same rule as `y`.
+        tol : float, optional
+            `'abs_error'` only, and required there: the half-width of the tolerance window
+            `B = y_hat ± tol`, in the units of the target; finite and `> 0`. `ValueError`
+            if given with `'lac'`.
+        target_ratio : float, optional
+            `'abs_error'` only: the search target for the mean overlap ratio, in `[0, 1]`;
+            default 1.0 (`C ⊆ B`). `ValueError` if given with `'lac'`.
+        eps : float, optional
+            Deprecated alias of `tol` (`DeprecationWarning`; removed in 0.5.0). Giving both
+            `tol` and `eps` raises `TypeError`.
 
         Returns
         -------
@@ -1315,6 +1040,7 @@ class UncertaintyQuantifier:
         listed in BACKLOG.md as future work -- it does not exist yet in this
         version.
         """
+        tol = _resolve_tol_alias(tol, eps, "get_uncertainty")
         if (eval_softmax is None) != (eval_y is None):
             raise ValueError(
                 "eval_softmax and eval_y must be given together (or both omitted); "
@@ -1323,8 +1049,10 @@ class UncertaintyQuantifier:
             )
 
         if eval_softmax is None:
-            U, alpha = self._search_single_dataset(softmax, y, max_iters, eps = eps, 
-                                                   target_ratio = target_ratio)
+            params = self.score_.resolve_params(
+                tol=tol, target_ratio=target_ratio, where="get_uncertainty"
+            )
+            U, alpha = self._search_single_dataset(softmax, y, max_iters, params)
             warnings.warn(
                 "get_uncertainty: no evaluation set was given, so U is being estimated "
                 "on the same samples that selected alpha. The two estimates are "
@@ -1336,16 +1064,16 @@ class UncertaintyQuantifier:
             )
             return U, alpha
 
-        alpha = self.tune_alpha(softmax, y, max_iters=max_iters, eps = eps, target_ratio = target_ratio)
+        alpha = self.tune_alpha(softmax, y, max_iters=max_iters, tol=tol, target_ratio=target_ratio)
         if np.isnan(alpha):
             return np.float64('nan'), np.float64('nan')
-        return self.uncertainty_at(eval_softmax, eval_y, alpha, eps = eps).U, alpha
+        return self.uncertainty_at(eval_softmax, eval_y, alpha, tol=tol).U, alpha
 
-    def _search_single_dataset(self, softmax, y, max_iters, eps, target_ratio):
+    def _search_single_dataset(self, softmax, y, max_iters, params):
         """Alpha search and `U` on the one tuning set: the pre-evaluation-set body of
         `get_uncertainty`, moved here unchanged so `tune_alpha` can share it without
-        emitting `TuningDataReuseWarning`."""
-        # TODO: _get_uncertainty_jit_impl espera numpy (lo convierte a jnp adentro)
+        emitting `TuningDataReuseWarning`. `params` is the score's resolved per-call
+        parameter pytree (`self.score_.resolve_params`)."""
         # y goes through to_jax first, exactly like softmax on the line above -- a raw
         # device-resident tensor (e.g. a CUDA torch tensor) fails np.asarray() directly
         # (TypeError: can't convert cuda:0 device type tensor to numpy), but to_jax's
@@ -1353,28 +1081,17 @@ class UncertaintyQuantifier:
         # array protocol, with an implicit device-to-host copy. This mirrors calibrate's
         # own to_jax(y) call; it does not change _get_uncertainty_jit_impl, which still
         # receives, and still rebuilds, plain host numpy arrays exactly as before.
-        # _labels_to_jax is to_jax plus the label dtype check, which must precede the cast.
-        
+        # _labels_to_jax is to_jax plus the score's label dtype check, which must precede
+        # the cast (score.prepare_labels).
         where = "get_uncertainty/tune_alpha"
         softmax = np.asarray(to_jax(softmax))
-        y_arr = np.asarray(_labels_to_jax(y, where, task = self._task))
-        if self._task == "classification":
-            y_arr = y_arr.flatten().astype(self.label_dtype_)
-        elif self._task == "regression":
-            if y_arr.shape != softmax.shape:
-                raise ValueError(
-                    f"{where}: regression predictions and targets must "
-                    f"have the same shape; got {softmax.shape} and "
-                    f"{y_arr.shape}."
-                )
+        y_arr = self.score_.prepare_labels(
+            np.asarray(_labels_to_jax(y, where, self.score_)), softmax, where
+        )
         # Host-side validation, outside _get_uncertainty_jit_impl: columns first, then labels.
         self._check_item_shape(softmax)
-        _check_labels(y_arr, self._label_range(), where, task=self._task)
-
-        if self._task == "regression":
-            _validate_regression_parameters(eps, target_ratio)
-
-        return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters, eps = eps, target_ratio = target_ratio)
+        self.score_.check_label_range(y_arr, self._label_range(), where)
+        return self._get_uncertainty_jit_impl(softmax, y_arr, max_iters=max_iters, params=params)
 
     def _check_item_shape(self, smx) -> None:
         """`ValueError` if the trailing shape of `smx` differs from the one `calibrate` saw.
@@ -1386,16 +1103,14 @@ class UncertaintyQuantifier:
             )
 
     def _label_range(self) -> int | None:
-        """`K` for the label check: `_item_shape[0]`, or `None` (check skipped) when the
-        instance has no recorded shape or it is not of length 1."""
-        if self._task != "classification":
-            return None
-        
+        """`K` for the score's label range check: `_item_shape[0]`, or `None` (check skipped)
+        when the instance has no recorded shape or it is not of length 1. Scores without a
+        label range (`AbsResidual`) ignore it."""
         if self._item_shape is not None and len(self._item_shape) == 1:
             return self._item_shape[0]
         return None
 
-    def _get_uncertainty_jit_impl(self, smx, y, max_iters=30, eps = 0.1, target_ratio = 1.0):
+    def _get_uncertainty_jit_impl(self, smx, y, max_iters=30, params=()):
         """Builds a fixed-size, class-masked, zero-padded batch from variable-size
         input, then calls the jitted `_search_uncertainty` on it.
 
@@ -1408,7 +1123,9 @@ class UncertaintyQuantifier:
         `max_batch_size` was set at construction, otherwise once per bucket
         produced by `_bucket_size` (nearest multiple of 256 at or above the batch
         size) -- fewer distinct shapes than raw batch sizes would produce, but
-        not literally "once" unless `max_batch_size` is set.
+        not literally "once" unless `max_batch_size` is set. The per-call parameters
+        (`params`: `tol` and the target for `AbsResidual`) are traced, so new values
+        do not recompile either.
 
         Also reads (and, if not already sorted, sorts) the conformity-score
         buffer via `_ensure_sorted` -- the same lazy-sort mutation
@@ -1426,26 +1143,19 @@ class UncertaintyQuantifier:
 
         Parameters
         ----------
-        smx : array-like, shape (B, K)
-            Softmax output; B varies from call to call.
+        smx : array-like, shape (B, K) or (B,)
+            Model output; B varies from call to call.
         y : array-like, shape (B,)
-            Integer class labels.
+            Labels or targets, already in the score's canonical form.
         max_iters : int, default=30
             Maximum iterations for the binary search over alpha, forwarded to
             `_search_uncertainty`.
+        params : pytree, default=()
+            The score's resolved per-call parameters.
         """
-
-        if self._task == "regression":
-            eps, target_ratio = _validate_regression_parameters(eps, target_ratio)
-            if smx.ndim != 1 or y.shape != smx.shape:
-                raise ValueError("Regression currently supports scañar predictions and targets "
-                                 "with matching shape (n_samples, )")
         B = y.shape[0]
-        K = smx.shape[1] if smx.ndim > 1 else 1
 
-        # 1. máscara de validez: muestra real (siempre True aquí, B es el real)
-        #    AND pertenece a la clase de interés
-        if self._task == "classification" and self.classes is not None:
+        if self.classes is not None:
             valid = np.isin(np.asarray(y), np.asarray(self.classes))
         else:
             valid = np.ones(B, dtype=bool)
@@ -1463,27 +1173,18 @@ class UncertaintyQuantifier:
                 )
         else:
             target_size = _bucket_size(B)
-        # arrays paddeados con valores arbitrarios (se enmascaran)
-        y_dtype = np.int32 if self._task == "classification" else np.float64 
+        y_dtype = np.dtype(self.label_dtype_)
         y_arr = np.asarray(y).astype(y_dtype)
-
         y_padded   = np.zeros(target_size, dtype=y_dtype)
+        p_padded   = np.zeros((target_size,) + smx.shape[1:], dtype=np.float64)
         mask_padded = np.zeros(target_size, dtype=bool)
-
-        if smx.ndim > 1:
-            p_padded = np.zeros((target_size, K), dtype = np.float64)
-        else:
-            p_padded = np.zeros(target_size, dtype = np.float64)
 
         y_padded[:B]    = y_arr
         p_padded[:B]    = np.asarray(smx)
         mask_padded[:B] = valid                       # solo válidos reales en True
 
-        # 3. y_safe: índices en rango incluso en padding (clase 0)
-        fill_val = 0 if self._task == "classification" else 0.0 
-        y_safe = np.where(mask_padded, y_padded, fill_val)
+        y_safe = np.where(mask_padded, y_padded, 0)
 
-        # 4. a jnp y al JIT
         y_j    = jnp.asarray(y_safe)
         p_j    = jnp.asarray(p_padded, dtype=jnp.float64)
         mask_j = jnp.asarray(mask_padded)
@@ -1493,40 +1194,19 @@ class UncertaintyQuantifier:
         n_cs = jnp.int32(self._state.N)
         N = self._state.N
 
-        if self._task == "classification":
-            # For classification: empty aux_data, defaults to clf_risk_fn
-            alpha, U, status_code = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs,
-                                           target_ratio = 1.0,
-                                           score_fn = self.score_,
-                                           aux_data = (),
-                                           max_iters = max_iters,
-                                           risk_fn = clf_risk_fn,
-                                           direction = 1.0) # metric decreases with alpha
-        else:
-            # For regression pass,  eps  and direction = -1.0
-            # Ensure target_ratio < 1.0 when callig get_uncertainty
-            alpha, U, status_code = _search_uncertainty(y_j, p_j, mask_j, cs_padded, n_cs,
-                                           target_ratio = target_ratio,
-                                           score_fn = self.score_,
-                                           aux_data = (eps, eps),
-                                           max_iters = max_iters,
-                                           risk_fn = reg_risk_fn,
-                                           direction = -1.0)
-
-       
+        alpha, U, status_code = _search_uncertainty(
+            y_j, p_j, mask_j, cs_padded, n_cs, max_iters, self.score_, params
+        )
         alpha = np.float64(alpha)
         U = np.float64(U)
         status = _STATUS_CODE_TO_ENUM[int(status_code)]
         self.search_status_ = status
 
-        metric_name = "mean prediction-set size" if self._task == "classification" else "overlap ratio"
-        operator = "<=" if self._task == "classification" else ">="
-        target_val = 1.0 if self._task == "classification" else target_ratio
-
+        metric, op, target = self.score_.describe_target(params)
         if status is SearchStatus.FLOOR_LIMITED:
             floor = 1.0 / (N + 1)
             warnings.warn(
-                f"get_uncertainty: the tuning target ({metric_name} {operator} {target_val}) "
+                f"get_uncertainty: the tuning target ({metric} {op} {target}) "
                 f"is already met at the domain floor alpha=1/(N+1)={floor!r} for this "
                 f"calibration set (N={N}). U={U!r} is determined by the calibration "
                 f"set size, not by the model -- a larger calibration set may allow a "
@@ -1536,17 +1216,17 @@ class UncertaintyQuantifier:
             )
         elif status is SearchStatus.INFEASIBLE:
             warnings.warn(
-                f"get_uncertainty: no alpha in [1/(N+1), 1] (N={N}) brought the {metric_name} "
-                f" to {operator} {target_val} on this tuning set. Returning the "
+                f"get_uncertainty: no alpha in [1/(N+1), 1] (N={N}) brought the {metric} "
+                f"to {op} {target} on this tuning set. Returning the "
                 f"trivial bound alpha=1.0, U=1.0.",
                 SearchStatusWarning,
                 stacklevel=2,
             )
-            
+
         return U, alpha
 
-    def tune_alpha(self, softmax, y, max_iters: int = 30,
-                   eps = 0.1, target_ratio = 1.0) -> np.float64:
+    def tune_alpha(self, softmax, y, max_iters: int = 30, *,
+                   tol=None, target_ratio=None, eps=None) -> np.float64:
         """Select alpha on a tuning set, without measuring `U` on it.
 
         Runs the same search as `get_uncertainty` on the given data and returns only
@@ -1559,22 +1239,24 @@ class UncertaintyQuantifier:
         `SearchStatusWarning` when the search is not `CONVERGED`. It does not emit
         `TuningDataReuseWarning`: selecting alpha on a tuning set is its purpose.
 
-        Raises `ValueError` if the columns of `softmax` differ from those `calibrate` saw
-        (when known), or if a label is outside `[0, K)` (`K` the number of columns); the
-        column check runs first. Before either, it raises `ValueError` if `y` has a
-        floating dtype with a non-finite or non-integral value, or a dtype that is not
-        integer, boolean or floating. `get_uncertainty` raises the same on its tuning set
-        and, through `uncertainty_at`, on its evaluation set.
+        Raises `ValueError` first if `tol`/`target_ratio` do not suit the score (see
+        `get_uncertainty`). Then, if `y` fails the score's dtype check (see `calibrate`);
+        for `'abs_error'`, if predictions and targets are not both of shape `(n,)`; if the
+        columns of `softmax` differ from those `calibrate` saw (when known); and, for
+        `'lac'`, if a label is outside `[0, K)` (`K` the number of columns), the column check
+        running first. `get_uncertainty` raises the same on its tuning set and, through
+        `uncertainty_at`, on its evaluation set.
 
         Parameters
         ----------
-        softmax : array-like, shape (n_tuning, n_classes)
-            Softmax output for the tuning set. Any DLPack-compatible array.
+        softmax : array-like, shape (n_tuning, n_classes) or (n_tuning,)
+            Model output for the tuning set. Any DLPack-compatible array.
         y : array-like, shape (n_tuning,)
-            Integer class labels for the tuning set; boolean and integral floating
-            labels are accepted, see `calibrate`.
+            Labels or targets for the tuning set, under the same rule as in `calibrate`.
         max_iters : int, default=30
             Maximum iterations for the binary search over alpha.
+        tol, target_ratio, eps : optional, keyword-only
+            As in `get_uncertainty`.
 
         Returns
         -------
@@ -1584,22 +1266,24 @@ class UncertaintyQuantifier:
             `SearchStatus` for what the value means in each outcome; in particular
             `INFEASIBLE` returns the domain boundary `1.0`, not an operating point.
         """
-        _, alpha = self._search_single_dataset(softmax, y, max_iters, eps = eps, 
-                                               target_ratio = target_ratio)
+        tol = _resolve_tol_alias(tol, eps, "tune_alpha")
+        params = self.score_.resolve_params(tol=tol, target_ratio=target_ratio, where="tune_alpha")
+        _, alpha = self._search_single_dataset(softmax, y, max_iters, params)
         return alpha
 
-    def uncertainty_at(self, softmax, y, alpha, *, eps = 0.1, delta=None) -> UncertaintyEvaluation:
+    def uncertainty_at(self, softmax, y, alpha, *, tol=None, delta=None, eps=None) -> UncertaintyEvaluation:
         """Measure `U` at a given alpha on an evaluation set.
 
         Computes the point estimate `U = 1 - EC * (1 - alpha)` where `EC` is the mean of
-        `1/|C|` over the evaluation samples that are covered at `alpha`. Pair it with
+        `pi` over the evaluation samples that are covered at `alpha`: `pi = 1/|C|` for
+        `'lac'`, `pi = |C ∩ B| / |C|` with `B = y_hat ± tol` for `'abs_error'`. Pair it with
         `tune_alpha`, on a different dataset, so that `alpha` is not a function of the data
         it is measured on. Nothing here checks that the sets are disjoint.
 
         `coverage = n_covered / n_valid` and `U_empirical = 1 - EC * coverage` are always
         returned. With `delta`, it also returns `U_delta`: a one-sided upper confidence bound
         at level `1 - delta` on the population value `U* = 1 - e * p` (`p` the coverage and
-        `e = E[1/|C| | covered]` at this alpha), which by the paper's theorem bounds the
+        `e = E[pi | covered]` at this alpha), which by the paper's theorem bounds the
         model's error probability. It is `1 - EC_lower * coverage_lower`, with a
         Clopper-Pearson lower bound on `p` at level `delta/2` and a lower bound on `e`
         (clipped at 0) at level `delta/2`, combined by a union bound (valid although both use
@@ -1608,7 +1292,7 @@ class UncertaintyQuantifier:
         `m_EB = sqrt(2 V ln(8/delta) / n) + 7 ln(8/delta) / (3 (n - 1))` (empirical Bernstein,
         Maurer and Pontil (2009), "Empirical Bernstein Bounds and Sample Variance
         Penalization", COLT, arXiv:0907.3740, Theorem 4), where `n = n_succ` and `V` is the
-        unbiased sample variance of `1/|C|` over the covered samples; each margin is one-sided
+        unbiased sample variance of `pi` over the covered samples; each margin is one-sided
         at level `delta/4`. With `n_succ == 1` only `m_H` is used. The bound holds only if (1) the evaluation samples are
         independent and representative of the data the model is used on, and (2) the paper's
         uniform-selection assumption holds; the code can check neither. scipy is imported
@@ -1617,23 +1301,29 @@ class UncertaintyQuantifier:
         Does not change `self.alpha`, `self.q_hat` or `self.search_status_`. Like
         `get_uncertainty` it may sort the conformity-score buffer lazily. Evaluation
         sets of any size are accepted: they are padded to the next multiple of 256
-        (not to `max_batch_size`), so each distinct padded size compiles once.
+        (not to `max_batch_size`), so each distinct padded size compiles once; new `tol`
+        values do not recompile.
 
         Parameters
         ----------
-        softmax : array-like, shape (n_eval, n_classes)
-            Softmax output for the evaluation set. Any DLPack-compatible array.
+        softmax : array-like, shape (n_eval, n_classes) or (n_eval,)
+            Model output for the evaluation set. Any DLPack-compatible array.
         y : array-like, shape (n_eval,)
-            Integer class labels for the evaluation set (boolean and integral floating
-            labels are accepted, see `calibrate`). Samples of `self.classes`
-            are selected from THESE labels, not from any tuning-set mask.
+            Labels or targets for the evaluation set, under the same rule as in `calibrate`.
+            Samples of `self.classes` are selected from THESE labels, not from any
+            tuning-set mask.
         alpha : float
             Must lie in `[1/(N+1), 1]` for the `N` calibration scores held. `nan`
             (what `tune_alpha` returns for an empty tuning group) is passed through:
             nothing is evaluated and `U` is `nan`.
+        tol : float, optional
+            `'abs_error'` only, and required there: the half-width of `B = y_hat ± tol`
+            (finite, `> 0`). `ValueError` if given with `'lac'`.
         delta : float, optional
             `None` (default: no bound is computed, `scipy` is not imported) or a real
             number in the open interval `(0, 1)`: the bound's error level.
+        eps : float, optional
+            Deprecated alias of `tol` (`DeprecationWarning`; removed in 0.5.0).
 
         Returns
         -------
@@ -1645,15 +1335,20 @@ class UncertaintyQuantifier:
 
         Raises
         ------
+        TypeError
+            If both `tol` and `eps` are given.
         ValueError
-            If `delta` is not `None` or a real number in `(0, 1)`, `y` has a floating dtype
-            with a non-finite or non-integral value or a dtype that is not integer, boolean
-            or floating (checked before the remaining conditions), the instance is not
-            calibrated, the row counts of `softmax` and `y` differ, the columns of `softmax`
-            differ from those seen by `calibrate` (checked before the labels), a label is
-            outside `[0, K)` (`K` the number of columns), or `alpha` is outside
+            If `tol` does not suit the score (checked first), if `delta` is not `None` or a
+            real number in `(0, 1)`, if `y` fails the score's dtype check (see `calibrate`;
+            checked before the remaining conditions), for `'abs_error'` if predictions and
+            targets are not both of shape `(n,)`, if the instance is not calibrated, the row
+            counts of `softmax` and `y` differ, the columns of `softmax` differ from those
+            seen by `calibrate` (checked before the labels), for `'lac'` if a label is
+            outside `[0, K)` (`K` the number of columns), or if `alpha` is outside
             `[1/(N+1), 1]`.
         """
+        tol = _resolve_tol_alias(tol, eps, "uncertainty_at")
+        params = self.score_.resolve_params(tol=tol, target_ratio=None, where="uncertainty_at")
         delta = _check_delta(delta)
         if np.isnan(alpha):
             nan = np.float64('nan')
@@ -1665,56 +1360,23 @@ class UncertaintyQuantifier:
                 U_delta=None if delta is None else nan,
             )
 
-        task = self._task
-
         # Same conversion chain as the tuning path (see _search_single_dataset): to_jax
         # on both, then np.asarray, so a device-resident tensor never reaches numpy
         # directly and no committed-device mismatch reaches the jit.
         smx = np.asarray(to_jax(softmax))
-        y_arr = np.asarray(_labels_to_jax(y, "uncertainty_at", task = task))#.flatten().astype(int)
+        y_arr = self.score_.prepare_labels(
+            np.asarray(_labels_to_jax(y, "uncertainty_at", self.score_)), smx, "uncertainty_at"
+        )
 
         N = self._state.N
         if N == 0:
             raise ValueError("The model must be calibrated before calling uncertainty_at.")
-
         if smx.shape[0] != y_arr.shape[0]:
             raise ValueError(
                 f"softmax has {smx.shape[0]} rows but y has {y_arr.shape[0]} labels."
             )
         self._check_item_shape(smx)
-
-        if task == "classification":
-            y_arr = y_arr.flatten().astype(self.label_dtype_)
-            _check_labels(y_arr, self._label_range(), "uncertainty_at")
-
-            if self.classes is not None:
-                valid = np.isin(y_arr, np.asarray(self.classes))
-            else:
-                valid = np.ones(y_arr.shape[0], dtype = bool)
-
-            y_dtype = np.int32
-            risk_fn = clf_risk_fn
-            aux_data = ()
-
-        else:
-            # Regression targets retain their original shape
-            eps, _ = _validate_regression_parameters(eps, 0.0)
-
-            if y_arr.shape != smx.shape:
-                raise ValueError(
-                    f"Regression predictions have shape {smx.shape}, "
-                    f"but y has shape {y_arr.shape}."
-                )
-            # The regression risk function uses the tolerance offsets
-            risk_fn = reg_risk_fn
-            aux_data = (eps, eps)
-
-            valid = np.ones(y_arr.shape[0], dtype = bool)
-            y_dtype = np.float64
-
-            # Ensure targets and predictions have compatible floating dtypes.
-            y_arr = y_arr.astype(y_dtype, copy = False)
-
+        self.score_.check_label_range(y_arr, self._label_range(), "uncertainty_at")
         floor = np.float64(1.0) / np.float64(N + 1)
         alpha_f = np.float64(alpha)
         if not (floor <= alpha_f <= 1.0):
@@ -1724,6 +1386,12 @@ class UncertaintyQuantifier:
             )
 
         B = y_arr.shape[0]
+        if self.classes is not None:
+            valid = np.isin(y_arr, np.asarray(self.classes))
+        else:
+            valid = np.ones(B, dtype=bool)
+
+        y_dtype = np.dtype(self.label_dtype_)
         target_size = _bucket_size(max(B, 1))
         y_padded = np.zeros(target_size, dtype=y_dtype)
         p_padded = np.zeros((target_size,) + smx.shape[1:], dtype=np.float64)
@@ -1731,11 +1399,7 @@ class UncertaintyQuantifier:
         y_padded[:B] = y_arr.astype(y_dtype)
         p_padded[:B] = smx
         mask_padded[:B] = valid
-
-        if task == "classification":
-            y_safe = np.where(mask_padded, y_padded, 0)
-        else:
-            y_safe = np.where(mask_padded, y_padded, 0.0)
+        y_safe = np.where(mask_padded, y_padded, 0)
 
         self._state = _ensure_sorted(self._state)
         U, EC, n_covered, n_valid, n_succ, sum_sq_dev = _evaluate_at_alpha(
@@ -1746,9 +1410,7 @@ class UncertaintyQuantifier:
             self._state.conformity_scores,
             jnp.int32(N),
             self.score_,
-            risk_fn,
-            aux_data,
-            task,
+            params,
         )
         U, EC = np.float64(U), np.float64(EC)
         n_covered, n_valid, n_succ = int(n_covered), int(n_valid), int(n_succ)

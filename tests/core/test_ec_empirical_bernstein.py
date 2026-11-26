@@ -123,7 +123,7 @@ def _sum_sq_dev(uq, es, ey, alpha, valid):
         st.conformity_scores, np.int32(st.N), uq.score_,
     )
     q_hat = _q_hat_from_alpha(st.conformity_scores, np.int32(st.N), np.float64(alpha))
-    _, sets = _predict_sets(es, q_hat, score_fn=uq.score_)
+    _, sets = _predict_sets(es, q_hat, uq.score_)
     return out, np.asarray(sets)
 
 

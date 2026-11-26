@@ -38,11 +38,11 @@ independet observations, accumulated in chinks.
 
 
 import warnings
+
 import numpy as np
 import pytest
 
 from utrace import UncertaintyQuantifier
-
 
 M_CHUNK = 100_000
 N_CHUNK = 10
@@ -108,7 +108,7 @@ def regression_population():
         for _ in range(N_CHUNK):
             y_hat, y = _regression_data(rng, M_CHUNK)
             r = uq.uncertainty_at(
-                y_hat, y, ALPHA, eps = eps,
+                y_hat, y, ALPHA, tol = eps,
             )
             n_cov += r.n_covered
             n_val += r.n_valid
@@ -150,7 +150,7 @@ def test_regression_bound_is_violated_at_most_delta_of_the_time(
         warnings.simplefilter("ignore")
         for _ in range(REPS):
             y_hat, y = _regression_data(rng, N_EVAL)
-            r = uq.uncertainty_at(y_hat, y, ALPHA, eps = eps, delta = delta)
+            r = uq.uncertainty_at(y_hat, y, ALPHA, tol = eps, delta = delta)
 
             fail_u += r.U_delta < u_star
             fail_p += r.coverage_lower > p 
