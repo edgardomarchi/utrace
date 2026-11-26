@@ -512,9 +512,17 @@ coherence" below), plus the backlog (BACKLOG.md).
 - **E. Device coherence.** "E" has named two different things at different times; split
   explicitly here so status is unambiguous:
   - [ESTABLISHED] **E1. Device coherence in the core — DONE.** `calibrate()` and
-    `get_uncertainty()` now reconcile mismatched argument devices (raising a clear error) instead
-    of crashing inside a jitted call or, in `get_uncertainty`'s case, on a bare `np.asarray` of a
-    CUDA tensor. Commit `7f140ea` ("Reconcile argument devices in calibrate"; see
+    `get_uncertainty()` now reconcile mismatched argument devices instead of crashing inside a
+    jitted call or, in `get_uncertainty`'s case, on a bare `np.asarray` of a CUDA tensor. No error
+    is raised: `calibrate` silently moves `y` to `softmax`'s device with `jax.device_put`, and
+    the tuning path (`get_uncertainty`, `tune_alpha`) and `uncertainty_at` (added after E1, same
+    conversion chain) copy both arguments to host through `np.asarray(to_jax(...))` and rebuild the
+    padded arrays with `jnp.asarray`, uncommitted on jax's default device. The jitted computation
+    then runs on the device of the committed calibration buffer, not on the default device:
+    placing `softmax` on CPU or GPU for `calibrate` decides where the later evaluation runs.
+    Floating-point reductions (`EC`, and what is built from it) may therefore differ by rounding
+    between a CPU- and a GPU-calibrated quantifier; integer counts do not.
+    Commit `7f140ea` ("Reconcile argument devices in calibrate"; see
     `.reports/2026-08-21_stepE_device_coherence.md`) did `calibrate`; Batch 1
     (`.reports/2026-08-21_batch1_defect_fixes.md`, found by the 2026-08-21 docs audit, H4b) did
     `get_uncertainty`. `predict` takes no `y` and was never exposed to this. Both have GPU-only

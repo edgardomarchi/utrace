@@ -18,7 +18,7 @@ Open work only. Split out of MIGRATION.md on 2026-08-19 (see `.reports/2026-08-1
   ordinary `N`) works correctly across a range of models/data: only 4 of the 20 calls exercise
   that regime at all. A trained-model golden would shift the suite's own coverage toward the
   regime the package is meant to be used in.
-- `get_uncertainty_grid_from_proba`: alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
+- `get_uncertainty_grid` (a proposed name, not an existing method; the `_from_proba` suffix was dropped from the public API by the rename batch): alpha search by grid, as a method separate from the binary search (kept to investigate differences). Pending.
 - `tuning_stability(probs, y, n_splits)`: diagnostic for tuning-set size adequacy (runs the search on disjoint subsets and reports spread). This is the formalization of the "L random splits" scheme from the paper.
 - **A torch-free version of the max_iters-stability regression test (2026-09-22).** The only guard
   for "the search's returned `q_hat`/conditioned mean are independent of `max_iters`" currently
@@ -52,6 +52,7 @@ sklearn's check_is_fitted looks for, so the inheritance is deliberate scikit-lea
 compatibility. scikit-learn therefore stays a test dependency. The `# TODO: not needed
 anymore` comment on that import is stale and actively misleading — it produced one wrong
 backlog item already. Removing the comment, not the import, is the correct follow-up.
+  [RESOLVED] The comment on that import now reads `# base class; see __sklearn_is_fitted__ below`.
 - Performance benchmark per phase.
 - Buffer/padding design for high-volume regimes (segmentation): the fixed-size `_max_N` buffer must currently be sized per class by hand. Consider a design that scales without manual sizing (without reintroducing variable shapes / JAX recompilation).
 
@@ -83,6 +84,15 @@ Out of scope for the current script-migration work. Recorded here so the context
   two fixes closed — this time inside `_search_uncertainty`. Not implemented by this entry as
   currently scoped; recorded so the next person to pick it up does not have to rediscover it.
 
+  **Also covers the evaluation-set arguments.** `uncertainty_at` (and so `get_uncertainty` with
+  `eval_softmax`/`eval_y`) repeats the same `np.asarray(to_jax(...))` host copy on both of its
+  arguments and rebuilds its padded arrays with `jnp.asarray`. Those arrays are uncommitted, which
+  is what keeps it free of committed-device mismatches today: the jitted computation then runs on
+  the device of the committed calibration buffer (see MIGRATION.md, E1), not on the default
+  device. Making the tuning path zero-copy means making
+  that path zero-copy too, under the same `calibrate`-style `devices()` reconciliation. Its GPU-only
+  test is `tests/core/test_eval_set_device_reconciliation.py`.
+
 - Disconnected `transform` parameter in MNIST_example.py: main() receives a `transform`  argument but the noise injection (~:176) uses a hardcoded `AddGaussianNoise`, ignoring it — so the __main__ transform_str dispatch (AWGN/RandomPerspective/ElasticTransform) currently has no effect on the experiment; AWGN is always applied. Likely a remnant of the lambda->class migration done to support num_workers>0 (a lambda transform is not picklable   and breaks multi-worker DataLoaders). To resolve: decide whether to reconnect the transform  sweep (as other scripts do) or whether fixed-AWGN is intentional for this script. If  reconnecting, note the three transforms have different signatures (AddGaussianNoise(0., n), RandomPerspective(n, 1), ElasticTransform(n)), so the swept parameter must be mapped per signature — this is a behavior change, warranting its own commit and revalidation. Separate from the I/O refactor.
 
 - to_jax DLPack unaligned-copy: even for genuine tensors the DLPack path can emit "buffer is not aligned ... Creating a copy", so zero-copy is not guaranteed. Decide whether to make such copies VISIBLE (warn/error) rather than silent. Connects to the existing to_jax device-handling backlog item. Perf/observability task.
@@ -103,27 +113,20 @@ Out of scope for the current script-migration work. Recorded here so the context
   not taken" under "ruff adoption, rung 1"), which cites "Architecture / design direction" in
   MIGRATION.md as if it documents the split — it does not; that section is entirely about
   jit/vmap/state-PyTree design for the existing single class. Recording only: the split has been
-  decided in principle. Not decided: the module layout, the API surface each subclass exposes, or
-  the definition of the regression uncertainty measure itself (the classification measure is
-  `1 - P(ŷ = y_t)`; regression has no analogous definition here yet). None of that is designed by
-  this entry.
+  decided in principle. Not decided: the module layout and the API surface each subclass exposes.
+  None of that is designed by this entry.
 
-  **2026-09-22 update, from the alpha-search fix.** The base class this split introduces must own
-  the *fixed* search (`_search_uncertainty` — as of the 2026-09-22 correction pass this is once
-  again the ONE canonical entry point, returning `(alpha, U, status)`; there is no separate
-  `_with_status` name to keep in sync — and its `SearchStatus`/`SearchStatusWarning` machinery, see
-  FINDINGS.md, "Alpha search: floor, feasible-alpha return, status propagation"), not the pre-fix
-  `[0,1]`-domain, last-iterate-return version — designing the shared base class around the old
-  search would relocate both defects into two call sites (classification and regression) instead
-  of one. `remotes/github/unify-clf-reg-utrace` (inspected read-only, not merged) already
-  generalizes `_search_uncertainty` toward a shared `risk_fn`-parameterized version used by both
-  tasks, with the two pre-fix defects present verbatim in it (byte-identical `_q_hat_from_alpha`
-  clip; the same discarded-`frozen`, last-iterate `return alpha_f, U`) — that branch should rebase
-  onto this fix rather than the fix being ported to it separately, since its generalization wraps
-  around the exact lines this fix touches without rewriting them, and it already generalizes
-  `_search_uncertainty` itself (the same name this fix now returns three values from directly, no
-  second name involved) rather than a wrapper around it. The rebase specifics are recorded above
-  in this entry.
+  **Status, 2026-11-20.** Regression is implemented on the branch `unify-clf-reg-utrace`
+  (`remotes/github/unify-clf-reg-utrace`) for the standard (absolute-residual) score, not merged.
+  The branch is based on current `main` and carries the fixed `_search_uncertainty` (floor at
+  `1/(N+1)`, smallest-feasible-alpha return, `SearchStatus`), generalized to a `risk_fn`-
+  parameterized search shared by both tasks. Its regression measure (`reg_risk_fn`) is the overlap
+  ratio between the conformal interval and a tolerance window. The split into two classes is still
+  not designed: the branch keeps a single class. Whatever base class the split introduces must own
+  that fixed search (`_search_uncertainty`, the one canonical entry point returning
+  `(alpha, U, status)`, with its `SearchStatus`/`SearchStatusWarning` machinery; see FINDINGS.md,
+  "Alpha search: floor, feasible-alpha return, status propagation"), not a copy of the pre-fix
+  version.
 
 - **Order-statistic search (candidate design for the Classifier/Regressor base class).** The
   search criterion depends on alpha only through `q_hat`, which itself takes only `N` distinct
@@ -188,6 +191,31 @@ Out of scope for the current script-migration work. Recorded here so the context
    streaming-calibration pipeline, 4 classes) and `.reports/2026-08-21_gpu_measurements_acdc.md`
    (36-batch streaming loops per class, 4 classes, ~3.1M total scores written, summed wall-clock
    and peak-memory figures reported per class).
+4. **Dependence between evaluation samples invalidates the independence assumption of `U_delta`.**
+   `uncertainty_at(..., delta=...)` assumes independent evaluation samples. In segmentation the
+   samples are pixels, and the pixels of one image are strongly dependent; the effective sample size
+   is then far below `n_valid`, and the Clopper-Pearson, Hoeffding and empirical Bernstein margins are too narrow (the
+   bound's real level is below `1 - delta`). The code cannot detect it. Open: how to account for it
+   (e.g. count images, not pixels, or a design-effect correction) and how to document it per use case.
+5. **The inverse of the confidence bound.** Given a specification `U_spec`, the smallest `delta` at
+   which `U_delta <= U_spec` (equivalently, the confidence level at which the model meets the
+   specification). `U_delta` is monotone in `delta`, so it is a one-dimensional root-find on the
+   existing counts. A candidate conformity-assessment feature; not implemented.
+6. **Rescaling the `EC_lower` margins to `[1/K, 1]`, and clipping at `1/K`.** `1/|C|` lies in
+   `[1/K, 1]`, not `(0, 1]`. Applying the bound to `Z' = (Z - 1/K) / (1 - 1/K)` and mapping back
+   multiplies only the range term of the empirical Bernstein margin by `1 - 1/K`: with `V_n` the
+   sample variance of `Z` itself, `m_EB = sqrt(2 V_n ln(8/delta) / n) + (1 - 1/K) 7 ln(8/delta) /
+   (3 (n - 1))`; the variance term is unchanged (the factor cancels against `V'_n = V_n / (1 -
+   1/K)^2`). Multiplying both terms is invalid. Hoeffding's margin scales by `1 - 1/K` entirely, and
+   `EC_lower` can then be clipped at `1/K` instead of 0. Not implemented: the measured gain is about
+   0.0005 on `U_delta` in the MNIST notebook's regime, and the formula is easy to get wrong.
+   Source: `.reports/2026-10-15_empirical_bernstein_diagnostic.md`, A.4.
+7. **Asymmetric split of `delta` between the coverage and `EC` components.** The split is fixed at
+   `delta/2` each (the `EC` half as `delta/4 + delta/4`). With the empirical Bernstein margin the
+   `EC` component is far narrower than the coverage component in the notebook's regime, so giving
+   the coverage bound a larger share of `delta` (the sum of the shares stays `delta`) would tighten
+   `U_delta`. It needs a rule that does not depend on the data, and a re-run of the Monte Carlo
+   validity check. Not implemented.
 
 ## Research questions (candidates for a second publication — NOT implementation tasks)
 

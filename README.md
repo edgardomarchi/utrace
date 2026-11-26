@@ -5,11 +5,13 @@
 
 **U**ncertainty **Tra**cking for **C**omplex **E**stimators.
 
-U-TraCE is a Python package for computing upper bounds on the marginal or conditional uncertainty of any classification model with a softmax output.
+U-TraCE is a Python package for computing estimates and upper confidence bounds on the marginal or conditional uncertainty of any classification model with a softmax output.
 
 The library is heavily based on Conformal Prediction, which allows its uncertainty estimates to be distribution-free. A key feature of this approach is that the resulting uncertainty measure relies on the model's actual accuracy (how often it is correct) rather than its confidence (e.g., raw softmax outputs).
 
-U-TraCE provides an evaluation method that reports a guaranteed upper bound for the model's uncertainty, defined as the probability of error: $1-P(\hat{y}​=y_t​)$, where $\hat{y}$ is the model's prediction and $y_t$​ is the true label.
+U-TraCE provides an evaluation method that reports an estimate of, and an upper confidence bound on, the model's uncertainty, defined as the probability of error: $1-P(\hat{y}​=y_t​)$, where $\hat{y}$ is the model's prediction and $y_t$​ is the true label.
+
+The point estimate `U` carries no confidence level. The bound `U_delta`, returned by `uncertainty_at(..., delta=...)`, holds with probability at least `1 - delta` only if (1) the evaluation samples are independent and representative of the data the model is used on, and (2) the uniform-selection assumption of the paper holds. The package cannot check either; in particular, pixels of one image are not independent samples.
 
 
 ## Setup
@@ -102,7 +104,49 @@ $ python
 >>> utrace.__version__
 ```
 
-Example scripts can be found in the `scripts` folder.
+The evaluation uses three data sets: one to calibrate the quantifier, one to tune `alpha`, and a
+separate one to measure `U` and its bound. They must be disjoint, and the library cannot check
+that. The example below runs on synthetic softmax outputs (numpy arrays only, no torch):
+
+```python
+import numpy as np
+from utrace import UncertaintyQuantifier
+
+rng = np.random.default_rng(0)
+K = 5
+
+
+def synthetic(n):
+    """Softmax outputs of a noisy 5-class classifier, and the true labels."""
+    y = rng.integers(0, K, size=n)
+    logits = rng.normal(size=(n, K))
+    logits[np.arange(n), y] += 2.5
+    softmax = np.exp(logits)
+    return softmax / softmax.sum(axis=1, keepdims=True), y
+
+
+cal_x, cal_y = synthetic(1000)    # calibration
+tune_x, tune_y = synthetic(1000)  # tuning
+eval_x, eval_y = synthetic(5000)  # evaluation
+
+uq = UncertaintyQuantifier(N=1000)
+uq.calibrate(cal_x, cal_y)
+alpha = uq.tune_alpha(tune_x, tune_y)
+result = uq.uncertainty_at(eval_x, eval_y, alpha, delta=0.05)
+
+print(f"alpha       = {alpha:.4f}")
+print(f"U           = {result.U:.4f}")
+print(f"U_empirical = {result.U_empirical:.4f}")
+print(f"U_delta     = {result.U_delta:.4f}")
+print(f"true error  = {np.mean(eval_x.argmax(axis=1) != eval_y):.4f}")
+```
+
+`U` is the point estimate, `U_empirical` is the same expression with the coverage measured on the
+evaluation set, and `U_delta` is the upper confidence bound at level `1 - delta` (see the two
+assumptions above).
+
+Example scripts can be found in the `scripts` folder, and the jupytext notebooks in `notebooks/`
+(how to run them is described in `CONTRIBUTING.md`, "Notebooks").
 
 ## Authors
 
@@ -150,7 +194,7 @@ This project is licensed under the MIT License.
 title = {U-TraCE},
 author = {Edgardo Marchi and Maik Liebl},
 year = {2025},
-version = {0.2.0},
+version = {0.3.0},
 howpublished = {\url{https://github.com/edgardomarchi/utrace}}
 }
 ```
