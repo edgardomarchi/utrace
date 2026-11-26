@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 from jax import jit
 
-__all__ = ["lac", "lac_cal", 'abs_error', 'abs_error_cal']
+__all__ = ['abs_error', 'abs_error_cal', "lac", "lac_cal"]
 
 # =============================================================================
 # Classification

@@ -1,21 +1,19 @@
 import itertools
 import math
 
-import numpy as np
 import jax.numpy as jnp
-
+import numpy as np
 import pytest
-
 from scipy.stats import beta as scipy_beta
 
-
-from utrace import UncertaintyQuantifier, UncertaintyEvaluation
+from utrace import UncertaintyEvaluation, UncertaintyQuantifier
 from utrace.uncertaintyQuantifier import (
+    TuningDataReuseWarning,
     _confidence_bound,
     _evaluate_at_alpha,
-    _q_hat_from_alpha
+    _q_hat_from_alpha,
 )
-from utrace.uncertaintyQuantifier import TuningDataReuseWarning
+
 
 def _build_regression(*, N = 300, seed = 0, n_eval = 400, noise = 0.3):
     rng = np.random.default_rng(seed)
@@ -101,7 +99,7 @@ def test_regression_ec_and_coverage_match_numpy_reference():
     alpha = 0.1
     eps = 0.2
 
-    r = uq.uncertainty_at(y_hat, y, alpha, eps = eps, delta = 0.05)
+    r = uq.uncertainty_at(y_hat, y, alpha, tol = eps, delta = 0.05)
 
     # Reconstruct the conformal intervals independently.
     N = uq._state.N
@@ -137,7 +135,7 @@ def test_regression_ec_and_coverage_match_numpy_reference():
 def test_regression_bound_orderings(alpha, delta):
     uq, y_hat, y = _build_regression(seed = 43, n_eval = 700)
     floor = 1.0/(uq._state.N+1)
-    r = uq.uncertainty_at(y_hat, y, max(alpha, floor), eps = 0.2, delta = delta)
+    r = uq.uncertainty_at(y_hat, y, max(alpha, floor), tol = 0.2, delta = delta)
 
     assert r.delta == delta
     assert r.coverage == pytest.approx(r.n_covered/r.n_valid)
@@ -160,7 +158,7 @@ def test_regression_u_delta_decreases_as_delta_grows():
 
     deltas = [0.001, 0.01, 0.05, 0.1, 0.3, 0.7, 0.99]
 
-    vals = [uq.uncertainty_at(y_hat, y, 0.2, eps = 0.2, delta = d).U_delta for d in deltas]
+    vals = [uq.uncertainty_at(y_hat, y, 0.2, tol = 0.2, delta = d).U_delta for d in deltas]
 
     assert all(
         a>b for a, b in itertools.pairwise(vals))
@@ -172,18 +170,18 @@ def test_regression_invalid_delta_raises(bad):
     uq, y_hat, y = _build_regression(seed = 4)
 
     with pytest.raises(ValueError, match = "delta"):
-        uq.uncertainty_at(y_hat, y, 0.2, eps = 0.2, delta = bad)
+        uq.uncertainty_at(y_hat, y, 0.2, tol = 0.2, delta = bad)
 
 def test_regression_invalid_delta_raises_even_for_nan_alpha():
     uq, y_hat, y = _build_regression(seed = 98)
 
     with pytest.raises(ValueError, match = "delta"):
-        uq.uncertainty_at(y_hat, y, np.nan, eps = 0.2, delta = 2.0)
+        uq.uncertainty_at(y_hat, y, np.nan, tol = 0.2, delta = 2.0)
 
 def test_regression_delta_none_preserves_core_values():
     uq, y_hat, y = _build_regression(seed = 45)
-    r0 = uq.uncertainty_at(y_hat, y, 0.2, eps = 0.2)
-    r1 = uq.uncertainty_at(y_hat, y, 0.2, eps = 0.2, delta = 0.05)
+    r0 = uq.uncertainty_at(y_hat, y, 0.2, tol = 0.2)
+    r1 = uq.uncertainty_at(y_hat, y, 0.2, tol = 0.2, delta = 0.05)
 
     assert (r0.delta, r0.coverage_lower, r0.EC_lower, r0.U_delta) == (None,)*4
 
@@ -200,7 +198,7 @@ def test_regression_nan_alpha_gives_nan_fields():
 
     for delta in (None, 0.05):
         r = uq.uncertainty_at(
-            y_hat, y, np.nan, eps=0.2, delta=delta
+            y_hat, y, np.nan, tol = 0.2, delta=delta
         )
 
         assert (r.n_covered, r.n_valid, r.n_succ) == (0, 0, 0)
@@ -217,16 +215,16 @@ def test_regression_nan_alpha_gives_nan_fields():
 def test_regression_delta_does_not_touch_jit_cache():
     uq, y_hat, y = _build_regression(seed=6)
 
-    uq.uncertainty_at(y_hat, y, 0.2, eps=0.2)
+    uq.uncertainty_at(y_hat, y, 0.2, tol = 0.2)
 
     size = _evaluate_at_alpha._cache_size()
 
     for delta in (None, 0.05, 0.3):
         uq.uncertainty_at(
-            y_hat, y, 0.2, eps=0.2, delta=delta
+            y_hat, y, 0.2, tol = 0.2, delta=delta
         )
         uq.uncertainty_at(
-            y_hat, y, 0.4, eps=0.2, delta=delta
+            y_hat, y, 0.4, tol = 0.2, delta=delta
         )
 
     assert _evaluate_at_alpha._cache_size() == size
@@ -236,7 +234,7 @@ def test_regression_individual_bounds_monotonicity():
     deltas = [0.001, 0.01, 0.05, 0.1, 0.3, 0.7, 0.99]
 
     results = [
-        uq.uncertainty_at(y_hat, y, 0.2, eps = 0.2, delta = d)
+        uq.uncertainty_at(y_hat, y, 0.2, tol = 0.2, delta = d)
         for d in deltas
     ]
 
@@ -255,10 +253,10 @@ def test_regression_get_uncertainty_consistency():
     eps = 0.2
 
     with pytest.warns(TuningDataReuseWarning):
-        U, alpha = uq.get_uncertainty(y_hat, y, max_iters = 30, eps = eps,
+        U, alpha = uq.get_uncertainty(y_hat, y, max_iters = 30, tol = eps,
                                       target_ratio = 1.0)
 
-    r = uq.uncertainty_at(y_hat,y, alpha, eps = eps, delta = None)
+    r = uq.uncertainty_at(y_hat,y, alpha, tol = eps, delta = None)
 
     assert np.isfinite(alpha)
     assert U == pytest.approx(r.U, rel = 1e-8, abs = 1e-10)
@@ -268,5 +266,5 @@ def test_regression_mismatched_input_shapes_raise():
     uq, y_hat, y = _build_regression(seed = 17)
     with pytest.raises(ValueError):
         uq.uncertainty_at(
-            y_hat.reshape(-1, 1), y, alpha = 0.1, eps = 0.2
+            y_hat.reshape(-1, 1), y, alpha = 0.1, tol = 0.2
         )

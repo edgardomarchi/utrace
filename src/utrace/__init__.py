@@ -1,5 +1,6 @@
 from importlib.metadata import PackageNotFoundError, version
 
+from .scores.objects import LAC, AbsResidual, Score
 from .uncertaintyQuantifier import (
     SearchStatus,
     SearchStatusWarning,

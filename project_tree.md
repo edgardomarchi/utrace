@@ -12,7 +12,12 @@
 ├── LICENSE.md
 ├── MIGRATION.md
 ├── notebooks
-│   └── mnist_method_evaluation.py
+│   ├── acdc_bm_cache.py
+│   ├── acdc_periodic_verification.py
+│   ├── mnist_method_evaluation.py
+│   ├── model_comparison.py
+│   ├── periodic_verification_demo.py
+│   └── run_notebook.py
 ├── project_tree.md
 ├── pyproject.toml
 ├── README.md
@@ -26,6 +31,7 @@
 │   ├── MNIST_example.py
 │   ├── MNIST_test_convergence.py
 │   ├── MNIST_test_coverage.py
+│   ├── regression_example.py
 │   └── setsize_analysis.py
 ├── src
 │   └── utrace
@@ -34,7 +40,8 @@
 │       ├── __main__.py
 │       ├── scores
 │       │   ├── __init__.py
-│       │   └── jax_impl.py
+│       │   ├── jax_impl.py
+│       │   └── objects.py
 │       ├── uncertaintyQuantifier.py
 │       └── utils
 │           ├── __init__.py
@@ -45,6 +52,9 @@
 │           │   ├── __init__.py
 │           │   ├── model_wrapper.py
 │           │   └── transforms.py
+│           ├── regression_data
+│           │   ├── datasets.py
+│           │   └── __init__.py
 │           ├── tensors.py
 │           ├── utils_jax.py
 │           └── utils.py
@@ -69,7 +79,11 @@
 │   │   ├── test_label_validation.py
 │   │   ├── test_masked_quantile.py
 │   │   ├── test_max_n_overflow.py
+│   │   ├── test_regression_confidence_bounds_montecarlo.py
+│   │   ├── test_regression_confidence_bounds.py
+│   │   ├── test_regression_task.py
 │   │   ├── test_scipy_import_is_lazy.py
+│   │   ├── test_score_objects.py
 │   │   ├── test_score_param_validation.py
 │   │   ├── test_search_status.py
 │   │   └── test_search_uncertainty.py
@@ -88,4 +102,4 @@
 │           └── test_torch_label_input.py
 └── uv.lock
 
-15 directories, 74 files
+16 directories, 87 files

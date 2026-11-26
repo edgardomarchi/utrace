@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import numpy as np
 
-from utrace.scores import lac
+from utrace.scores import LAC
 from utrace.uncertaintyQuantifier import _search_uncertainty
 
 
@@ -11,7 +11,7 @@ def test_cs_padding_does_not_recompile_on_N_change():
     import jax.numpy as jnp
     import numpy as np
 
-    from utrace.scores import lac
+    from utrace.scores import LAC
     from utrace.uncertaintyQuantifier import _search_uncertainty
 
     _search_uncertainty.clear_cache()
@@ -29,7 +29,7 @@ def test_cs_padding_does_not_recompile_on_N_change():
     for n_cs in (500, 1200):
         cs = jnp.full((max_N,), jnp.inf, dtype=jnp.float64)
         cs = cs.at[:n_cs].set(jnp.sort(jnp.asarray(rng.random(n_cs))))
-        _search_uncertainty(y, p, mask, cs, jnp.int32(n_cs), 30, lac)
+        _search_uncertainty(y, p, mask, cs, jnp.int32(n_cs), 30, LAC())
         #                       ^^^^ posición del nuevo arg
 
     assert _search_uncertainty._cache_size() == 1, (
@@ -64,7 +64,7 @@ def test_masking_equals_filtering():
     n_cs_j = jnp.int32(n_cs)
 
     # 1. versión filtrada (referencia)
-    a_ref, U_ref = _reference_filtered(y, p, valid, cs, n_cs_j, 30, lac)
+    a_ref, U_ref = _reference_filtered(y, p, valid, cs, n_cs_j, 30, LAC())
 
     # 2. versión paddeada+enmascarada (la de 2.2)
     B_max = 512
@@ -76,7 +76,7 @@ def test_masking_equals_filtering():
 
     a_mask, U_mask, _status = _search_uncertainty(
         jnp.asarray(y_safe), jnp.asarray(p_pad), jnp.asarray(m_pad),
-        cs, n_cs_j, 30, lac)
+        cs, n_cs_j, 30, LAC())
 
     np.testing.assert_allclose(float(a_mask), float(a_ref), rtol=1e-10, atol=1e-12)
     np.testing.assert_allclose(float(U_mask), float(U_ref), rtol=1e-10, atol=1e-12)
