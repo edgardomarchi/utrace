@@ -17,6 +17,7 @@ import numpy as np
 from jax import jit, lax
 from jax import numpy as jnp
 
+from .bounds import Bound, SampleStats, resolve_bound
 from .scores.objects import Score, resolve_score
 from .utils import _bucket_size, _masked_quantile_higher
 from .utils.tensors import to_jax
@@ -118,11 +119,11 @@ class UncertaintyEvaluation(NamedTuple):
         Clopper-Pearson lower bound on the coverage `p`, at level `delta/2`; `0.0` if
         `n_covered == 0`. `None` when `delta` is `None`.
     EC_lower : np.float64 or None
-        Lower bound on `e` at level `delta/2`, clipped at 0: `EC` minus the smaller of a
-        Hoeffding margin and an empirical Bernstein margin (Maurer and Pontil, 2009,
+        Lower bound on `e` at level `delta/2`, clipped at 0. By default `EC` minus the smaller
+        of a Hoeffding margin and an empirical Bernstein margin (Maurer and Pontil, 2009,
         Theorem 4), each one-sided at `delta/4` (`pi` lies in `[0, 1]`; see
-        `uncertainty_at`). `0.0` if `n_succ == 0`; only the Hoeffding margin if `n_succ == 1`.
-        `None` when `delta` is `None`.
+        `uncertainty_at`); `0.0` if `n_succ == 0`; only the Hoeffding margin if `n_succ == 1`.
+        `uncertainty_at(..., bound=...)` replaces that default. `None` when `delta` is `None`.
     U_delta : np.float64 or None
         `1 - EC_lower * coverage_lower`. The two `delta/2` levels are fixed (not
         data-dependent) and combine by a union bound, valid although both come from the
@@ -158,7 +159,8 @@ def _check_delta(delta) -> float | None:
 
 
 def _confidence_bound(
-    EC, n_covered: int, n_valid: int, n_succ: int, sum_sq_dev, delta: float
+    EC, n_covered: int, n_valid: int, n_succ: int, sum_sq_dev, delta: float,
+    bound: Bound | None = None, values=None,
 ):
     """`(coverage_lower, EC_lower, U_delta)` as float64 scalars, on the host.
 
@@ -182,6 +184,14 @@ def _confidence_bound(
     smaller is a union bound, not a data-dependent choice of level. Requires `n_valid > 0`.
     scipy is imported here, not at module level, so `import utrace` and every `delta=None`
     call stay scipy-free.
+
+    The above is the default, `bound=None` (`bounds.DEFAULT_BOUND`, `Tightest((Hoeffding(),
+    EmpiricalBernstein()))` at `delta/2`, so each member at `delta/4`), and reproduces the
+    formulas bit for bit. Any other `Bound` replaces the `EC` term: `EC_lower = max(0,
+    bound.lower(SampleStats(n_succ, EC, sum_sq_dev, values), delta/2))`, with `0` for
+    `n_succ == 0` and `-inf` (an undefined bound) also giving 0. `values` are the `n_succ` values
+    of `pi` in evaluation order, required when `bound.needs_values`. The coverage term is
+    Clopper-Pearson whatever the bound.
     """
     if n_covered == 0:
         coverage_lower = np.float64(0.0)
@@ -190,16 +200,14 @@ def _confidence_bound(
         coverage_lower = np.float64(
             betaincinv(float(n_covered), float(n_valid - n_covered + 1), delta / 2.0)
         )
+    bound = resolve_bound(bound)
     if n_succ == 0:
         EC_lower = np.float64(0.0)
     else:
-        margin = np.sqrt(np.log(4.0 / delta) / (2.0 * n_succ))
-        if n_succ >= 2:
-            L = np.log(8.0 / delta)
-            V = max(0.0, float(sum_sq_dev)) / (n_succ - 1)
-            margin_eb = np.sqrt(2.0 * V * L / n_succ) + 7.0 * L / (3.0 * (n_succ - 1))
-            margin = min(margin, margin_eb)
-        EC_lower = np.float64(max(0.0, float(EC) - float(margin)))
+        if bound.needs_values and values is None:
+            raise ValueError(f"bound {bound.describe()!r} needs the per-sample values; none were given.")
+        stats = SampleStats(n=int(n_succ), mean=EC, sum_sq_dev=sum_sq_dev, values=values)
+        EC_lower = np.float64(max(0.0, float(bound.lower(stats, delta / 2.0))))
     return coverage_lower, EC_lower, np.float64(1.0 - EC_lower * coverage_lower)
 
 
@@ -1279,7 +1287,8 @@ class UncertaintyQuantifier:
         _, alpha = self._search_single_dataset(softmax, y, max_iters, params)
         return alpha
 
-    def uncertainty_at(self, softmax, y, alpha, *, tol=None, delta=None, eps=None) -> UncertaintyEvaluation:
+    def uncertainty_at(self, softmax, y, alpha, *, tol=None, delta=None, bound=None,
+                       eps=None) -> UncertaintyEvaluation:
         """Measure `U` at a given alpha on an evaluation set.
 
         Computes the point estimate `U = 1 - EC * (1 - alpha)` where `EC` is the mean of
@@ -1301,7 +1310,8 @@ class UncertaintyQuantifier:
         Maurer and Pontil (2009), "Empirical Bernstein Bounds and Sample Variance
         Penalization", COLT, arXiv:0907.3740, Theorem 4), where `n = n_succ` and `V` is the
         unbiased sample variance of `pi` over the covered samples; each margin is one-sided
-        at level `delta/4`. With `n_succ == 1` only `m_H` is used. The bound holds only if (1) the evaluation samples are
+        at level `delta/4`. With `n_succ == 1` only `m_H` is used. That is the default bound on `e`;
+        `bound=` replaces it (see below), the coverage term staying Clopper-Pearson. The bound holds only if (1) the evaluation samples are
         independent and representative of the data the model is used on, and (2) the paper's
         uniform-selection assumption holds; the code can check neither. scipy is imported
         only when `delta` is given.
@@ -1330,6 +1340,13 @@ class UncertaintyQuantifier:
         delta : float, optional
             `None` (default: no bound is computed, `scipy` is not imported) or a real
             number in the open interval `(0, 1)`: the bound's error level.
+        bound : Bound or str, optional
+            The lower confidence bound on `e` used for `EC_lower`, applied at level `delta/2`: a
+            `utrace.bounds.Bound` instance, or `'hoeffding'` / `'empirical_bernstein'`. `None`
+            (default) is `bounds.DEFAULT_BOUND`, `Tightest((Hoeffding(), EmpiricalBernstein()))`:
+            the two margins above, each at `delta/4`, bit for bit. Requires `delta`. A bound whose
+            `needs_values` is True receives the per-sample `pi` of the covered samples, in
+            evaluation order.
         eps : float, optional
             Deprecated alias of `tol` (`DeprecationWarning`; removed in 0.5.0).
 
@@ -1347,7 +1364,8 @@ class UncertaintyQuantifier:
             If both `tol` and `eps` are given.
         ValueError
             If `tol` does not suit the score (checked first), if `delta` is not `None` or a
-            real number in `(0, 1)`, if `y` fails the score's dtype check (see `calibrate`;
+            real number in `(0, 1)`, if `bound` is given without `delta` or is an unknown string
+            (`TypeError` if it is neither a string nor a `Bound`), if `y` fails the score's dtype check (see `calibrate`;
             checked before the remaining conditions), for `'abs_error'` if predictions and
             targets are not both of shape `(n,)`, if the instance is not calibrated, the row
             counts of `softmax` and `y` differ, the columns of `softmax` differ from those
@@ -1358,6 +1376,9 @@ class UncertaintyQuantifier:
         tol = _resolve_tol_alias(tol, eps, "uncertainty_at")
         params = self.score_.resolve_params(tol=tol, target_ratio=None, where="uncertainty_at")
         delta = _check_delta(delta)
+        if bound is not None and delta is None:
+            raise ValueError("uncertainty_at: bound= needs delta; got delta=None.")
+        bound = resolve_bound(bound)
         if np.isnan(alpha):
             nan = np.float64('nan')
             return UncertaintyEvaluation(
@@ -1439,7 +1460,7 @@ class UncertaintyQuantifier:
                 coverage=coverage, U_empirical=U_empirical,
             )
         coverage_lower, EC_lower, U_delta = _confidence_bound(
-            EC, n_covered, n_valid, n_succ, sum_sq_dev, delta
+            EC, n_covered, n_valid, n_succ, sum_sq_dev, delta, bound
         )
         return UncertaintyEvaluation(
             U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,

@@ -25,6 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lie in `(0, 1]`. Both belong to the call, so one calibrated quantifier can be swept over them
   without recalibrating or recompiling.
 
+- Concentration bounds as objects (`src/utrace/bounds.py`): `Bound`, `SampleStats`, `Hoeffding`,
+  `EmpiricalBernstein` and `Tightest` (the largest of its members' lower bounds, the level split
+  evenly), exported from `utrace`. `uncertainty_at(..., delta=..., bound=...)` selects the lower
+  bound on the efficiency term `EC` (a `Bound`, or `'hoeffding'` / `'empirical_bernstein'`), at
+  level `delta/2`; the coverage bound stays Clopper-Pearson. The default, `Tightest((Hoeffding(),
+  EmpiricalBernstein()))`, reproduces the previous `U_delta` bit for bit. `bound=` without `delta`
+  raises `ValueError`.
+
 ### Changed
 - `scripts/btorch_MNIST_test.py` gains `--json PATH` (writes the plotted numbers), `--iterations N`
   (repetitions of the noise sweep) and `--seed N` (a reproducible run). Without them its behaviour

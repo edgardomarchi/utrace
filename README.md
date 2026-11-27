@@ -143,7 +143,9 @@ print(f"true error  = {np.mean(eval_x.argmax(axis=1) != eval_y):.4f}")
 
 `U` is the point estimate, `U_empirical` is the same expression with the coverage measured on the
 evaluation set, and `U_delta` is the upper confidence bound at level `1 - delta` (see the two
-assumptions above).
+assumptions above). `U_delta` combines a Clopper-Pearson bound on the coverage with a lower bound on
+the efficiency term `EC`; by default the latter is the tighter of a Hoeffding and an empirical
+Bernstein bound, and `bound=` selects another (`utrace.bounds`, e.g. `bound='hoeffding'`).
 
 For regression, pass point predictions instead of softmax outputs, construct the quantifier with
 `score='abs_error'`, and give the tolerance `tol` (in the units of the target) on each call; it
