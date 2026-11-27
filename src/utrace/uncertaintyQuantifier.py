@@ -591,6 +591,32 @@ def _evaluate_at_alpha(
     sum_sq_dev = jnp.where(succ, (z - mean_z) ** 2, 0.0).sum()
     U = jnp.where(n_valid > 0, 1.0 - EC * (1.0 - alpha), jnp.nan)
     return U, EC, n_covered, n_valid, n_succ, sum_sq_dev
+
+
+@partial(jit, static_argnames=["score"])
+def _evaluate_samples_at_alpha(
+    alpha: jnp.ndarray,
+    y: jnp.ndarray,
+    smx: jnp.ndarray,
+    valid_mask: jnp.ndarray,
+    cs_padded: jnp.ndarray,
+    n_cs: jnp.ndarray,
+    score: Score,
+    params=(),
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """The per-sample values behind `_evaluate_at_alpha`'s sums, at one fixed alpha.
+
+    Returns `(covered, succ, z)`, each of shape `(n,)` (padded rows included): `covered` is
+    `is_covered & valid_mask`, `succ` the samples `EC` averages over, `z` their `pi` (0
+    elsewhere) -- `score.per_sample` at the same `q_hat`, unchanged. A separate function, not a
+    static flag on `_evaluate_at_alpha`, so the default path's compiled trace, outputs and cache
+    are untouched; `uncertainty_at` calls it only for a bound that needs the values
+    (`Bound.needs_values`), in addition to `_evaluate_at_alpha`, which still gives every field of
+    the result.
+    """
+    q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
+    is_covered, succ, z = score.per_sample(y, smx, q_hat, valid_mask, params)
+    return is_covered & valid_mask, succ, z
 class UncertaintyQuantifier:
     """Wrapper for uncertainty quantification using U-TraCE.
 
@@ -1431,7 +1457,7 @@ class UncertaintyQuantifier:
         y_safe = np.where(mask_padded, y_padded, 0)
 
         self._state = _ensure_sorted(self._state)
-        U, EC, n_covered, n_valid, n_succ, sum_sq_dev = _evaluate_at_alpha(
+        eval_args = (
             jnp.asarray(alpha_f, dtype=jnp.float64),
             jnp.asarray(y_safe),
             jnp.asarray(p_padded, dtype=jnp.float64),
@@ -1441,6 +1467,7 @@ class UncertaintyQuantifier:
             self.score_,
             params,
         )
+        U, EC, n_covered, n_valid, n_succ, sum_sq_dev = _evaluate_at_alpha(*eval_args)
         U, EC = np.float64(U), np.float64(EC)
         n_covered, n_valid, n_succ = int(n_covered), int(n_valid), int(n_succ)
         if n_valid == 0:
@@ -1459,8 +1486,13 @@ class UncertaintyQuantifier:
                 U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
                 coverage=coverage, U_empirical=U_empirical,
             )
+        values = None
+        if bound.needs_values and n_succ > 0:
+            _, succ, z = _evaluate_samples_at_alpha(*eval_args)
+            succ, z = np.asarray(succ)[:B], np.asarray(z)[:B]
+            values = z[succ].astype(np.float64)          # pi of the covered samples, in evaluation order
         coverage_lower, EC_lower, U_delta = _confidence_bound(
-            EC, n_covered, n_valid, n_succ, sum_sq_dev, delta, bound
+            EC, n_covered, n_valid, n_succ, sum_sq_dev, delta, bound, values
         )
         return UncertaintyEvaluation(
             U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
