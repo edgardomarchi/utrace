@@ -704,17 +704,62 @@ _ESTIMAND_TEXT = {
 }
 
 
-def _single_estimand(name, n, mean, ssd, values, bound, delta, structural, over) -> SingleEstimandBound:
+def _single_estimand(name, n, mean, ssd, values, bound, delta, structural, over,
+                     note="") -> SingleEstimandBound:
     """One lower confidence bound at the full `delta` on the mean of `V` or `W` (values in `[0, 1]`),
     and its components: the given model/structural terms plus the statistical `margin`."""
     stats = SampleStats(n=int(n), mean=mean, sum_sq_dev=ssd, values=values)
     lower = max(0.0, float(bound.lower(stats, delta)))
-    method = f"{bound.describe()} at delta, over {n} {over}"
+    method = f"{bound.describe()} at delta, over {n} {over}{note}"
     margin = BudgetComponent("margin", mean - lower, ComponentKind.STATISTICAL, method)
     return SingleEstimandBound(
         estimand=name, description=_ESTIMAND_TEXT[name], n=int(n), mean=mean, lower=lower,
         U_delta=1.0 - lower, method=method, components=(*structural, margin),
+        over="units" if over == "units" else "samples",
     )
+
+
+def _units_to_numpy(units) -> np.ndarray:
+    """`units` as a numpy array: framework tensors through `to_jax` (so a device tensor is moved
+    to the host the same way as the data), anything else through `np.asarray`."""
+    if isinstance(units, np.ndarray) or not hasattr(units, "__dlpack__"):
+        return np.asarray(units)
+    return np.asarray(to_jax(units))
+
+
+def _single_estimands_over_units(ctx, units, bound, delta, text):
+    """`V` and `W` with `units=`: per-unit means over the valid samples, then the bound over the
+    unit means (sorted unit ids). The structural components are averaged the same way, so each
+    tuple still sums to its `U_delta`."""
+    valid = np.asarray(ctx.eval_args[3])[:ctx.B]
+    acc, cov, V_s, W_s = (np.asarray(t)[:ctx.B] for t in _budget_samples_at_alpha(*ctx.eval_args))
+    u_valid = units[valid]
+    ids, inv = np.unique(u_valid, return_inverse=True)
+    k = len(ids)
+    dropped = len(np.unique(units)) - k
+    m = np.bincount(inv, minlength=k).astype(np.float64)
+
+    def unit_mean(x):
+        return np.bincount(inv, weights=x[valid].astype(np.float64), minlength=k) / m
+
+    v, w = unit_mean(V_s), unit_mean(W_s)
+    err_u = unit_mean(valid & ~acc)
+    anc_u = unit_mean(acc & ~cov)
+    sel_u = unit_mean(np.where(cov, acc.astype(np.float64) - V_s, 0.0))
+    method_tail = "unit-averaged over valid samples"
+    error_c = BudgetComponent("error", float(err_u.mean()), ComponentKind.MODEL,
+                              f"{text['error']}, {method_tail}")
+    anc_c = BudgetComponent("accepted_not_covered", float(anc_u.mean()), ComponentKind.STRUCTURAL,
+                            f"{text['accepted_not_covered']}, {method_tail}")
+    sel_c = BudgetComponent("selection", float(sel_u.mean()), ComponentKind.STRUCTURAL,
+                            f"{text['selection']}, {method_tail}")
+    note = f" ({dropped} unit{'s' if dropped != 1 else ''} with no valid sample dropped)" if dropped else ""
+    out = []
+    for name, x, structural in (("V", v, (error_c, anc_c, sel_c)), ("W", w, (error_c, sel_c))):
+        mean = float(x.mean())
+        out.append(_single_estimand(name, k, mean, float(((x - mean) ** 2).sum()), x, bound, delta,
+                                    structural, "units", note))
+    return tuple(out)
 
 
 class _EvalContext(NamedTuple):
@@ -1374,7 +1419,8 @@ class UncertaintyQuantifier:
 
         return U, alpha
 
-    def uncertainty_budget(self, softmax, y, alpha, *, delta, tol=None, bound=None) -> UncertaintyBudget:
+    def uncertainty_budget(self, softmax, y, alpha, *, delta, tol=None, bound=None,
+                           units=None) -> UncertaintyBudget:
         """`uncertainty_at` with `delta`, and the exact split of its `U_delta` into the model's error
         and what the method adds to it.
 
@@ -1404,9 +1450,30 @@ class UncertaintyQuantifier:
         multi-label, coverage, `EC`). `error_upper` is the direct Clopper-Pearson upper bound on the
         error probability at level `1 - delta`, a comparator, not a component.
 
-        The structural sums are formed inside the jitted evaluation (no per-sample array leaves
-        the device), plus the per-sample path of `uncertainty_at` when `bound` needs the values.
-        Same assumptions as `U_delta`: independent, representative evaluation samples.
+        Beside that product bound, `budget.V` and `budget.W` are single-estimand bounds: one lower
+        confidence bound at the full `delta` on the mean of `V = pi 1{y in C}` (`1 - E[V]` is the
+        paper's `U*`, which `U_delta` bounds as a product) and of `W = V + 1{y in B, y not in C}`
+        (which keeps the term the paper drops), each with components summing to its `U_delta`
+        (`U_delta_V`, `U_delta_W`).
+
+        **`units=`** (single-estimand bounds only). Every bound here assumes independent samples;
+        pixels of one image, or several measurements of one patient, are not. `units` gives, for
+        every evaluation sample, the id of the independent unit it belongs to (the patient of each
+        pixel, for example). `V` and `W` (and their structural components) are then averaged within
+        each unit, over its valid samples, and the bound is taken over the unit means, in the order
+        of the sorted unit ids (relevant for `Betting(order="given")`). The estimand becomes
+        **unit-averaged**: `1 - E_unit[mean of V in the unit]`, each unit weighted equally, not
+        each sample. `units` does **not** select samples and is not group-conditional coverage:
+        that is `classes=` (it restricts calibration and evaluation to samples whose label is in
+        the group). The two combine: with `classes=[k]` and `units=patient_ids`, the valid samples
+        are the class-`k` samples, averaged per patient. A unit with no valid sample is dropped
+        (the count is in the bound's `method`). The product bound (`evaluation`, `components`,
+        `error`, `error_upper`) stays sample-level and is unchanged by `units`.
+
+        The default structural and single-estimand sums are formed inside the jitted evaluation
+        (no per-sample array leaves the device). The per-sample values are transferred to the host
+        only for a bound that needs them (`Bound.needs_values`) or with `units`. Same assumptions as
+        `U_delta`: independent (units, with `units=`), representative evaluation samples.
 
         Parameters
         ----------
@@ -1414,6 +1481,9 @@ class UncertaintyQuantifier:
             As in `uncertainty_at`.
         delta : float
             Required: a real number in `(0, 1)`.
+        units : array-like, shape (n_eval,), optional
+            The independent unit of each evaluation sample (any ids `np.unique` can sort: integers
+            or strings). See above.
 
         Returns
         -------
@@ -1426,8 +1496,9 @@ class UncertaintyQuantifier:
         ------
         ValueError
             If `tol` does not suit the score, if `delta` is `None` or not a real number in `(0, 1)`,
-            if `bound` is an unknown string (`TypeError` if not a string or `Bound`), and under every
-            condition `uncertainty_at` raises on its data.
+            if `bound` is an unknown string (`TypeError` if not a string or `Bound`), if `units` is
+            not a 1-D array with one entry per sample, and under every condition `uncertainty_at`
+            raises on its data.
         NotImplementedError
             If the score does not implement `Score.accepted`.
         """
@@ -1440,6 +1511,14 @@ class UncertaintyQuantifier:
         except ValueError:
             raise ValueError(f"{where}: delta must be a real number in (0, 1), got {delta!r}.") from None
         bound = resolve_bound(bound)
+        if units is not None:
+            units = _units_to_numpy(units)
+            n_rows = len(y)
+            if units.ndim != 1 or units.shape[0] != n_rows:
+                raise ValueError(
+                    f"{where}: units must be a 1-D array with one entry per sample, shape (n,) = "
+                    f"({n_rows},), got shape {units.shape}."
+                )
         evaluation, ctx = self._evaluate_impl(softmax, y, alpha, params, delta, bound, where)
         nan = float("nan")
         if ctx is None or evaluation.n_valid == 0:
@@ -1466,20 +1545,23 @@ class UncertaintyQuantifier:
             BudgetComponent("efficiency", cov_lo * (EC - EC_lo), ComponentKind.STATISTICAL,
                             f"{bound.describe()} at delta/2"),
         )
-        anc, sel = components[1], components[2]
-        values_V = values_W = None
-        if bound.needs_values:
-            valid = np.asarray(ctx.eval_args[3])[:ctx.B]
-            _, _, V_s, W_s = (np.asarray(t)[:ctx.B] for t in _budget_samples_at_alpha(*ctx.eval_args))
-            values_V, values_W = V_s[valid].astype(np.float64), W_s[valid].astype(np.float64)
-        V = _single_estimand(
-            "V", n, float(sum_V) / n, float(ssd_V), values_V, bound, delta,
-            (components[0], anc, sel), "valid samples",
-        )
-        W = _single_estimand(
-            "W", n, float(sum_W) / n, float(ssd_W), values_W, bound, delta,
-            (components[0], sel), "valid samples",
-        )
+        if units is not None:
+            V, W = _single_estimands_over_units(ctx, units, bound, delta, text)
+        else:
+            anc, sel = components[1], components[2]
+            values_V = values_W = None
+            if bound.needs_values:
+                valid = np.asarray(ctx.eval_args[3])[:ctx.B]
+                _, _, V_s, W_s = (np.asarray(t)[:ctx.B] for t in _budget_samples_at_alpha(*ctx.eval_args))
+                values_V, values_W = V_s[valid].astype(np.float64), W_s[valid].astype(np.float64)
+            V = _single_estimand(
+                "V", n, float(sum_V) / n, float(ssd_V), values_V, bound, delta,
+                (components[0], anc, sel), "valid samples",
+            )
+            W = _single_estimand(
+                "W", n, float(sum_W) / n, float(ssd_W), values_W, bound, delta,
+                (components[0], sel), "valid samples",
+            )
         return UncertaintyBudget(evaluation=evaluation, components=components,
                                  error=error, error_upper=error_upper, V=V, W=W)
 

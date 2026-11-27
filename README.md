@@ -175,6 +175,10 @@ with the tolerance window `y_hat ± tol` in place of the top-1 label.
 bound at level `1 - delta` on a mean of per-sample values in `[0, 1]`: `V = pi 1{y in C}`, whose
 `1 - E[V]` is the same `U*` that `U_delta` bounds as a product of two bounds, and `W`, which adds the
 correct answers the set leaves out (`budget.V.components`, `budget.W.components` give their splits).
+When the evaluation samples are not independent (the pixels of one image), pass `units=` with the id
+of the independent unit of each sample (the image or the patient): `V` and `W` are then averaged per
+unit and bounded over the units, a unit-averaged estimand. `units=` does not select samples; that is
+`classes=`, and the two can be combined.
 
 For regression, pass point predictions instead of softmax outputs, construct the quantifier with
 `score='abs_error'`, and give the tolerance `tol` (in the units of the target) on each call; it

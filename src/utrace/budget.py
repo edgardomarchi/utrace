@@ -87,7 +87,7 @@ class SingleEstimandBound:
     description : str
         The estimand in words.
     n : int
-        Number of values bounded: valid samples.
+        Number of values bounded: valid samples, or units (`uncertainty_budget(..., units=...)`).
     mean : float
         Their mean (`1 - mean` is the point estimate).
     lower : float
@@ -98,7 +98,10 @@ class SingleEstimandBound:
         The bound, its level and what it ran over.
     components : tuple of BudgetComponent
         `V`: `error, accepted_not_covered, selection, margin`; `W`: `error, selection, margin`;
-        summing to `U_delta` (to rounding).
+        summing to `U_delta` (to rounding). With units, every component is unit-averaged.
+    over : str
+        `'samples'`, or `'units'` when the values are per-unit means (the estimand is then
+        unit-averaged).
     """
     estimand: str
     description: str
@@ -108,6 +111,7 @@ class SingleEstimandBound:
     U_delta: float
     method: str
     components: tuple[BudgetComponent, ...]
+    over: str = "samples"
 
     @property
     def total(self) -> float:

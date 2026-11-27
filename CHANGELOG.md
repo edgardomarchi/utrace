@@ -53,6 +53,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   term the paper drops), each with components summing to it (`error`, the structural terms, and the
   statistical `margin`). `bound=` selects the bound; the default sums are formed in the jitted
   evaluation, and the per-sample values are transferred only for a bound that needs them.
+- `uncertainty_budget(..., units=...)`: the independent unit of each evaluation sample (e.g. the
+  patient of each pixel). `V`, `W` and their components are averaged within each unit and the bound
+  is taken over the unit means, so the estimand becomes unit-averaged. `units` does not select
+  samples (that is `classes=`, with which it combines); the product bound stays sample-level.
 
 ### Changed
 - `scripts/btorch_MNIST_test.py` gains `--json PATH` (writes the plotted numbers), `--iterations N`
