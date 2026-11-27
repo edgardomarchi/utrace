@@ -24,7 +24,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `uncertainty_at`. `tol` is required for `'abs_error'`; `target_ratio` defaults to 1.0 and must
   lie in `(0, 1]`. Both belong to the call, so one calibrated quantifier can be swept over them
   without recalibrating or recompiling.
-
 - Concentration bounds as objects (`src/utrace/bounds.py`): `Bound`, `SampleStats`, `Hoeffding`,
   `EmpiricalBernstein` and `Tightest` (the largest of its members' lower bounds, the level split
   evenly), exported from `utrace`. `uncertainty_at(..., delta=..., bound=...)` selects the lower
@@ -37,7 +36,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from the ACDC notebook. It reads the per-sample values, so `uncertainty_at` computes them only
   for such a bound. Its result depends on the order of the values: by default they are permuted
   with a fixed seed (`order="permute"`, `seed=0`); `order="given"` keeps the evaluation order.
-
 - `UncertaintyQuantifier.uncertainty_budget(softmax, y, alpha, *, delta, tol=None, bound=None)`
   returns an `UncertaintyBudget`: the unchanged `UncertaintyEvaluation` of `uncertainty_at`, and
   `U_delta` split exactly into `error` (the model's error on the evaluation set),
@@ -67,6 +65,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `classes=` with a score that does not support it (`'abs_error'`) raises `ValueError` at
   construction.
 - `tol` must be finite and `> 0`.
+- Documentation: CONTRIBUTING gains a section on the bound objects and the uncertainty budget, and
+  the README a budget example for classification and for regression. Tracked documentation and
+  comments no longer refer to internal reports that are not part of the repository; the facts they
+  pointed to (dates, machines, commits, figures) are stated in place. `project_tree.md` is
+  regenerated.
 
 ### Deprecated
 - `eps=` on `get_uncertainty`, `tune_alpha` and `uncertainty_at`: an alias of `tol=` that emits a
