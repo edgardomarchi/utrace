@@ -1,6 +1,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .bounds import Betting, Bound, EmpiricalBernstein, Hoeffding, SampleStats, Tightest
+from .budget import BudgetComponent, ComponentKind, UncertaintyBudget
 from .scores.objects import LAC, AbsResidual, Score
 from .uncertaintyQuantifier import (
     SearchStatus,

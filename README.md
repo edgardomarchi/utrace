@@ -149,6 +149,28 @@ Bernstein bound, and `bound=` selects another (`utrace.bounds`: `'hoeffding'`,
 `'empirical_bernstein'`, or `'betting'`, the betting bound of Waudby-Smith and Ramdas, which adapts to
 the variance).
 
+### Where `U_delta` comes from
+
+`uncertainty_budget` returns the same evaluation as `uncertainty_at` (with `delta` required) and
+splits its `U_delta` exactly into the model's error on the evaluation set and what the method adds
+to it. Continuing the classification example:
+
+```python
+budget = uq.uncertainty_budget(eval_x, eval_y, alpha, delta=0.05)
+for c in budget.components:
+    print(f"{c.name:<22} {c.kind.value:<12} {c.value:.4f}")
+print(f"{'total = U_delta':<35} {budget.total:.4f}")
+print(f"{'error_upper':<35} {budget.error_upper:.4f}")
+```
+
+The components are `error` (the top-1 error, kind `model`); `accepted_not_covered` (correct
+answers whose set is empty) and `selection` (multi-label sets, where `1/|C|` is credited against how
+often the top-1 label is actually right), both `structural`; and `coverage` and `efficiency`, the
+two `statistical` terms of the confidence margin `U_delta - U_empirical`. `selection` is not clipped
+and can be slightly negative on a finite sample. `error_upper` is the direct Clopper-Pearson upper
+bound on the error from the same labels, for comparison. For regression the same terms are defined
+with the tolerance window `y_hat ± tol` in place of the top-1 label.
+
 For regression, pass point predictions instead of softmax outputs, construct the quantifier with
 `score='abs_error'`, and give the tolerance `tol` (in the units of the target) on each call; it
 belongs to the call, so one calibrated quantifier can be evaluated for several tolerances:

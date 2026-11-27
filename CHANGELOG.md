@@ -38,6 +38,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for such a bound. Its result depends on the order of the values: by default they are permuted
   with a fixed seed (`order="permute"`, `seed=0`); `order="given"` keeps the evaluation order.
 
+- `UncertaintyQuantifier.uncertainty_budget(softmax, y, alpha, *, delta, tol=None, bound=None)`
+  returns an `UncertaintyBudget`: the unchanged `UncertaintyEvaluation` of `uncertainty_at`, and
+  `U_delta` split exactly into `error` (the model's error on the evaluation set),
+  `accepted_not_covered` and `selection` (structural) and `coverage` and `efficiency`
+  (statistical), each a `BudgetComponent` with a `ComponentKind` and the method that produced it;
+  plus `error_upper`, the Clopper-Pearson upper bound on the error. For `'lac'` the terms are the
+  usual decomposition of `U_delta - err` (empty set on a correct answer, multi-label, coverage,
+  `EC`). New `Score.accepted` (the acceptance indicator `1{y in B}`), implemented for both scores;
+  its default raises `NotImplementedError`, so only `uncertainty_budget` needs it.
+
 ### Changed
 - `scripts/btorch_MNIST_test.py` gains `--json PATH` (writes the plotted numbers), `--iterations N`
   (repetitions of the noise sweep) and `--seed N` (a reproducible run). Without them its behaviour

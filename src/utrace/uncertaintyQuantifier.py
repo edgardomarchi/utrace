@@ -18,6 +18,7 @@ from jax import jit, lax
 from jax import numpy as jnp
 
 from .bounds import Bound, SampleStats, resolve_bound
+from .budget import BudgetComponent, ComponentKind, UncertaintyBudget
 from .scores.objects import Score, resolve_score
 from .utils import _bucket_size, _masked_quantile_higher
 from .utils.tensors import to_jax
@@ -617,6 +618,57 @@ def _evaluate_samples_at_alpha(
     q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
     is_covered, succ, z = score.per_sample(y, smx, q_hat, valid_mask, params)
     return is_covered & valid_mask, succ, z
+
+
+@partial(jit, static_argnames=["score"])
+def _budget_sums_at_alpha(
+    alpha: jnp.ndarray,
+    y: jnp.ndarray,
+    smx: jnp.ndarray,
+    valid_mask: jnp.ndarray,
+    cs_padded: jnp.ndarray,
+    n_cs: jnp.ndarray,
+    score: Score,
+    params=(),
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """The in-trace sums behind `uncertainty_budget`'s structural terms, at one fixed alpha.
+
+    Over the valid samples, with `B` the score's acceptance region (`score.accepted`) and `C` the set
+    or interval at `q_hat`: `n_in_B = #{y in B}`, `n_in_B_not_C = #{y in B, y not in C}` and
+    `sum_selection = sum 1{y in C} (1{y in B} - pi)`. `pi` is `score.per_sample`'s `z`, which on a
+    valid covered sample is its `pi` for both scores (a covered `LAC` set is never empty). Nothing
+    per sample leaves the trace.
+    """
+    q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
+    is_covered, _, z = score.per_sample(y, smx, q_hat, valid_mask, params)
+    acc = score.accepted(y, smx, params) & valid_mask
+    cov = is_covered & valid_mask
+    n_in_B = acc.sum()
+    n_in_B_not_C = (acc & ~cov).sum()
+    sum_selection = jnp.where(cov, acc.astype(jnp.float64) - z, 0.0).sum()
+    return n_in_B, n_in_B_not_C, sum_selection
+# The `method` text of the budget's score-dependent components, by `Score.name`.
+_BUDGET_TEXT = {
+    "lac": {"error": "top-1 error on the evaluation set",
+            "accepted_not_covered": "empty set, top-1 answer correct",
+            "selection": "multi-label sets: 1/|C| against P(top-1 correct) (uniform selection)"},
+    "abs_error": {"error": "|y - y_hat| > tol on the evaluation set",
+                  "accepted_not_covered": "|y - y_hat| <= tol but y outside the interval",
+                  "selection": "covered: 1{|y - y_hat| <= tol} - pi (uniform selection)"},
+    None: {"error": "y outside the acceptance region B",
+           "accepted_not_covered": "y in B, not in C",
+           "selection": "covered: 1{y in B} - pi (uniform selection)"},
+}
+
+
+class _EvalContext(NamedTuple):
+    """What `uncertainty_budget` reuses from an evaluation: the padded arguments of the jitted
+    evaluation functions (`alpha, y, output, valid_mask, cs_padded, n_cs, score, params`) and the
+    number of unpadded rows `B`."""
+    eval_args: tuple
+    B: int
+
+
 class UncertaintyQuantifier:
     """Wrapper for uncertainty quantification using U-TraCE.
 
@@ -1266,6 +1318,101 @@ class UncertaintyQuantifier:
 
         return U, alpha
 
+    def uncertainty_budget(self, softmax, y, alpha, *, delta, tol=None, bound=None) -> UncertaintyBudget:
+        """`uncertainty_at` with `delta`, and the exact split of its `U_delta` into the model's error
+        and what the method adds to it.
+
+        With `B` the score's acceptance region (`{argmax}` for `'lac'`, `y_hat ± tol` for
+        `'abs_error'`), `C` the prediction set or interval at `alpha`, `pi` the per-sample efficiency
+        (`1/|C|`, or `|C ∩ B| / |C|`), and means over the valid evaluation samples (those of
+        `self.classes`, or all):
+
+            U_delta = error + accepted_not_covered + selection + coverage + efficiency
+
+        - `error = mean 1{y not in B}` (kind `model`): the model's error on this set, top-1 error for
+          `'lac'`, `|y - y_hat| > tol` for `'abs_error'`;
+        - `accepted_not_covered = mean 1{y in B, y not in C}` (`structural`): acceptable answers the
+          set leaves out; for `'lac'` exactly the correct answers whose set is empty;
+        - `selection = mean 1{y in C} (1{y in B} - pi)` (`structural`): for `'lac'` the multi-label
+          term, `sum_{k>=2} P(covered, |C| = k) (P(top-1 correct | covered, |C| = k) - 1/k)`. It is
+          NOT clipped: on a finite sample it can be slightly negative. Its expectation is `>= 0`
+          under the paper's uniform-selection assumption (then `E[1{y in B} | y in C] >= E[pi | y in
+          C]`), so a clearly negative value is evidence against that assumption;
+        - `coverage = EC (coverage - coverage_lower)` (`statistical`, Clopper-Pearson at
+          `delta/2`) and `efficiency = coverage_lower (EC - EC_lower)` (`statistical`, `bound` at
+          `delta/2`).
+
+        The first three sum to `U_empirical - error`, the last two to `U_delta - U_empirical`;
+        exact in real arithmetic, equal to rounding in floating point. For `'lac'` they are the
+        terms of the usual decomposition of `U_delta - err_eval` (empty set with a correct answer,
+        multi-label, coverage, `EC`). `error_upper` is the direct Clopper-Pearson upper bound on the
+        error probability at level `1 - delta`, a comparator, not a component.
+
+        The structural sums are formed inside the jitted evaluation (no per-sample array leaves
+        the device), plus the per-sample path of `uncertainty_at` when `bound` needs the values.
+        Same assumptions as `U_delta`: independent, representative evaluation samples.
+
+        Parameters
+        ----------
+        softmax, y, alpha, tol, bound
+            As in `uncertainty_at`.
+        delta : float
+            Required: a real number in `(0, 1)`.
+
+        Returns
+        -------
+        UncertaintyBudget
+            `evaluation` is exactly `uncertainty_at(softmax, y, alpha, tol=tol, delta=delta,
+            bound=bound)`. With `alpha` `nan`, or no valid evaluation sample, `components` is empty
+            and `error`, `error_upper` are `nan`.
+
+        Raises
+        ------
+        ValueError
+            If `tol` does not suit the score, if `delta` is `None` or not a real number in `(0, 1)`,
+            if `bound` is an unknown string (`TypeError` if not a string or `Bound`), and under every
+            condition `uncertainty_at` raises on its data.
+        NotImplementedError
+            If the score does not implement `Score.accepted`.
+        """
+        where = "uncertainty_budget"
+        params = self.score_.resolve_params(tol=tol, target_ratio=None, where=where)
+        if delta is None:
+            raise ValueError(f"{where}: delta is required, a real number in (0, 1), got None.")
+        try:
+            delta = _check_delta(delta)
+        except ValueError:
+            raise ValueError(f"{where}: delta must be a real number in (0, 1), got {delta!r}.") from None
+        bound = resolve_bound(bound)
+        evaluation, ctx = self._evaluate_impl(softmax, y, alpha, params, delta, bound, where)
+        nan = float("nan")
+        if ctx is None or evaluation.n_valid == 0:
+            return UncertaintyBudget(evaluation=evaluation, components=(), error=nan, error_upper=nan)
+
+        n_in_B, n_in_B_not_C, sum_selection = _budget_sums_at_alpha(*ctx.eval_args)
+        n = evaluation.n_valid
+        n_in_B, n_in_B_not_C = int(n_in_B), int(n_in_B_not_C)
+        k_err = n - n_in_B
+        error = k_err / n
+        from scipy.special import betaincinv
+        error_upper = float(betaincinv(k_err + 1.0, float(n - k_err), 1.0 - delta)) if k_err < n else 1.0
+        EC, cov, cov_lo, EC_lo = (float(evaluation.EC), float(evaluation.coverage),
+                                  float(evaluation.coverage_lower), float(evaluation.EC_lower))
+        text = _BUDGET_TEXT.get(self.score_.name, _BUDGET_TEXT[None])
+        components = (
+            BudgetComponent("error", error, ComponentKind.MODEL, text["error"]),
+            BudgetComponent("accepted_not_covered", n_in_B_not_C / n, ComponentKind.STRUCTURAL,
+                            text["accepted_not_covered"]),
+            BudgetComponent("selection", float(sum_selection) / n, ComponentKind.STRUCTURAL,
+                            text["selection"]),
+            BudgetComponent("coverage", EC * (cov - cov_lo), ComponentKind.STATISTICAL,
+                            "Clopper-Pearson at delta/2"),
+            BudgetComponent("efficiency", cov_lo * (EC - EC_lo), ComponentKind.STATISTICAL,
+                            f"{bound.describe()} at delta/2"),
+        )
+        return UncertaintyBudget(evaluation=evaluation, components=components,
+                                 error=error, error_upper=error_upper)
+
     def tune_alpha(self, softmax, y, max_iters: int = 30, *,
                    tol=None, target_ratio=None, eps=None) -> np.float64:
         """Select alpha on a tuning set, without measuring `U` on it.
@@ -1405,6 +1552,16 @@ class UncertaintyQuantifier:
         if bound is not None and delta is None:
             raise ValueError("uncertainty_at: bound= needs delta; got delta=None.")
         bound = resolve_bound(bound)
+        evaluation, _ = self._evaluate_impl(softmax, y, alpha, params, delta, bound, "uncertainty_at")
+        return evaluation
+
+    def _evaluate_impl(self, softmax, y, alpha, params, delta, bound, where: str):
+        """The body of `uncertainty_at` after its argument checks, shared with `uncertainty_budget`.
+
+        Returns `(evaluation, ctx)`: the `UncertaintyEvaluation`, and an `_EvalContext` holding the
+        padded jit arguments and the unpadded row count (`None` when `alpha` is `nan`, where nothing is
+        evaluated). `where` names the public method in the error messages.
+        """
         if np.isnan(alpha):
             nan = np.float64('nan')
             return UncertaintyEvaluation(
@@ -1413,25 +1570,25 @@ class UncertaintyQuantifier:
                 coverage_lower=None if delta is None else nan,
                 EC_lower=None if delta is None else nan,
                 U_delta=None if delta is None else nan,
-            )
+            ), None
 
         # Same conversion chain as the tuning path (see _search_single_dataset): to_jax
         # on both, then np.asarray, so a device-resident tensor never reaches numpy
         # directly and no committed-device mismatch reaches the jit.
         smx = np.asarray(to_jax(softmax))
         y_arr = self.score_.prepare_labels(
-            np.asarray(_labels_to_jax(y, "uncertainty_at", self.score_)), smx, "uncertainty_at"
+            np.asarray(_labels_to_jax(y, where, self.score_)), smx, where
         )
 
         N = self._state.N
         if N == 0:
-            raise ValueError("The model must be calibrated before calling uncertainty_at.")
+            raise ValueError(f"The model must be calibrated before calling {where}.")
         if smx.shape[0] != y_arr.shape[0]:
             raise ValueError(
                 f"softmax has {smx.shape[0]} rows but y has {y_arr.shape[0]} labels."
             )
         self._check_item_shape(smx)
-        self.score_.check_label_range(y_arr, self._label_range(), "uncertainty_at")
+        self.score_.check_label_range(y_arr, self._label_range(), where)
         floor = np.float64(1.0) / np.float64(N + 1)
         alpha_f = np.float64(alpha)
         if not (floor <= alpha_f <= 1.0):
@@ -1470,6 +1627,7 @@ class UncertaintyQuantifier:
         U, EC, n_covered, n_valid, n_succ, sum_sq_dev = _evaluate_at_alpha(*eval_args)
         U, EC = np.float64(U), np.float64(EC)
         n_covered, n_valid, n_succ = int(n_covered), int(n_valid), int(n_succ)
+        ctx = _EvalContext(eval_args=eval_args, B=B)
         if n_valid == 0:
             nan = np.float64('nan')
             return UncertaintyEvaluation(
@@ -1478,14 +1636,14 @@ class UncertaintyQuantifier:
                 coverage_lower=None if delta is None else nan,
                 EC_lower=None if delta is None else nan,
                 U_delta=None if delta is None else nan,
-            )
+            ), ctx
         coverage = np.float64(n_covered / n_valid)
         U_empirical = np.float64(1.0 - EC * coverage)
         if delta is None:
             return UncertaintyEvaluation(
                 U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
                 coverage=coverage, U_empirical=U_empirical,
-            )
+            ), ctx
         values = None
         if bound.needs_values and n_succ > 0:
             _, succ, z = _evaluate_samples_at_alpha(*eval_args)
@@ -1498,4 +1656,4 @@ class UncertaintyQuantifier:
             U=U, EC=EC, n_covered=n_covered, n_valid=n_valid, n_succ=n_succ,
             coverage=coverage, U_empirical=U_empirical, delta=delta,
             coverage_lower=coverage_lower, EC_lower=EC_lower, U_delta=U_delta,
-        )
+        ), ctx

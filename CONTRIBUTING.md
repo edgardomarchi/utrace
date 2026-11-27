@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `839 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (846 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
+Expect `867 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (874 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
