@@ -171,6 +171,11 @@ and can be slightly negative on a finite sample. `error_upper` is the direct Clo
 bound on the error from the same labels, for comparison. For regression the same terms are defined
 with the tolerance window `y_hat ± tol` in place of the top-1 label.
 
+`budget.U_delta_V` and `budget.U_delta_W` are two single bounds beside it, each one lower confidence
+bound at level `1 - delta` on a mean of per-sample values in `[0, 1]`: `V = pi 1{y in C}`, whose
+`1 - E[V]` is the same `U*` that `U_delta` bounds as a product of two bounds, and `W`, which adds the
+correct answers the set leaves out (`budget.V.components`, `budget.W.components` give their splits).
+
 For regression, pass point predictions instead of softmax outputs, construct the quantifier with
 `score='abs_error'`, and give the tolerance `tol` (in the units of the target) on each call; it
 belongs to the call, so one calibrated quantifier can be evaluated for several tolerances:

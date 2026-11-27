@@ -47,6 +47,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   usual decomposition of `U_delta - err` (empty set on a correct answer, multi-label, coverage,
   `EC`). New `Score.accepted` (the acceptance indicator `1{y in B}`), implemented for both scores;
   its default raises `NotImplementedError`, so only `uncertainty_budget` needs it.
+- Single-estimand bounds in the budget: `budget.V` and `budget.W` (`SingleEstimandBound`), one lower
+  confidence bound at the full `delta` on the mean of `V = pi 1{y in C}` (`U_delta_V`, a direct bound
+  on the paper's `U* = 1 - e p`) and of `W = V + 1{y in B, y not in C}` (`U_delta_W`, which keeps the
+  term the paper drops), each with components summing to it (`error`, the structural terms, and the
+  statistical `margin`). `bound=` selects the bound; the default sums are formed in the jitted
+  evaluation, and the per-sample values are transferred only for a bound that needs them.
 
 ### Changed
 - `scripts/btorch_MNIST_test.py` gains `--json PATH` (writes the plotted numbers), `--iterations N`

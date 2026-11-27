@@ -168,13 +168,18 @@ Out of scope for the current script-migration work. Recorded here so the context
   0.4.0; in 0.5.0 delete the helper, the `eps=None` parameter of the three methods and the alias
   tests in `tests/core/test_score_objects.py`, and add a `### Removed` CHANGELOG entry.
 
-- **A bound on a single estimand that includes the dropped term.** `U_delta` bounds
+- **A bound on a single estimand that includes the dropped term.** [IMPLEMENTED in
+  `uncertainty_budget`, beside the product bound, which is unchanged.] `U_delta` bounds
   `U* = 1 - e * p` (`p` the coverage, `e = E[pi | covered]`), the product of two separately bounded
   terms. The paper's identity drops the event that the prediction is acceptable although the truth
   is not in the set, `P(y in B, y not in C)` (classification with `LAC`: `P(C empty, y_hat = y)`).
-  A tighter and simpler statement is one lower confidence bound, at level `delta`, on the mean of
-  `W = 1{y in C} * pi + 1{y in B, y not in C}`, which is in `[0, 1]` per sample, instead of the
-  current union bound over two bounds. Needs its own derivation and Monte Carlo check.
+  `uncertainty_budget` now gives one lower confidence bound, at the full `delta`, on the mean of
+  `W = 1{y in C} * pi + 1{y in B, y not in C}` (`U_delta_W`, on `U*_W = U* - P(y in B, y not in C)`)
+  and on the mean of `V = 1{y in C} * pi` (`U_delta_V`, on the paper's `U*` itself), each in `[0, 1]`
+  per sample; Monte Carlo validity checks in `tests/core/test_single_estimand_montecarlo.py`. Open:
+  whether either should replace the product `U_delta` as the headline bound of `uncertainty_at`
+  (a numbers-changing decision), and the derivation of `U*_W` against the error probability under the
+  uniform-selection assumption, written out in the docs.
 
 - **Quantile-index departure: canonical order statistic or keep the conservative one?**
   `_masked_quantile_higher` returns one order statistic above the canonical split-conformal

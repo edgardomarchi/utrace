@@ -18,7 +18,12 @@ from jax import jit, lax
 from jax import numpy as jnp
 
 from .bounds import Bound, SampleStats, resolve_bound
-from .budget import BudgetComponent, ComponentKind, UncertaintyBudget
+from .budget import (
+    BudgetComponent,
+    ComponentKind,
+    SingleEstimandBound,
+    UncertaintyBudget,
+)
 from .scores.objects import Score, resolve_score
 from .utils import _bucket_size, _masked_quantile_higher
 from .utils.tensors import to_jax
@@ -630,23 +635,55 @@ def _budget_sums_at_alpha(
     n_cs: jnp.ndarray,
     score: Score,
     params=(),
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """The in-trace sums behind `uncertainty_budget`'s structural terms, at one fixed alpha.
+) -> tuple[jnp.ndarray, ...]:
+    """The in-trace sums behind `uncertainty_budget`, at one fixed alpha.
 
     Over the valid samples, with `B` the score's acceptance region (`score.accepted`) and `C` the set
-    or interval at `q_hat`: `n_in_B = #{y in B}`, `n_in_B_not_C = #{y in B, y not in C}` and
-    `sum_selection = sum 1{y in C} (1{y in B} - pi)`. `pi` is `score.per_sample`'s `z`, which on a
-    valid covered sample is its `pi` for both scores (a covered `LAC` set is never empty). Nothing
-    per sample leaves the trace.
+    or interval at `q_hat`: `n_in_B = #{y in B}`, `n_in_B_not_C = #{y in B, y not in C}`,
+    `sum_selection = sum 1{y in C} (1{y in B} - pi)`, and the sum and centred sum of squares of the
+    single estimands `V = pi 1{y in C}` and `W = V + 1{y in B, y not in C}` (means formed in the
+    same trace). `pi` is `score.per_sample`'s `z`, which on a valid covered sample is its `pi` for
+    both scores (a covered `LAC` set is never empty). Nothing per sample leaves the trace.
+
+    Returns `(n_in_B, n_in_B_not_C, sum_selection, sum_V, ssd_V, sum_W, ssd_W)`.
     """
+    acc, cov, V, W = _budget_terms(alpha, y, smx, valid_mask, cs_padded, n_cs, score, params)
+    n_in_B = acc.sum()
+    n_in_B_not_C = (acc & ~cov).sum()
+    sum_selection = jnp.where(cov, acc.astype(jnp.float64) - V, 0.0).sum()
+    n_valid = jnp.maximum(valid_mask.sum(), 1)
+    sum_V, sum_W = V.sum(), W.sum()
+    ssd_V = jnp.where(valid_mask, (V - sum_V / n_valid) ** 2, 0.0).sum()
+    ssd_W = jnp.where(valid_mask, (W - sum_W / n_valid) ** 2, 0.0).sum()
+    return n_in_B, n_in_B_not_C, sum_selection, sum_V, ssd_V, sum_W, ssd_W
+
+
+def _budget_terms(alpha, y, smx, valid_mask, cs_padded, n_cs, score, params):
+    """Per-sample `(accepted, covered, V, W)` over the valid samples (0/False elsewhere). Traced;
+    shared by the two jitted budget functions."""
     q_hat = _q_hat_from_alpha(cs_padded, n_cs, alpha)
     is_covered, _, z = score.per_sample(y, smx, q_hat, valid_mask, params)
     acc = score.accepted(y, smx, params) & valid_mask
     cov = is_covered & valid_mask
-    n_in_B = acc.sum()
-    n_in_B_not_C = (acc & ~cov).sum()
-    sum_selection = jnp.where(cov, acc.astype(jnp.float64) - z, 0.0).sum()
-    return n_in_B, n_in_B_not_C, sum_selection
+    V = jnp.where(cov, z, 0.0)
+    W = V + (acc & ~cov).astype(jnp.float64)
+    return acc, cov, V, W
+
+
+@partial(jit, static_argnames=["score"])
+def _budget_samples_at_alpha(
+    alpha: jnp.ndarray,
+    y: jnp.ndarray,
+    smx: jnp.ndarray,
+    valid_mask: jnp.ndarray,
+    cs_padded: jnp.ndarray,
+    n_cs: jnp.ndarray,
+    score: Score,
+    params=(),
+) -> tuple[jnp.ndarray, ...]:
+    """Per-sample `(accepted, covered, V, W)`, shape `(n,)` each, padded rows included, for the
+    budget paths that need the values (a `needs_values` bound, or `units=`). Called only then."""
+    return _budget_terms(alpha, y, smx, valid_mask, cs_padded, n_cs, score, params)
 # The `method` text of the budget's score-dependent components, by `Score.name`.
 _BUDGET_TEXT = {
     "lac": {"error": "top-1 error on the evaluation set",
@@ -659,6 +696,25 @@ _BUDGET_TEXT = {
            "accepted_not_covered": "y in B, not in C",
            "selection": "covered: 1{y in B} - pi (uniform selection)"},
 }
+
+
+_ESTIMAND_TEXT = {
+    "V": "U* = 1 - E[pi 1{y in C}]: the paper's estimand (the one U_delta bounds as a product)",
+    "W": "U*_W = 1 - E[pi 1{y in C} + 1{y in B, y not in C}]: keeps the term the paper drops",
+}
+
+
+def _single_estimand(name, n, mean, ssd, values, bound, delta, structural, over) -> SingleEstimandBound:
+    """One lower confidence bound at the full `delta` on the mean of `V` or `W` (values in `[0, 1]`),
+    and its components: the given model/structural terms plus the statistical `margin`."""
+    stats = SampleStats(n=int(n), mean=mean, sum_sq_dev=ssd, values=values)
+    lower = max(0.0, float(bound.lower(stats, delta)))
+    method = f"{bound.describe()} at delta, over {n} {over}"
+    margin = BudgetComponent("margin", mean - lower, ComponentKind.STATISTICAL, method)
+    return SingleEstimandBound(
+        estimand=name, description=_ESTIMAND_TEXT[name], n=int(n), mean=mean, lower=lower,
+        U_delta=1.0 - lower, method=method, components=(*structural, margin),
+    )
 
 
 class _EvalContext(NamedTuple):
@@ -1389,7 +1445,7 @@ class UncertaintyQuantifier:
         if ctx is None or evaluation.n_valid == 0:
             return UncertaintyBudget(evaluation=evaluation, components=(), error=nan, error_upper=nan)
 
-        n_in_B, n_in_B_not_C, sum_selection = _budget_sums_at_alpha(*ctx.eval_args)
+        n_in_B, n_in_B_not_C, sum_selection, sum_V, ssd_V, sum_W, ssd_W = _budget_sums_at_alpha(*ctx.eval_args)
         n = evaluation.n_valid
         n_in_B, n_in_B_not_C = int(n_in_B), int(n_in_B_not_C)
         k_err = n - n_in_B
@@ -1410,8 +1466,22 @@ class UncertaintyQuantifier:
             BudgetComponent("efficiency", cov_lo * (EC - EC_lo), ComponentKind.STATISTICAL,
                             f"{bound.describe()} at delta/2"),
         )
+        anc, sel = components[1], components[2]
+        values_V = values_W = None
+        if bound.needs_values:
+            valid = np.asarray(ctx.eval_args[3])[:ctx.B]
+            _, _, V_s, W_s = (np.asarray(t)[:ctx.B] for t in _budget_samples_at_alpha(*ctx.eval_args))
+            values_V, values_W = V_s[valid].astype(np.float64), W_s[valid].astype(np.float64)
+        V = _single_estimand(
+            "V", n, float(sum_V) / n, float(ssd_V), values_V, bound, delta,
+            (components[0], anc, sel), "valid samples",
+        )
+        W = _single_estimand(
+            "W", n, float(sum_W) / n, float(ssd_W), values_W, bound, delta,
+            (components[0], sel), "valid samples",
+        )
         return UncertaintyBudget(evaluation=evaluation, components=components,
-                                 error=error, error_upper=error_upper)
+                                 error=error, error_upper=error_upper, V=V, W=W)
 
     def tune_alpha(self, softmax, y, max_iters: int = 30, *,
                    tol=None, target_ratio=None, eps=None) -> np.float64:
