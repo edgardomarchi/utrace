@@ -163,9 +163,10 @@ def _confidence_bound(
     """`(coverage_lower, EC_lower, U_delta)` as float64 scalars, on the host.
 
     Clopper-Pearson lower bound on the coverage at level `delta/2`; lower bound on
-    `E[1/|C| | covered]` at level `delta/2`, built from two one-sided margins at level `delta/4`
+    `e = E[pi | covered]` at level `delta/2`, built from two one-sided margins at level `delta/4`
     each, of which the smaller is taken; combined as `1 - EC_lower * coverage_lower` (union
-    bound over the three events). With `n = n_succ` and `z = 1/|C|` in `(0, 1]`:
+    bound over the three events). `pi` is the score's per-sample efficiency: `1/|C|` for `LAC`,
+    `|C ∩ B| / |C|` for `AbsResidual`; it lies in `[0, 1]`. With `n = n_succ` and `z = pi`:
 
     - Hoeffding: `m_H = sqrt(ln(4/delta) / (2 n))`.
     - Empirical Bernstein, Maurer & Pontil (2009), "Empirical Bernstein Bounds and Sample
