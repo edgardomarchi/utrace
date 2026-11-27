@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `796 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (803 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
+Expect `831 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (838 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
@@ -460,7 +460,9 @@ is deliberate.
   the smaller is a union bound, not a data-dependent level. `n_succ == 1` uses `m_H` alone and
   `n_succ == 0` gives 0. For `'lac'`, the range `[1/K, 1]` of `1/|C|` is not used (a rescaled variant is in
   `BACKLOG.md`). `uncertainty_at(..., bound=...)` replaces the bound on `e` with any
-  `utrace.bounds.Bound`, applied at `delta/2`; the default, `DEFAULT_BOUND =
+  `utrace.bounds.Bound`, applied at `delta/2` (`Hoeffding`, `EmpiricalBernstein`, `Tightest`, and
+  `Betting`, the hedged-capital betting bound of Waudby-Smith and Ramdas (2024), Theorem 3 and
+  Remark 3, which reads the per-sample values in a seeded permutation by default); the default, `DEFAULT_BOUND =
   Tightest((Hoeffding(), EmpiricalBernstein()))`, is exactly the formula above (each member at
   `delta/4`, the larger lower bound taken), and is pinned bit for bit by
   `tests/core/test_bound_objects.py`. The coverage bound is always Clopper-Pearson. It therefore

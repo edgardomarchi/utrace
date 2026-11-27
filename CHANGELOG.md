@@ -32,6 +32,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   level `delta/2`; the coverage bound stays Clopper-Pearson. The default, `Tightest((Hoeffding(),
   EmpiricalBernstein()))`, reproduces the previous `U_delta` bit for bit. `bound=` without `delta`
   raises `ValueError`.
+- `utrace.Betting` (`bound='betting'`): the betting lower confidence bound of Waudby-Smith and
+  Ramdas (J. R. Stat. Soc. B, 2024; Theorem 3 and Remark 3, hedged capital, lower side), ported
+  from the ACDC notebook. It reads the per-sample values, so `uncertainty_at` computes them only
+  for such a bound. Its result depends on the order of the values: by default they are permuted
+  with a fixed seed (`order="permute"`, `seed=0`); `order="given"` keeps the evaluation order.
 
 ### Changed
 - `scripts/btorch_MNIST_test.py` gains `--json PATH` (writes the plotted numbers), `--iterations N`
