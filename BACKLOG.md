@@ -1,6 +1,6 @@
 # U-TraCE — Backlog
 
-Open work only. Split out of MIGRATION.md on 2026-08-19 (see `.reports/2026-08-19_docs_restructure.md`). Entries resolved or superseded before the split were filtered out; where the resolution carried a finding worth keeping, it moved to FINDINGS.md instead.
+Open work only. Split out of MIGRATION.md on 2026-08-19. Entries resolved or superseded before the split were filtered out; where the resolution carried a finding worth keeping, it moved to FINDINGS.md instead.
 
 ## Backlog (does not block the phases)
 
@@ -79,7 +79,7 @@ Out of scope for the current script-migration work. Recorded here so the context
   described means rewriting that internal host padding to preserve device residency too — and
   once it does, `get_uncertainty` needs the same device-reconciliation logic `calibrate()` gained
   in commit `7f140ea` (see "Step C: device-commitment risk" in FINDINGS.md) and `get_uncertainty`
-  itself gained in Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`), or this item will
+  itself gained in Batch 1 (2026-08-21), or this item will
   reopen the exact `ValueError: Received incompatible devices for jitted computation` crash those
   two fixes closed — this time inside `_search_uncertainty`. Not implemented by this entry as
   currently scoped; recorded so the next person to pick it up does not have to rediscover it.
@@ -264,10 +264,9 @@ Out of scope for the current script-migration work. Recorded here so the context
 3. [RESOLVED] GPU validation for per-class calibration: was open when written (only the global
    `classes=None` path had a clean GPU run at the time). Since exercised end-to-end on an RTX
    3070 with real per-class (`classes=[C]`) `UncertaintyQuantifier` instances against real ACDC
-   data: `.reports/2026-08-21_stepE_device_coherence.md` (real model, real data, real per-class
-   streaming-calibration pipeline, 4 classes) and `.reports/2026-08-21_gpu_measurements_acdc.md`
-   (36-batch streaming loops per class, 4 classes, ~3.1M total scores written, summed wall-clock
-   and peak-memory figures reported per class).
+   data on 2026-08-21: the real model, real data and the real per-class streaming-calibration
+   pipeline (4 classes), and 36-batch streaming loops per class (4 classes, ~3.1M total scores
+   written), with wall-clock and peak-memory figures recorded per class.
 4. **Dependence between evaluation samples invalidates the independence assumption of `U_delta`.**
    `uncertainty_at(..., delta=...)` assumes independent evaluation samples. In segmentation the
    samples are pixels, and the pixels of one image are strongly dependent; the effective sample size
@@ -289,7 +288,6 @@ Out of scope for the current script-migration work. Recorded here so the context
    1/K)^2`). Multiplying both terms is invalid. Hoeffding's margin scales by `1 - 1/K` entirely, and
    `EC_lower` can then be clipped at `1/K` instead of 0. Not implemented: the measured gain is about
    0.0005 on `U_delta` in the MNIST notebook's regime, and the formula is easy to get wrong.
-   Source: `.reports/2026-10-15_empirical_bernstein_diagnostic.md`, A.4.
 7. **Asymmetric split of `delta` between the coverage and `EC` components.** The split is fixed at
    `delta/2` each (the `EC` half as `delta/4 + delta/4`). With the empirical Bernstein margin the
    `EC` component is far narrower than the coverage component in the notebook's regime, so giving
@@ -326,7 +324,7 @@ candidates for it.
    tiny at the N this project reaches (see item 3). In a metrological setting this is a
    contribution to the uncertainty budget that has to be declared, not optional polish.
    Caveat on the memory framing: halving the buffer's dtype would halve its footprint, but the
-   one full-scale ACDC OOM actually measured (`.reports/2026-08-21_stepE_device_coherence.md`,
+   one full-scale ACDC OOM actually measured (RTX 3070, 2026-08-21,
    `RESOURCE_EXHAUSTED: Out of memory while trying to allocate 2.03GiB`) was in the tuning-set
    padding/masking array inside `_get_uncertainty_jit_impl`, not in the conformity-score buffer
    itself — so "float32 buffer is the difference between the full ACDC dataset fitting and not"
@@ -341,7 +339,7 @@ candidates for it.
    measured on the Ryzen AI 7 PRO 350): jitting the buffer write amortises dispatch overhead, and
    the advantage shrinks as the batch grows and compute comes to dominate — **~13.5x at B=500**,
    **~2.3x at B=12000**, **~1.08x (near parity) at ACDC pixel scale (B=65000)**
-   (`.reports/2026-08-18_stepD_jit_marginal_diagnostic.md`). Separately, the defer-sort design
+   (step D diagnostic prototype, CPU, 2026-08-18). Separately, the defer-sort design
    measured **~357x faster streaming calibration at ~2M-score ACDC scale (7.2s → 20ms)** on the
    RTX 3070 (FINDINGS.md, "defer-sort" entry).
    None of this characterises end-to-end per-pixel UQ overhead in a full segmentation pipeline at
@@ -352,7 +350,7 @@ candidates for it.
 3. **Streaming calibration under a bounded memory budget.**
    [ESTABLISHED] The fixed-size buffer with a masked quantile lets calibration run over tens of
    millions of scores without holding them all — the ACDC majority class alone reached
-   **N≈67.5M at full scale** (`.reports/2026-08-21_stepE_device_coherence.md`). On the RTX 3070
+   **N≈67.5M at full scale** (2026-08-21). On the RTX 3070
    (8GB), the full ~150-patient dataset produced two distinct, separately-reproduced OOMs: the
    model forward pass at `BATCH_SIZE=200` (`torch.OutOfMemoryError`), and — independent of that —
    the tuning-set padding/masking array in `_get_uncertainty_jit_impl` at `BATCH_SIZE=20`
@@ -371,7 +369,7 @@ candidates for it.
    records the paper's argument that treating a model's scaled logits as an approximation to a
    probability distribution is a conceptual error — the reason the public API dropped `proba`
    from its method names. The implementation now exists, runs on GPU, and has been exercised on
-   real ACDC medical-imaging data end-to-end (`.reports/2026-08-21_stepE_device_coherence.md`).
+   real ACDC medical-imaging data end-to-end (RTX 3070, 2026-08-21).
    One specific claim in the source conversation for this entry — that the distinction between
    metrological traceability of outputs and data lineage was contributed to a BIPM working group
    ("BIPM TG-IA") — could not be substantiated: it does not appear anywhere in MIGRATION.md,

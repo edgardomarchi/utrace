@@ -543,8 +543,8 @@ torch-free — guarded directly by
 
 A change owns the documentation its own change falsifies, and corrects it in the same commit.
 Claims that were already false before the change are reported, not fixed, and go to a dedicated
-documentation pass. Deferring the first kind is what produced the drift the 2026-08-21 audit
-found (`.reports/2026-08-21_docs_audit.md`).
+documentation pass. Deferring the first kind is what produced the drift the 2026-08-21 docs
+audit found.
 
 Finding what a change falsified is a mechanical step, not a matter of recall. Take every symbol,
 file path and directory name added or removed in the diff, and `git grep` each one across all

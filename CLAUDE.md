@@ -23,8 +23,7 @@ build per hardware target) and `dev` is the default group, so pick exactly one. 
 GROUP only routes `torch`/`torchvision` to the right wheel index — it does NOT give `jax` GPU
 support. That comes from a separate EXTRA (`cuda13` / `rocm7-local`), which must be requested
 too, or `jax.default_backend()` silently falls back to `'cpu'` (with an easy-to-miss warning)
-while torch sees the GPU fine. Confirmed by resolution/execution on an RTX 3070 — see
-`.reports/2026-08-20_gpu_verification_3070.md` and `.reports/2026-08-20_gpu_packaging_fixes.md`;
+while torch sees the GPU fine. Confirmed by resolution/execution on an RTX 3070 (2026-08-20);
 the ROCm line below carries the identical defect by construction (same group/extra split) but
 was only checked by resolution, no ROCm hardware:
 

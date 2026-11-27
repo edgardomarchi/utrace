@@ -1,5 +1,6 @@
 """Regression test for the step-C device-commitment crash (FINDINGS.md "Step C:
-device-commitment risk"; fixed in `calibrate()`, see .reports/2026-08-21_stepE_device_coherence.md).
+device-commitment risk"; fixed in `calibrate()` by commit 7f140ea, "Reconcile argument devices in
+calibrate").
 
 INERT WITHOUT GPU HARDWARE. This test skips cleanly (not xfail, not silently green)
 whenever no GPU-backed jax device is present -- both other development machines and
