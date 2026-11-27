@@ -1,7 +1,6 @@
 """Regression test for the get_uncertainty device-resident-y crash (found by the
 2026-08-21 docs audit, H4(b); fixed alongside the same pattern already fixed in
-`calibrate()` -- see .reports/2026-08-21_stepE_device_coherence.md and
-.reports/2026-08-21_batch1_defect_fixes.md).
+`calibrate()` by commit 7f140ea; see FINDINGS.md, "Step C: device-commitment risk").
 
 Before the fix: `get_uncertainty(softmax, y)` called `np.asarray(y)` directly,
 without routing `y` through `to_jax` first (unlike `softmax`, which already did).

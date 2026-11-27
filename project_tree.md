@@ -35,6 +35,8 @@
 │   └── setsize_analysis.py
 ├── src
 │   └── utrace
+│       ├── bounds.py
+│       ├── budget.py
 │       ├── cli.py
 │       ├── __init__.py
 │       ├── __main__.py
@@ -62,6 +64,10 @@
 │   ├── core
 │   │   ├── test_alpha_setter_quantile_equiv.py
 │   │   ├── test_api.py
+│   │   ├── test_betting_montecarlo.py
+│   │   ├── test_betting.py
+│   │   ├── test_bound_objects.py
+│   │   ├── test_budget_units.py
 │   │   ├── test_buffer_sort_shape_stability.py
 │   │   ├── test_calibrate_device_reconciliation.py
 │   │   ├── test_calibrate_jit_marginal.py
@@ -79,14 +85,19 @@
 │   │   ├── test_label_validation.py
 │   │   ├── test_masked_quantile.py
 │   │   ├── test_max_n_overflow.py
+│   │   ├── test_per_sample_path.py
 │   │   ├── test_regression_confidence_bounds_montecarlo.py
 │   │   ├── test_regression_confidence_bounds.py
 │   │   ├── test_regression_task.py
 │   │   ├── test_scipy_import_is_lazy.py
+│   │   ├── test_score_accepted.py
 │   │   ├── test_score_objects.py
 │   │   ├── test_score_param_validation.py
 │   │   ├── test_search_status.py
-│   │   └── test_search_uncertainty.py
+│   │   ├── test_search_uncertainty.py
+│   │   ├── test_single_estimand_montecarlo.py
+│   │   ├── test_single_estimand.py
+│   │   └── test_uncertainty_budget.py
 │   └── integration
 │       └── torch
 │           ├── baselines
@@ -102,4 +113,4 @@
 │           └── test_torch_label_input.py
 └── uv.lock
 
-16 directories, 87 files
+16 directories, 98 files

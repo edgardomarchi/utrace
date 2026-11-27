@@ -223,6 +223,23 @@ at least `U_empirical` (0.1766), the same expression as `U` with the measured co
 smallest alpha for which the prediction intervals overlap the tolerance window by at least that
 fraction on average. With the default the intervals lie inside the window, so `U` equals `alpha`.
 
+The budget works the same way for regression, with `tol` given on the call. Continuing the
+regression example:
+
+```python
+budget = uq.uncertainty_budget(eval_x, eval_y, alpha, tol=tol, delta=0.05)
+for c in budget.components:
+    print(f"{c.name:<22} {c.kind.value:<12} {c.value:.4f}")
+print(f"{'total = U_delta':<35} {budget.total:.4f}")
+print(f"{'U_delta_W':<35} {budget.U_delta_W:.4f}")
+print(f"{'error_upper':<35} {budget.error_upper:.4f}")
+```
+
+Here `error` is the fraction of evaluation targets outside the tolerance window. With the default
+`target_ratio` the intervals lie inside the window, so `pi = 1` and `selection` is 0, while
+`accepted_not_covered` counts the targets inside the window but outside the interval; `W` is then
+exactly `1{|y - y_hat| <= tol}`, and `U_delta_W` is a direct bound on the error.
+
 Example scripts can be found in the `scripts` folder, and the jupytext notebooks in `notebooks/`
 (how to run them is described in `CONTRIBUTING.md`, "Notebooks").
 

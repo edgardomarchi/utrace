@@ -14,7 +14,7 @@ class Pytorch_wrapper(nn.Module, BaseEstimator):
         self.__is_fitted = True
         # Materialized here, not as the default value: a mutable default (np.arange(4)) would be
         # evaluated once at class-definition time and shared, by reference, across every instance
-        # constructed without an explicit classes= - see .reports/2026-08-19_ruff_rung1_completion.md.
+        # constructed without an explicit classes= (ruff B008).
         self.classes_ = classes if classes is not None else np.arange(4)
         self.device = torch.device(device)
         self.model.to(self.device)

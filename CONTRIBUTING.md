@@ -342,6 +342,69 @@ floats would compile a second trace). `evaluate` and `per_sample` take `q_hat`, 
 which is what keeps classification bit-for-bit unchanged
 (`tests/core/test_score_objects.py`); do not "simplify" them.
 
+### Bounds and the uncertainty budget
+
+**Bound objects** (`src/utrace/bounds.py`, numpy only). A `Bound` turns `SampleStats(n, mean,
+sum_sq_dev, values)` and a failure probability into a one-sided lower confidence bound on the mean
+of i.i.d. values in `[0, 1]`, using the whole level it is given. `Hoeffding` and
+`EmpiricalBernstein` read the sufficient statistics; `Tightest(members)` takes the largest of its
+members' lower bounds, splitting the level evenly. `uncertainty_at(..., delta=..., bound=...)`
+applies the bound to the `EC` term of `U_delta` at `delta/2` (`bound=` without `delta` raises
+`ValueError`); the coverage term is always Clopper-Pearson. The default, `DEFAULT_BOUND =
+Tightest((Hoeffding(), EmpiricalBernstein()))`, is the formula of "`U_delta` uses the measured
+coverage" below, bit for bit (`tests/core/test_bound_objects.py`), so the default numbers are
+unchanged.
+
+**`Betting`** (Waudby-Smith and Ramdas, 2024; `bound='betting'`) reads the values themselves
+(`needs_values`), so `uncertainty_at` transfers the per-sample `pi` of the covered samples only for
+such a bound. Its result depends on the order of the values: `order="permute"` (default) applies
+`np.random.default_rng(seed).permutation` with `seed=0` first, `order="given"` keeps the evaluation
+order. Like every bound here it assumes independent values; it does not fix dependence between
+samples (use `units=`, below).
+
+**`uncertainty_budget(softmax, y, alpha, *, delta, tol=None, bound=None, units=None)`** returns
+an `UncertaintyBudget` whose `evaluation` is exactly `uncertainty_at(...)` and whose `components`
+split its `U_delta` exactly (to rounding), with `B` the score's acceptance region (`{argmax}` for
+`'lac'`, `y_hat ± tol` for `'abs_error'`; `Score.accepted`):
+
+| component | kind | value |
+|---|---|---|
+| `error` | model | `mean 1{y not in B}`: the model's error on the evaluation set |
+| `accepted_not_covered` | structural | `mean 1{y in B, y not in C}` (`'lac'`: empty set, correct answer) |
+| `selection` | structural | `mean 1{y in C} (1{y in B} - pi)` (`'lac'`: the multi-label term) |
+| `coverage` | statistical | `EC (coverage - coverage_lower)` |
+| `efficiency` | statistical | `coverage_lower (EC - EC_lower)` |
+
+`error_upper` is the Clopper-Pearson upper bound on the error probability at level `1 - delta`,
+from the same labels: the comparator that needs no assumption about the sets, not a component.
+`budget.V` and `budget.W` are single-estimand bounds, each one lower confidence bound at the full
+`delta` (no split) on a mean of per-sample values in `[0, 1]`:
+
+- `V = pi 1{y in C}`: `1 - E[V] = 1 - e p` is the first paper's `U*`, the quantity `U_delta` bounds
+  as a product of two bounds; `U_delta_V` bounds it directly. Components: `error`,
+  `accepted_not_covered`, `selection`, `margin` (statistical, `mean - lower`).
+- `W = V + 1{y in B, y not in C}`: keeps the term the paper drops, so `1 - E[W] = U* - P(y in B,
+  y not in C)`. Components: `error`, `selection`, `margin`.
+
+**`units=` versus `classes=`.** `classes=` is group-conditional calibration and evaluation: it
+restricts both to the samples whose label is in the group. `units=` gives the id of the independent
+unit each evaluation sample belongs to (the patient of each pixel); it selects nothing. With it,
+`V`, `W` and their components are averaged within each unit over its valid samples and the bound is
+taken over the unit means (in sorted-id order), so the estimand becomes unit-averaged. The two
+combine (`classes=[k]` with `units=patient_ids`). `units=` applies only to `V` and `W`; the product
+bound stays sample-level.
+
+**`selection` is not clipped.** It is the sample mean of `1{y in C} (1{y in B} - pi)` and can be
+slightly negative on a finite sample. Under the paper's uniform-selection assumption, stated as an
+inequality (given the set, the answer is acceptable at least as often as `pi` credits), its
+expectation is `>= 0`, so a clearly negative value is evidence against the assumption. As bounds on
+the model's error probability, `V` and `W`, like `U` and `U_delta`, are valid only under that
+assumption; as bounds on their own estimands they need only independent samples (or units).
+
+A new score that should support the budget implements `Score.accepted(y, output, params)` (traced,
+boolean `(n,)`); the base-class default raises `NotImplementedError` naming `uncertainty_budget`,
+and every other method works without it.
+
 ### Passing tensors to the core
 
 Pass backend tensors directly to `calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`. `to_jax()` (in
@@ -543,8 +606,8 @@ torch-free — guarded directly by
 
 A change owns the documentation its own change falsifies, and corrects it in the same commit.
 Claims that were already false before the change are reported, not fixed, and go to a dedicated
-documentation pass. Deferring the first kind is what produced the drift the 2026-08-21 audit
-found (`.reports/2026-08-21_docs_audit.md`).
+documentation pass. Deferring the first kind is what produced the drift the 2026-08-21 docs
+audit found.
 
 Finding what a change falsified is a mechanical step, not a matter of recall. Take every symbol,
 file path and directory name added or removed in the diff, and `git grep` each one across all
