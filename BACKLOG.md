@@ -1,6 +1,6 @@
 # U-TraCE — Backlog
 
-Open work only. Split out of MIGRATION.md on 2026-08-19 (see `.reports/2026-08-19_docs_restructure.md`). Entries resolved or superseded before the split were filtered out; where the resolution carried a finding worth keeping, it moved to FINDINGS.md instead.
+Open work only. Split out of MIGRATION.md on 2026-08-19. Entries resolved or superseded before the split were filtered out; where the resolution carried a finding worth keeping, it moved to FINDINGS.md instead.
 
 ## Backlog (does not block the phases)
 
@@ -79,7 +79,7 @@ Out of scope for the current script-migration work. Recorded here so the context
   described means rewriting that internal host padding to preserve device residency too — and
   once it does, `get_uncertainty` needs the same device-reconciliation logic `calibrate()` gained
   in commit `7f140ea` (see "Step C: device-commitment risk" in FINDINGS.md) and `get_uncertainty`
-  itself gained in Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`), or this item will
+  itself gained in Batch 1 (2026-08-21), or this item will
   reopen the exact `ValueError: Received incompatible devices for jitted computation` crash those
   two fixes closed — this time inside `_search_uncertainty`. Not implemented by this entry as
   currently scoped; recorded so the next person to pick it up does not have to rediscover it.
@@ -101,41 +101,118 @@ Out of scope for the current script-migration work. Recorded here so the context
 
 - Noise-sweep scripts rebuild the dataset (and DataLoader) inside the iteration loop, partly to reshuffle the split per iteration and partly to change the noise level. Reconstructing the full dataset per iteration is wasteful — only the noise (and the split) need to change, not the 60000-sample base. Optimization: instantiate the base dataset (and loader) ONCE outside the loop, and inside the loop either mutate the transform's sigma (transform.std sigma — valid because AddGaussianNoise reads self.std in __call__, not __init__) or reassign it (dataset.transform = AddGaussianNoise(0., sigma)). IMPORTANT: the random_split must STAY inside the loop (with a varying generator) to preserve per-iteration reshuffling — only the dataset/loader construction moves out. Caveat: mutating transform.std from the main process only propagates with num_workers=0; with spawn/fork workers, each worker holds its own copy and the loader would need rebuilding (ties into the num_workers decision). Applies to several sweep scripts (MNIST_class_conditional, and others with a noise sweep). Behavior-adjacent — revalidate numbers after the change. Its own diagnostic + commit.
 
-- **Classifier/Regressor split: decided in principle, not designed.** A future split of the
-  public `UncertaintyQuantifier` into `UncertaintyQuantifierClassifier` and
-  `UncertaintyQuantifierRegressor` is anticipated (regression support is the basis for the second
-  publication referenced under "Research questions" below, and the current public API —
-  `calibrate`, `predict`, `get_uncertainty` — was already named task-agnostically for this, per
-  "Naming convention now in force" in FINDINGS.md), but this decision is recorded in no document
-  as of this entry — confirmed by `git grep`, zero matches for either class name or the phrase
-  "classifier/regressor" anywhere in `src/`, `tests/`, `scripts/`, or the other five documents,
-  except FINDINGS.md's own passing mention (see "Two further rungs were measured and deliberately
-  not taken" under "ruff adoption, rung 1"), which cites "Architecture / design direction" in
-  MIGRATION.md as if it documents the split — it does not; that section is entirely about
-  jit/vmap/state-PyTree design for the existing single class. Recording only: the split has been
-  decided in principle. Not decided: the module layout and the API surface each subclass exposes.
-  None of that is designed by this entry.
+- **Classifier/Regressor split: decided — one class, driven by score objects.** There is no
+  split into `UncertaintyQuantifierClassifier`/`UncertaintyQuantifierRegressor`. A single
+  `UncertaintyQuantifier` holds a score object (`self.score_`), and everything task-specific lives
+  in it: `src/utrace/scores/objects.py` defines the frozen-dataclass base `Score` and the two
+  shipped scores, `LAC` (`score='lac'`) and `AbsResidual` (`score='abs_error'`). The core never
+  branches on the task. Per-call parameters (`tol`, `target_ratio`) are resolved by the score into
+  a traced pytree (`TolParams`), so sweeping them on one calibrated instance compiles once. The
+  fixed search (`_search_uncertainty`: floor at `1/(N+1)`, smallest-feasible-alpha return,
+  `SearchStatus`/`SearchStatusWarning`; see FINDINGS.md, "Alpha search: floor, feasible-alpha
+  return, status propagation") is the one shared search; it takes its metric (`score.evaluate`)
+  and its rule (`score.feasible`/`score.step_up`) from the score. Classification is bit-for-bit
+  unchanged. New scores are `Score` subclasses; see the entries below.
 
-  **Status, 2026-11-20.** Regression is implemented on the branch `unify-clf-reg-utrace`
-  (`remotes/github/unify-clf-reg-utrace`) for the standard (absolute-residual) score, not merged.
-  The branch is based on current `main` and carries the fixed `_search_uncertainty` (floor at
-  `1/(N+1)`, smallest-feasible-alpha return, `SearchStatus`), generalized to a `risk_fn`-
-  parameterized search shared by both tasks. Its regression measure (`reg_risk_fn`) is the overlap
-  ratio between the conformal interval and a tolerance window. The split into two classes is still
-  not designed: the branch keeps a single class. Whatever base class the split introduces must own
-  that fixed search (`_search_uncertainty`, the one canonical entry point returning
-  `(alpha, U, status)`, with its `SearchStatus`/`SearchStatusWarning` machinery; see FINDINGS.md,
-  "Alpha search: floor, feasible-alpha return, status propagation"), not a copy of the pre-fix
-  version.
+- **Order-statistic search (candidate for the shared search).** The search criterion depends on
+  alpha only through `q_hat`, which itself takes only `N` distinct values (one per
+  calibration-buffer order statistic) — the search could run directly on the integer
+  order-statistic index instead of on continuous alpha via `fori_loop` bisection: integer
+  bisection over `{0, ..., N-1}` in `ceil(log2 N)` steps, with no oscillation and no
+  `max_iters`-parity dependence, because there is no continuous step function to straddle. It
+  plugs into the shared search without changing the score protocol: `score.evaluate` already takes
+  `q_hat` (not alpha), so the loop would set `q_hat = cs_sorted[k]` and call the same
+  `score.evaluate`/`score.feasible`. Changes every classification alpha and golden value, so it
+  would be opt-in (a static argument or a score attribute). Not designed, not started.
 
-- **Order-statistic search (candidate design for the Classifier/Regressor base class).** The
-  search criterion depends on alpha only through `q_hat`, which itself takes only `N` distinct
-  values (one per calibration-buffer order statistic) — the search could run directly on the
-  integer order-statistic index instead of on continuous alpha via `fori_loop` bisection:
-  integer bisection over `{0, ..., N-1}` in `ceil(log2 N)` steps, with no oscillation and no
-  `max_iters`-parity dependence, because there is no continuous step function to straddle. Recorded
-  as a candidate for the shared search the Classifier/Regressor base class (above) would own — not
-  designed here, not started.
+- **Closed form for constant `pi` (optional fast path).** With `AbsResidual` and the fixed window
+  `B = y_hat ± tol`, the interval and the window share their centre, so every covered sample has
+  `pi = min(1, tol/q_hat)`: the search is feasible exactly when `q_hat <= tol/target_ratio` (and
+  some tuning sample is covered), and the smallest such alpha is a `searchsorted` on the sorted
+  calibration buffer. An optional score member (e.g. `closed_form_alpha(cs_sorted, n_cs, params)`
+  returning `None` when not applicable) with the bisection as fallback; it must be tested against
+  the bisection. It changes regression alphas (exact step boundaries instead of dyadic bisection
+  points) and the last ulp of `EC` (`min(1, tol/q_hat)` vs. the intersection ratio). Recorded in
+  CONTRIBUTING.md, "Departures from the published paper"; not implemented.
+
+- **CQR and normalized CP as `IntervalScore` subclasses.** An intermediate `IntervalScore(Score)`
+  would own what `AbsResidual` and these two share: the overlap efficiency over `B = center ± tol`
+  (with the `q_hat == 0` guard), coverage, `predict -> (lower, upper)`, `TolParams` and the
+  `>= target_ratio` rule. A subclass supplies `cal_score`, `region` and `center(output)`.
+  Normalized CP: output `(n, 2) = (y_hat, sigma_hat)`, `s = |y - y_hat| / sigma_hat`,
+  `region = y_hat ± q_hat * sigma_hat`, `center = y_hat`; `pi` varies per sample, so the search is
+  needed (no closed form). CQR: output `(n, 2) = (lo_hat, hi_hat)`,
+  `s = max(lo_hat - y, y - hi_hat)`, `region = [lo_hat - q_hat, hi_hat + q_hat]`; it has no native
+  point prediction, so `center` must be defined (midpoint, or a third output column), and `q_hat`
+  can be negative, so the region can be empty and needs its own branch. Both have rows of shape
+  `(2,)`: `UncertaintyQuantifier._label_range` then reports `K = 2`, which these scores' (no-op)
+  `check_label_range` must ignore, as `AbsResidual`'s does.
+
+- **Missing `N == 0` guard on the tuning path; `NaN` search metric.** `uncertainty_at` raises when
+  the instance is not calibrated, but `get_uncertainty`/`tune_alpha` do not check `N == 0` and run
+  the search on an empty buffer. Whether that (or `NaN` model outputs) can produce a `NaN` search
+  metric was not checked. The two score members `feasible` and `step_up` are kept separate so a
+  `NaN` metric behaves exactly as before the score objects (for `LAC`: `NaN <= 1` and `NaN > 1` are
+  both False); merging them into one rule is only safe once a `NaN` metric is known to be
+  unreachable or is rejected explicitly.
+
+- **`src/utrace/utils/regression_data/datasets.py` imports `sklearn` at module level inside the
+  installed package.** `scikit-learn` is only in the `dev*` dependency groups, so importing
+  `utrace.utils.regression_data.datasets` fails in a plain install; ruff also reports its two
+  imports unused. It belongs to the regression examples work: move it to `scripts/`, or make the
+  import lazy. Not done in the score-objects change, which leaves the examples untouched.
+
+- **Remove the `eps` alias in 0.5.0.** `get_uncertainty`, `tune_alpha` and `uncertainty_at` accept
+  `eps=` as a deprecated alias of `tol=` (`DeprecationWarning`; `TypeError` if both are given),
+  through `_resolve_tol_alias` in `uncertaintyQuantifier.py`. Regression is planned to ship in
+  0.4.0; in 0.5.0 delete the helper, the `eps=None` parameter of the three methods and the alias
+  tests in `tests/core/test_score_objects.py`, and add a `### Removed` CHANGELOG entry.
+
+- **A bound on a single estimand that includes the dropped term.** [IMPLEMENTED in
+  `uncertainty_budget`, beside the product bound, which is unchanged.] `U_delta` bounds
+  `U* = 1 - e * p` (`p` the coverage, `e = E[pi | covered]`), the product of two separately bounded
+  terms. The paper's identity drops the event that the prediction is acceptable although the truth
+  is not in the set, `P(y in B, y not in C)` (classification with `LAC`: `P(C empty, y_hat = y)`).
+  `uncertainty_budget` now gives one lower confidence bound, at the full `delta`, on the mean of
+  `W = 1{y in C} * pi + 1{y in B, y not in C}` (`U_delta_W`, on `U*_W = U* - P(y in B, y not in C)`)
+  and on the mean of `V = 1{y in C} * pi` (`U_delta_V`, on the paper's `U*` itself), each in `[0, 1]`
+  per sample; Monte Carlo validity checks in `tests/core/test_single_estimand_montecarlo.py`. Open:
+  whether either should replace the product `U_delta` as the headline bound of `uncertainty_at`
+  (a numbers-changing decision), and the derivation of `U*_W` against the error probability under the
+  uniform-selection assumption, written out in the docs.
+
+- **A label-free monitoring function.** The periodic-verification notebook's rule A2 computes, on
+  an unlabelled batch, `U_inf = 1 - mean(1{C non-empty} / |C|)`, a lower bound on `U*` as if every
+  non-empty set held the true label, and its lower confidence bound `U_inf_lower` (the tighter of a
+  Hoeffding and an empirical Bernstein margin); it alarms when `U_inf_lower` exceeds the
+  commissioning `U_delta`, a statement at confidence `1 - 2 delta` that `U*` got worse. It does not
+  belong in `uncertainty_budget` (which decomposes one labelled evaluation): it compares two data
+  sets at two times. A separate function could reuse the bound objects (a lower bound on
+  `mean(1 - z)`). **Segmentation caveat:** with per-class quantifiers (`classes=[k]`) the population
+  is the pixels whose *true* class is `k`, which only labels define, so even this "label-free" bound
+  needs labels; the ACDC notebook states that the rule has no rigorous counterpart there and
+  computes none. Open: API, and what a label-free rule can state for class-conditional quantifiers.
+
+- **A bound for the constant-`pi` regression case.** With `AbsResidual`, `pi = min(1, tol/q_hat)`
+  is the same for every covered sample once the calibration set is fixed, so `e = E[pi | covered]`
+  is known exactly given `q_hat`. The `EC` bound of `U_delta` still subtracts a margin (empirical
+  Bernstein with `V = 0`: `7 ln(8/delta) / (3 (n - 1))`, or Hoeffding's), which is valid but wasted.
+  A bound that uses the known value would tighten regression `U_delta` at no cost in validity, but
+  it changes regression numbers, so it is a decision of its own (see also "Closed form for constant
+  `pi`" above).
+
+- **`Betting` as the default bound.** `utrace.bounds.Betting` adapts to the variance and was tighter
+  than the default `Tightest((Hoeffding(), EmpiricalBernstein()))` on the cases measured so far
+  (MNIST-sized and synthetic evaluations, `EC` term). Making it the default of `uncertainty_at` and
+  `uncertainty_budget` changes every `U_delta`, makes the result depend on a documented seeded
+  permutation, and costs a per-sample transfer and `iters` passes over the values. Needs a decision
+  and a wider comparison (sizes, regimes, regression), not a silent switch.
+
+- **Weighted `Tightest` splits.** `Tightest` splits its level evenly among its members. A split
+  fixed in advance with unequal weights (e.g. more of the level to the member expected to win) is
+  equally valid and can be tighter; the same question arises for the coverage/`EC` split of
+  `U_delta` (item 7 of "Post-migration analysis"). Needs a rule that does not depend on the data,
+  and a re-run of the Monte Carlo checks.
 
 - **Quantile-index departure: canonical order statistic or keep the conservative one?**
   `_masked_quantile_higher` returns one order statistic above the canonical split-conformal
@@ -187,16 +264,18 @@ Out of scope for the current script-migration work. Recorded here so the context
 3. [RESOLVED] GPU validation for per-class calibration: was open when written (only the global
    `classes=None` path had a clean GPU run at the time). Since exercised end-to-end on an RTX
    3070 with real per-class (`classes=[C]`) `UncertaintyQuantifier` instances against real ACDC
-   data: `.reports/2026-08-21_stepE_device_coherence.md` (real model, real data, real per-class
-   streaming-calibration pipeline, 4 classes) and `.reports/2026-08-21_gpu_measurements_acdc.md`
-   (36-batch streaming loops per class, 4 classes, ~3.1M total scores written, summed wall-clock
-   and peak-memory figures reported per class).
+   data on 2026-08-21: the real model, real data and the real per-class streaming-calibration
+   pipeline (4 classes), and 36-batch streaming loops per class (4 classes, ~3.1M total scores
+   written), with wall-clock and peak-memory figures recorded per class.
 4. **Dependence between evaluation samples invalidates the independence assumption of `U_delta`.**
    `uncertainty_at(..., delta=...)` assumes independent evaluation samples. In segmentation the
    samples are pixels, and the pixels of one image are strongly dependent; the effective sample size
    is then far below `n_valid`, and the Clopper-Pearson, Hoeffding and empirical Bernstein margins are too narrow (the
    bound's real level is below `1 - delta`). The code cannot detect it. Open: how to account for it
    (e.g. count images, not pixels, or a design-effect correction) and how to document it per use case.
+   `uncertainty_budget(..., units=...)` now takes the first route for the single-estimand bounds
+   (`V`, `W`): per-unit means, then the bound over units. The product `U_delta` of `uncertainty_at`
+   is still sample-level.
 5. **The inverse of the confidence bound.** Given a specification `U_spec`, the smallest `delta` at
    which `U_delta <= U_spec` (equivalently, the confidence level at which the model meets the
    specification). `U_delta` is monotone in `delta`, so it is a one-dimensional root-find on the
@@ -209,7 +288,6 @@ Out of scope for the current script-migration work. Recorded here so the context
    1/K)^2`). Multiplying both terms is invalid. Hoeffding's margin scales by `1 - 1/K` entirely, and
    `EC_lower` can then be clipped at `1/K` instead of 0. Not implemented: the measured gain is about
    0.0005 on `U_delta` in the MNIST notebook's regime, and the formula is easy to get wrong.
-   Source: `.reports/2026-10-15_empirical_bernstein_diagnostic.md`, A.4.
 7. **Asymmetric split of `delta` between the coverage and `EC` components.** The split is fixed at
    `delta/2` each (the `EC` half as `delta/4 + delta/4`). With the empirical Bernstein margin the
    `EC` component is far narrower than the coverage component in the notebook's regime, so giving
@@ -246,7 +324,7 @@ candidates for it.
    tiny at the N this project reaches (see item 3). In a metrological setting this is a
    contribution to the uncertainty budget that has to be declared, not optional polish.
    Caveat on the memory framing: halving the buffer's dtype would halve its footprint, but the
-   one full-scale ACDC OOM actually measured (`.reports/2026-08-21_stepE_device_coherence.md`,
+   one full-scale ACDC OOM actually measured (RTX 3070, 2026-08-21,
    `RESOURCE_EXHAUSTED: Out of memory while trying to allocate 2.03GiB`) was in the tuning-set
    padding/masking array inside `_get_uncertainty_jit_impl`, not in the conformity-score buffer
    itself — so "float32 buffer is the difference between the full ACDC dataset fitting and not"
@@ -261,7 +339,7 @@ candidates for it.
    measured on the Ryzen AI 7 PRO 350): jitting the buffer write amortises dispatch overhead, and
    the advantage shrinks as the batch grows and compute comes to dominate — **~13.5x at B=500**,
    **~2.3x at B=12000**, **~1.08x (near parity) at ACDC pixel scale (B=65000)**
-   (`.reports/2026-08-18_stepD_jit_marginal_diagnostic.md`). Separately, the defer-sort design
+   (step D diagnostic prototype, CPU, 2026-08-18). Separately, the defer-sort design
    measured **~357x faster streaming calibration at ~2M-score ACDC scale (7.2s → 20ms)** on the
    RTX 3070 (FINDINGS.md, "defer-sort" entry).
    None of this characterises end-to-end per-pixel UQ overhead in a full segmentation pipeline at
@@ -272,7 +350,7 @@ candidates for it.
 3. **Streaming calibration under a bounded memory budget.**
    [ESTABLISHED] The fixed-size buffer with a masked quantile lets calibration run over tens of
    millions of scores without holding them all — the ACDC majority class alone reached
-   **N≈67.5M at full scale** (`.reports/2026-08-21_stepE_device_coherence.md`). On the RTX 3070
+   **N≈67.5M at full scale** (2026-08-21). On the RTX 3070
    (8GB), the full ~150-patient dataset produced two distinct, separately-reproduced OOMs: the
    model forward pass at `BATCH_SIZE=200` (`torch.OutOfMemoryError`), and — independent of that —
    the tuning-set padding/masking array in `_get_uncertainty_jit_impl` at `BATCH_SIZE=20`
@@ -291,7 +369,7 @@ candidates for it.
    records the paper's argument that treating a model's scaled logits as an approximation to a
    probability distribution is a conceptual error — the reason the public API dropped `proba`
    from its method names. The implementation now exists, runs on GPU, and has been exercised on
-   real ACDC medical-imaging data end-to-end (`.reports/2026-08-21_stepE_device_coherence.md`).
+   real ACDC medical-imaging data end-to-end (RTX 3070, 2026-08-21).
    One specific claim in the source conversation for this entry — that the distinction between
    metrological traceability of outputs and data lineage was contributed to a BIPM working group
    ("BIPM TG-IA") — could not be substantiated: it does not appear anywhere in MIGRATION.md,

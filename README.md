@@ -5,11 +5,11 @@
 
 **U**ncertainty **Tra**cking for **C**omplex **E**stimators.
 
-U-TraCE is a Python package for computing estimates and upper confidence bounds on the marginal or conditional uncertainty of any classification model with a softmax output.
+U-TraCE is a Python package for computing estimates and upper confidence bounds on the uncertainty of black-box models: the marginal or class-conditional uncertainty of a classification model with a softmax output, and the uncertainty of a regression model's point predictions with respect to a tolerance chosen by the user.
 
 The library is heavily based on Conformal Prediction, which allows its uncertainty estimates to be distribution-free. A key feature of this approach is that the resulting uncertainty measure relies on the model's actual accuracy (how often it is correct) rather than its confidence (e.g., raw softmax outputs).
 
-U-TraCE provides an evaluation method that reports an estimate of, and an upper confidence bound on, the model's uncertainty, defined as the probability of error: $1-P(\hat{y}​=y_t​)$, where $\hat{y}$ is the model's prediction and $y_t$​ is the true label.
+U-TraCE provides an evaluation method that reports an estimate of, and an upper confidence bound on, the model's uncertainty, defined as the probability of error: $1-P(\hat{y}​=y_t​)$, where $\hat{y}$ is the model's prediction and $y_t$​ is the true label. For regression, a prediction is correct when it lies within the tolerance $\tau$ (`tol`) of the truth, so the uncertainty is $P(|y_t - \hat{y}| > \tau)$.
 
 The point estimate `U` carries no confidence level. The bound `U_delta`, returned by `uncertainty_at(..., delta=...)`, holds with probability at least `1 - delta` only if (1) the evaluation samples are independent and representative of the data the model is used on, and (2) the uniform-selection assumption of the paper holds. The package cannot check either; in particular, pixels of one image are not independent samples.
 
@@ -143,7 +143,102 @@ print(f"true error  = {np.mean(eval_x.argmax(axis=1) != eval_y):.4f}")
 
 `U` is the point estimate, `U_empirical` is the same expression with the coverage measured on the
 evaluation set, and `U_delta` is the upper confidence bound at level `1 - delta` (see the two
-assumptions above).
+assumptions above). `U_delta` combines a Clopper-Pearson bound on the coverage with a lower bound on
+the efficiency term `EC`; by default the latter is the tighter of a Hoeffding and an empirical
+Bernstein bound, and `bound=` selects another (`utrace.bounds`: `'hoeffding'`,
+`'empirical_bernstein'`, or `'betting'`, the betting bound of Waudby-Smith and Ramdas, which adapts to
+the variance).
+
+### Where `U_delta` comes from
+
+`uncertainty_budget` returns the same evaluation as `uncertainty_at` (with `delta` required) and
+splits its `U_delta` exactly into the model's error on the evaluation set and what the method adds
+to it. Continuing the classification example:
+
+```python
+budget = uq.uncertainty_budget(eval_x, eval_y, alpha, delta=0.05)
+for c in budget.components:
+    print(f"{c.name:<22} {c.kind.value:<12} {c.value:.4f}")
+print(f"{'total = U_delta':<35} {budget.total:.4f}")
+print(f"{'error_upper':<35} {budget.error_upper:.4f}")
+```
+
+The components are `error` (the top-1 error, kind `model`); `accepted_not_covered` (correct
+answers whose set is empty) and `selection` (multi-label sets, where `1/|C|` is credited against how
+often the top-1 label is actually right), both `structural`; and `coverage` and `efficiency`, the
+two `statistical` terms of the confidence margin `U_delta - U_empirical`. `selection` is not clipped
+and can be slightly negative on a finite sample. `error_upper` is the direct Clopper-Pearson upper
+bound on the error from the same labels, for comparison. For regression the same terms are defined
+with the tolerance window `y_hat ± tol` in place of the top-1 label.
+
+`budget.U_delta_V` and `budget.U_delta_W` are two single bounds beside it, each one lower confidence
+bound at level `1 - delta` on a mean of per-sample values in `[0, 1]`: `V = pi 1{y in C}`, whose
+`1 - E[V]` is the same `U*` that `U_delta` bounds as a product of two bounds, and `W`, which adds the
+correct answers the set leaves out (`budget.V.components`, `budget.W.components` give their splits).
+When the evaluation samples are not independent (the pixels of one image), pass `units=` with the id
+of the independent unit of each sample (the image or the patient): `V` and `W` are then averaged per
+unit and bounded over the units, a unit-averaged estimand. `units=` does not select samples; that is
+`classes=`, and the two can be combined.
+
+For regression, pass point predictions instead of softmax outputs, construct the quantifier with
+`score='abs_error'`, and give the tolerance `tol` (in the units of the target) on each call; it
+belongs to the call, so one calibrated quantifier can be evaluated for several tolerances:
+
+```python
+import numpy as np
+from utrace import UncertaintyQuantifier
+
+rng = np.random.default_rng(0)
+
+
+def synthetic(n):
+    """Point predictions of a regression model, and the true targets."""
+    x = rng.uniform(-3, 3, size=n)
+    y = np.sin(x) + rng.normal(scale=0.3, size=n)
+    return np.sin(x), y
+
+
+cal_x, cal_y = synthetic(1000)    # calibration
+tune_x, tune_y = synthetic(1000)  # tuning
+eval_x, eval_y = synthetic(5000)  # evaluation
+
+tol = 0.4                         # an error is |y - y_hat| > tol, in the units of y
+uq = UncertaintyQuantifier(N=1000, score="abs_error")
+uq.calibrate(cal_x, cal_y)
+alpha = uq.tune_alpha(tune_x, tune_y, tol=tol)
+result = uq.uncertainty_at(eval_x, eval_y, alpha, tol=tol, delta=0.05)
+
+print(f"alpha       = {alpha:.4f}")
+print(f"U           = {result.U:.4f}")
+print(f"U_empirical = {result.U_empirical:.4f}")
+print(f"U_delta     = {result.U_delta:.4f}")
+print(f"true error  = {np.mean(np.abs(eval_y - eval_x) > tol):.4f}")
+```
+
+Here `U_delta` (0.1898) comes out below `U` (0.1978): `U_delta` uses the coverage measured on the
+evaluation set, not the nominal `1 - alpha`, so it is not guaranteed to be above `U`; it is always
+at least `U_empirical` (0.1766), the same expression as `U` with the measured coverage.
+
+`tune_alpha` also takes `target_ratio` (default 1.0, in `(0, 1]`): the search stops at the
+smallest alpha for which the prediction intervals overlap the tolerance window by at least that
+fraction on average. With the default the intervals lie inside the window, so `U` equals `alpha`.
+
+The budget works the same way for regression, with `tol` given on the call. Continuing the
+regression example:
+
+```python
+budget = uq.uncertainty_budget(eval_x, eval_y, alpha, tol=tol, delta=0.05)
+for c in budget.components:
+    print(f"{c.name:<22} {c.kind.value:<12} {c.value:.4f}")
+print(f"{'total = U_delta':<35} {budget.total:.4f}")
+print(f"{'U_delta_W':<35} {budget.U_delta_W:.4f}")
+print(f"{'error_upper':<35} {budget.error_upper:.4f}")
+```
+
+Here `error` is the fraction of evaluation targets outside the tolerance window. With the default
+`target_ratio` the intervals lie inside the window, so `pi = 1` and `selection` is 0, while
+`accepted_not_covered` counts the targets inside the window but outside the interval; `W` is then
+exactly `1{|y - y_hat| <= tol}`, and `U_delta_W` is a direct bound on the error.
 
 Example scripts can be found in the `scripts` folder, and the jupytext notebooks in `notebooks/`
 (how to run them is described in `CONTRIBUTING.md`, "Notebooks").

@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `548 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (555 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
+Expect `911 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (918 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
@@ -224,7 +224,8 @@ The canonical alpha-search method is the **binary** one, `get_uncertainty`, whic
 
 1. **Construction**: `UncertaintyQuantifier(N=..., classes=[C], max_batch_size=...)`. There is no
    `model` parameter — `UncertaintyQuantifier(model=...)` raises `TypeError`. For the per-class
-   case, construct one `UncertaintyQuantifier` per class.
+   case, construct one `UncertaintyQuantifier` per class. The recipe below is classification
+   (`score='lac'`, the default); regression is under "Scores and regression" below.
 
    **Buffer sizing for high-volume cases (segmentation).** The default `N=1000` is correct for
    moderate sample counts (classification, MNIST). In segmentation each image contributes ~65k
@@ -298,6 +299,112 @@ redundant forward passes — this is where most of the speedup in the analysis s
 `scripts/_common.py`'s `precompute_softmax(loader, classifier)` does this and returns raw torch
 tensors (no numpy conversion), so the result can take the zero-copy DLPack path into `to_jax`.
 
+### Scores and regression
+
+Everything task-specific lives in a score object, `src/utrace/scores/objects.py`, held as
+`uq.score_`; `UncertaintyQuantifier` itself never branches on the task. `score='lac'` (or
+`LAC()`) is classification from a softmax output; `score='abs_error'` (or `AbsResidual()`) is
+regression from point predictions with the absolute residual `|y - y_hat|`. Both are exported as
+`utrace.LAC`/`utrace.AbsResidual` (base class `utrace.Score`).
+
+For regression the error is defined by a fixed tolerance window chosen by the user,
+`B = y_hat ± tol` (`tol` in the units of the target; τ in the paper). The interval is
+`C = y_hat ± q_hat`, the per-sample efficiency is the overlap ratio `pi = |C ∩ B| / |C|` (1 when
+`q_hat == 0`), and the search finds the smallest alpha whose mean `pi` over covered tuning samples
+is `>= target_ratio` (default 1.0, i.e. `C ⊆ B`):
+
+```python
+uq = UncertaintyQuantifier(N=len(y_cal), score='abs_error')    # no classes=: ValueError
+uq.calibrate(y_hat_cal, y_cal)
+for tol in tols:                                                # no recalibration needed
+    alpha = uq.tune_alpha(y_hat_tune, y_tune, tol=tol, target_ratio=0.9)
+    r = uq.uncertainty_at(y_hat_eval, y_eval, alpha, tol=tol, delta=0.05)
+uq.alpha = alpha
+lower, upper = uq.predict(y_hat_test)                           # (lower, upper) for 'abs_error'
+```
+
+- `tol` is required for `'abs_error'` (finite, `> 0`) on `get_uncertainty`, `tune_alpha` and
+  `uncertainty_at`; `target_ratio` (in `(0, 1]`) only on the first two. Both are keyword-only and
+  belong to the call, not to the instance: sweeping them on one calibrated instance recompiles
+  nothing. `U` is a scalar for a given `tol`; a curve `U(tol)` is built by calling repeatedly.
+- `LAC` takes neither: passing `tol` or `target_ratio` with `'lac'` raises `ValueError` (they used
+  to be silently ignored).
+- `eps=` is a deprecated alias of `tol=` (`DeprecationWarning`; `TypeError` if both are given),
+  removed in 0.5.0.
+- `classes=` is classification only (`Score.uses_classes`); with `'abs_error'` it raises
+  `ValueError` at construction.
+
+A new score is a `Score` subclass, a `@dataclass(frozen=True)` with no fields (its description in
+`ClassVar`s), so all instances are equal and it can be a static argument of the jitted functions.
+Per-call parameters go through `resolve_params`, which must return `float64` jax leaves (Python
+floats would compile a second trace). `evaluate` and `per_sample` take `q_hat`, not alpha. `LAC`'s
+`evaluate`/`per_sample` reproduce the classification code they replaced expression for expression,
+which is what keeps classification bit-for-bit unchanged
+(`tests/core/test_score_objects.py`); do not "simplify" them.
+
+### Bounds and the uncertainty budget
+
+**Bound objects** (`src/utrace/bounds.py`, numpy only). A `Bound` turns `SampleStats(n, mean,
+sum_sq_dev, values)` and a failure probability into a one-sided lower confidence bound on the mean
+of i.i.d. values in `[0, 1]`, using the whole level it is given. `Hoeffding` and
+`EmpiricalBernstein` read the sufficient statistics; `Tightest(members)` takes the largest of its
+members' lower bounds, splitting the level evenly. `uncertainty_at(..., delta=..., bound=...)`
+applies the bound to the `EC` term of `U_delta` at `delta/2` (`bound=` without `delta` raises
+`ValueError`); the coverage term is always Clopper-Pearson. The default, `DEFAULT_BOUND =
+Tightest((Hoeffding(), EmpiricalBernstein()))`, is the formula of "`U_delta` uses the measured
+coverage" below, bit for bit (`tests/core/test_bound_objects.py`), so the default numbers are
+unchanged.
+
+**`Betting`** (Waudby-Smith and Ramdas, 2024; `bound='betting'`) reads the values themselves
+(`needs_values`), so `uncertainty_at` transfers the per-sample `pi` of the covered samples only for
+such a bound. Its result depends on the order of the values: `order="permute"` (default) applies
+`np.random.default_rng(seed).permutation` with `seed=0` first, `order="given"` keeps the evaluation
+order. Like every bound here it assumes independent values; it does not fix dependence between
+samples (use `units=`, below).
+
+**`uncertainty_budget(softmax, y, alpha, *, delta, tol=None, bound=None, units=None)`** returns
+an `UncertaintyBudget` whose `evaluation` is exactly `uncertainty_at(...)` and whose `components`
+split its `U_delta` exactly (to rounding), with `B` the score's acceptance region (`{argmax}` for
+`'lac'`, `y_hat ± tol` for `'abs_error'`; `Score.accepted`):
+
+| component | kind | value |
+|---|---|---|
+| `error` | model | `mean 1{y not in B}`: the model's error on the evaluation set |
+| `accepted_not_covered` | structural | `mean 1{y in B, y not in C}` (`'lac'`: empty set, correct answer) |
+| `selection` | structural | `mean 1{y in C} (1{y in B} - pi)` (`'lac'`: the multi-label term) |
+| `coverage` | statistical | `EC (coverage - coverage_lower)` |
+| `efficiency` | statistical | `coverage_lower (EC - EC_lower)` |
+
+`error_upper` is the Clopper-Pearson upper bound on the error probability at level `1 - delta`,
+from the same labels: the comparator that needs no assumption about the sets, not a component.
+`budget.V` and `budget.W` are single-estimand bounds, each one lower confidence bound at the full
+`delta` (no split) on a mean of per-sample values in `[0, 1]`:
+
+- `V = pi 1{y in C}`: `1 - E[V] = 1 - e p` is the first paper's `U*`, the quantity `U_delta` bounds
+  as a product of two bounds; `U_delta_V` bounds it directly. Components: `error`,
+  `accepted_not_covered`, `selection`, `margin` (statistical, `mean - lower`).
+- `W = V + 1{y in B, y not in C}`: keeps the term the paper drops, so `1 - E[W] = U* - P(y in B,
+  y not in C)`. Components: `error`, `selection`, `margin`.
+
+**`units=` versus `classes=`.** `classes=` is group-conditional calibration and evaluation: it
+restricts both to the samples whose label is in the group. `units=` gives the id of the independent
+unit each evaluation sample belongs to (the patient of each pixel); it selects nothing. With it,
+`V`, `W` and their components are averaged within each unit over its valid samples and the bound is
+taken over the unit means (in sorted-id order), so the estimand becomes unit-averaged. The two
+combine (`classes=[k]` with `units=patient_ids`). `units=` applies only to `V` and `W`; the product
+bound stays sample-level.
+
+**`selection` is not clipped.** It is the sample mean of `1{y in C} (1{y in B} - pi)` and can be
+slightly negative on a finite sample. Under the paper's uniform-selection assumption, stated as an
+inequality (given the set, the answer is acceptable at least as often as `pi` credits), its
+expectation is `>= 0`, so a clearly negative value is evidence against the assumption. As bounds on
+the model's error probability, `V` and `W`, like `U` and `U_delta`, are valid only under that
+assumption; as bounds on their own estimands they need only independent samples (or units).
+
+A new score that should support the budget implements `Score.accepted(y, output, params)` (traced,
+boolean `(n,)`); the base-class default raises `NotImplementedError` naming `uncertainty_budget`,
+and every other method works without it.
+
 ### Passing tensors to the core
 
 Pass backend tensors directly to `calibrate`/`predict`/`get_uncertainty`/`tune_alpha`/`uncertainty_at`. `to_jax()` (in
@@ -312,7 +419,16 @@ accuracy, building arrays for matplotlib. Only avoid it on the path into
 
 ### Input contract for labels and shapes
 
-Labels must be integers in `[0, K)`, `K` being the number of softmax columns. `calibrate`,
+The rules are the score's (`Score.check_label_dtype`, `check_output`, `prepare_labels`,
+`check_label_range`).
+
+**`'abs_error'`.** Predictions and targets are 1-D arrays of the same shape `(n,)`: `calibrate`,
+the tuning and evaluation paths and `predict` raise `ValueError` naming the shapes otherwise (an
+`(n, 1)` column is rejected, not reshaped); targets have an
+integer or floating dtype and only finite values (boolean, complex, object and string dtypes, and
+`nan`/`inf`, raise `ValueError`). There is no range check.
+
+**`'lac'`.** Labels must be integers in `[0, K)`, `K` being the number of softmax columns. `calibrate`,
 `get_uncertainty`/`tune_alpha` and `uncertainty_at` raise `ValueError` naming the offending min/max
 and `K` otherwise; `calibrate` also rejects `classes` outside `[0, K)`. There is no `ignore_index`:
 drop ignored samples before the call. (Before this check a label `-1` wrapped to the last class and
@@ -344,7 +460,7 @@ float outside `[0, K)` passes the dtype check and is reported by the range check
 
 ## Departures from the published paper (do NOT "fix" without confirming)
 
-None of the three items below were documented anywhere in this repository before the
+None of the items below were documented anywhere in this repository before the
 2026-09-22 alpha-search fix added this
 section -- `git grep` for "departure" and "paper" across the prior state of every tracked `.md`
 file and `src/` returns nothing. They are recorded here now specifically so the next person does
@@ -354,8 +470,9 @@ is deliberate.
 - **Search criterion.** The paper (§3.2) locates alpha as the smallest value for which the
   *conditioned* average output set size equals 1, that is `E[1/|C(X)| | y in C(X)] = 1`. This code
   searches instead on the *unconditional* mean set size crossing 1
-  (`_search_uncertainty`/`_evaluate_alpha` in `uncertaintyQuantifier.py`: `setsize = sum(set_sizes
-  over valid samples) / n_valid`, no conditioning on coverage). The reason is numerical, not a
+  (`LAC.evaluate` in `scores/objects.py`, called by `_search_uncertainty`/`_evaluate_alpha` in
+  `uncertaintyQuantifier.py`: `setsize = sum(set_sizes over valid samples) / n_valid`, no
+  conditioning on coverage). The reason is numerical, not a
   change of definition: conditioning on coverage forces `|C| >= 1`, so the conditioned quantity is
   bounded above by 1 and becomes flat once every covering set is a singleton. An equality criterion
   on a plateau cannot be attacked by bisection. The unconditional mean crosses 1 monotonically and
@@ -363,25 +480,55 @@ is deliberate.
   expectation over covered samples -- of the tuning set when `get_uncertainty` is called without
   an evaluation set, of the evaluation set (`eval_softmax`/`eval_y`, or `uncertainty_at`) when one
   is passed -- verified directly against
-  `_evaluate_alpha`'s `EC` (`uncertaintyQuantifier.py`, `is_covered`/`mask_succ` gating `inv_succ`
+  `LAC.evaluate`'s `EC` (`scores/objects.py`, `is_covered`/`mask_succ` gating `inv_succ`
   on samples where the true label is actually in the prediction set) and the `U_out = 1.0 - EC_out
   * (1.0 - alpha_out)` line in `_search_uncertainty`. Since eq. (5) holds for any alpha, the proxy
   affects how tight the bound is, never whether it is valid. Do not "restore" the conditioned
   criterion in the search without first deriving a criterion that actually crosses.
 
+- **Regression search criterion (`AbsResidual`, `score='abs_error'`).** For regression the search
+  steers by the *conditioned* mean -- the mean of `pi = |C ∩ B| / |C|` over covered tuning samples,
+  `B = y_hat ± tol` -- with an inequality, `>= target_ratio` (`AbsResidual.evaluate`/`feasible` in
+  `scores/objects.py`). This is the conditioned form the entry above rules out for classification,
+  and it works here for the reason given there: the obstacle in classification is an *equality*
+  (`= 1`) on a quantity that plateaus at its maximum, which bisection cannot locate. An
+  inequality has no such problem: the feasible alphas still form an upper interval of
+  `[1/(N+1), 1]` (as alpha grows, `q_hat` shrinks and the overlap ratio grows), and the plateau at
+  `pi = 1` is simply feasible, so bisection finds its left end. The comparison is exact, the same
+  rule for the floor check, the step and every iterate (`feasible`/`step_up`). With
+  `target_ratio = 1` the plateau is exactly `pi = 1`, which `min(1, ·)` reaches without rounding.
+
+  **For the fixed window, the search does not use the tuning data beyond "at least one covered
+  sample".** The interval `C = y_hat ± q_hat` and the window `B = y_hat ± tol` share their centre,
+  so `pi = min(1, tol/q_hat)` for every covered sample (and 1 when `q_hat == 0`). The search metric
+  is therefore a function of `q_hat` alone, i.e. of the calibration set, `tol` and alpha: the
+  alpha `tune_alpha` returns is the smallest one with `q_hat(alpha) <= tol/target_ratio`, provided
+  some tuning sample is covered (otherwise the metric is 0). The same holds for `EC` wherever it is
+  measured, so `U = 1 - min(1, tol/q_hat) * (1 - alpha)` on any set with a covered sample;
+  `coverage`, `U_empirical` and `U_delta` are what the evaluation set adds. A closed form for this case is in
+  `BACKLOG.md` ("Closed form for constant `pi`"); scores whose `pi` varies per sample (normalized
+  CP, CQR) do need the search.
+
 - **`U_delta` uses the measured coverage, not the nominal `1 - alpha`.** `U = 1 - EC * (1 - alpha)`
   (the paper's eq. (6)) is a point estimate with no confidence level. `uncertainty_at(...,
   delta=...)` instead bounds the population value `U* = 1 - e * p`, `p` the coverage and
-  `e = E[1/|C| | covered]` at the given alpha: `U_delta = 1 - EC_lower * coverage_lower`, with a
+  `e = E[pi | covered]` at the given alpha (`pi = 1/|C|` for `'lac'`, `|C ∩ B| / |C|` for
+  `'abs_error'`): `U_delta = 1 - EC_lower * coverage_lower`, with a
   Clopper-Pearson lower bound on `p` and a lower bound on `e` (clipped at 0), each at level
-  `delta/2` (a fixed split, union bound, valid on the same evaluation set). The bound on `e` is
+  `delta/2` (a fixed split, union bound, valid on the same evaluation set). By default the bound on `e` is
   `EC - min(m_H, m_EB)`: `m_H = sqrt(ln(4/delta) / (2 n))` (Hoeffding) and
   `m_EB = sqrt(2 V ln(8/delta) / n) + 7 ln(8/delta) / (3 (n - 1))` (empirical Bernstein, Maurer
   and Pontil (2009), COLT, arXiv:0907.3740, Theorem 4), with `n = n_succ` and `V` the unbiased
-  sample variance of `1/|C|` over the covered samples; each is one-sided at `delta/4`, so taking
+  sample variance of `pi` over the covered samples; each is one-sided at `delta/4`, so taking
   the smaller is a union bound, not a data-dependent level. `n_succ == 1` uses `m_H` alone and
-  `n_succ == 0` gives 0. The range `[1/K, 1]` of `1/|C|` is not used (a rescaled variant is in
-  `BACKLOG.md`). It therefore
+  `n_succ == 0` gives 0. For `'lac'`, the range `[1/K, 1]` of `1/|C|` is not used (a rescaled variant is in
+  `BACKLOG.md`). `uncertainty_at(..., bound=...)` replaces the bound on `e` with any
+  `utrace.bounds.Bound`, applied at `delta/2` (`Hoeffding`, `EmpiricalBernstein`, `Tightest`, and
+  `Betting`, the hedged-capital betting bound of Waudby-Smith and Ramdas (2024), Theorem 3 and
+  Remark 3, which reads the per-sample values in a seeded permutation by default); the default, `DEFAULT_BOUND =
+  Tightest((Hoeffding(), EmpiricalBernstein()))`, is exactly the formula above (each member at
+  `delta/4`, the larger lower bound taken), and is pinned bit for bit by
+  `tests/core/test_bound_objects.py`. The coverage bound is always Clopper-Pearson. It therefore
   uses the empirical coverage that the evaluation set supports, which can be above or below
   `1 - alpha`, so `U_delta` is not guaranteed to be `>= U`; it is always `>= U_empirical =
   1 - EC * coverage`. It holds at level `1 - delta` under independent, representative evaluation
@@ -459,8 +606,8 @@ torch-free — guarded directly by
 
 A change owns the documentation its own change falsifies, and corrects it in the same commit.
 Claims that were already false before the change are reported, not fixed, and go to a dedicated
-documentation pass. Deferring the first kind is what produced the drift the 2026-08-21 audit
-found (`.reports/2026-08-21_docs_audit.md`).
+documentation pass. Deferring the first kind is what produced the drift the 2026-08-21 docs
+audit found.
 
 Finding what a change falsified is a mechanical step, not a matter of recall. Take every symbol,
 file path and directory name added or removed in the diff, and `git grep` each one across all

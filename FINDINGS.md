@@ -1,6 +1,6 @@
 # U-TraCE — Findings
 
-Verified findings from the backend-agnostic-core refactor, kept regardless of the refactor's status: measured results, negative results, uv/packaging discoveries, and post-mortems. These outlive the refactor. Split out of MIGRATION.md on 2026-08-19 (see `.reports/2026-08-19_docs_restructure.md`).
+Verified findings from the backend-agnostic-core refactor, kept regardless of the refactor's status: measured results, negative results, uv/packaging discoveries, and post-mortems. These outlive the refactor. Split out of MIGRATION.md on 2026-08-19.
 
 ## Rename batch
 
@@ -8,10 +8,8 @@ Verified findings from the backend-agnostic-core refactor, kept regardless of th
 golden test (`2574c41`); removing the forwarding accessors left by the B.5 state extraction
 (`cfba206`); dropping `proba` from the library's public API (`70fa11e`); dropping `proba` from
 the callers — scripts and tests (`b23cef2`); and removing two pieces of dead code the batch's
-diagnostics surfaced (`372defd`). The rename mappings themselves live in the commit messages and
-in `.reports/2026-08-06_rename2_forwarding_accessors.md`, `2026-08-07_rename3_drop_proba.md`,
-`2026-08-07_rename4_caller_locals.md`, and `2026-08-07_rename5_dead_code.md`; this section is
-the index, not a duplicate.
+diagnostics surfaced (`372defd`). The rename mappings themselves live in those commits' messages
+and diffs; this section is the index, not a duplicate.
 
 **Why the `proba` rename happened.** Not tidiness. The paper this package accompanies argues
 that treating a model's scaled logits as an approximation to a probability distribution is a
@@ -170,14 +168,13 @@ in this refactor up to that point had been CPU-only, where all placements coinci
 mismatch cannot appear.
 
 **[ESTABLISHED, confirmed and fixed]** The RTX 3070 has since been available and answered this
-directly. `.reports/2026-08-20_gpu_verification_3070.md` (Q1) reproduced the crash exactly as
+directly. A GPU verification run (2026-08-20) reproduced the crash exactly as
 predicted, both synthetically and against the real ACDC model and data: `calibrate()` raised
 `ValueError: Received incompatible devices for jitted computation` on the first calibration
 batch when probabilities are GPU-resident and labels are host-resident. It fails loud, not
 silently — no wrong numbers were produced. The fix landed in `calibrate()` in commit `7f140ea`
-("Reconcile argument devices in calibrate", see `.reports/2026-08-21_stepE_device_coherence.md`),
-and the analogous defect in `get_uncertainty` (found by the 2026-08-21 docs audit, H4b) was fixed
-separately in Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`). `predict` takes no `y` and
+("Reconcile argument devices in calibrate"), and the analogous defect in `get_uncertainty` (found
+by the 2026-08-21 docs audit, H4b) was fixed separately in Batch 1. `predict` takes no `y` and
 was never exposed. Both fixes have GPU-only regression tests
 (`tests/core/test_calibrate_device_reconciliation.py`,
 `tests/core/test_get_uncertainty_device_reconciliation.py`).
@@ -193,21 +190,19 @@ laptop.
 
 The defer-sort win (~357x, 7.2s → 20ms, the defer-sort entry below, in this document) keeps its
 existing attribution to an RTX 3070. The `to_jax` direct-vs-indirect figures under "What is
-unverified" below were measured on the 5700G; see
-`.reports/2026-07-29_phase6_step7_diagnostic_labels_hostcopy_5700G.md`.
+unverified" below were measured on the 5700G (phase 6 step 7 diagnostic, 2026-07-29).
 
 [UPDATED] Most measurements were CPU backend at the time this was written; the RTX 3070 has since
-produced several reports (`.reports/2026-08-20_gpu_verification_3070.md`,
-`.reports/2026-08-20_gpu_packaging_fixes.md`, `.reports/2026-08-21_stepE_device_coherence.md`,
-`.reports/2026-08-21_gpu_main_verification.md`, `.reports/2026-08-21_gpu_measurements_acdc.md`).
+been used for several runs (GPU verification and packaging fixes on 2026-08-20; device coherence,
+a verification of `main` and ACDC measurements on 2026-08-21).
 Of the open GPU questions listed here: the device-to-host-to-device ratio is now measured
-(`2026-08-20_gpu_verification_3070.md`, Q3: 32.03x at 2M elements for CUDA-origin tensors, not
+(GPU verification, 2026-08-20: 32.03x at 2M elements for CUDA-origin tensors, not
 the CPU-measured 175x — a different comparison; the direct `to_jax` path is not flat on GPU
-either, unlike on CPU); whether `np.asarray` rejects a CUDA tensor is confirmed yes (same report,
-Q2, `TypeError`); and the device-commitment risk from step C is confirmed real and has since been
+either, unlike on CPU); whether `np.asarray` rejects a CUDA tensor is confirmed yes (same run,
+`TypeError`); and the device-commitment risk from step C is confirmed real and has since been
 fixed (see "Step C: device-commitment risk" above). [UNVERIFIED] still open: whether the jnp-native
 padding measured as a CPU regression under "Measured negative result: jnp-native padding" in
-MIGRATION.md pays off inside a jit trace on GPU — no report has measured this specific question.
+MIGRATION.md pays off inside a jit trace on GPU — no run has measured this specific question.
 
 ### Forwarding accessors: temporary scaffolding (removed)
 
@@ -241,21 +236,21 @@ The items below are open questions about GPU behaviour. Where a CPU measurement 
 labelled and attributed; what remains unverified is the extrapolation to GPU.
 
 - [ESTABLISHED] Measured on the 5700G, CPU backend
-  (`.reports/2026-07-29_phase6_step7_diagnostic_labels_hostcopy_5700G.md`, Q7): the direct
+  (phase 6 step 7 diagnostic, 2026-07-29): the direct
   `to_jax` path runs flat at ~0.04 ms/call regardless of array size — 0.0410 ms at 500
   elements, 0.0398 at 12k, 0.0399 at 2M — while the indirect path scales with it: 0.0804 ms,
   0.0852 ms and 6.98 ms respectively, a 175x ratio at ACDC pixel scale. The flatness is
   consistent with genuine DLPack zero-copy doing no data movement.
   On a GPU backend the data must reach the device regardless, so the relevant comparison is
   device→host→device versus device→device — a DIFFERENT ratio. **[ESTABLISHED]** now measured:
-  `.reports/2026-08-20_gpu_verification_3070.md` (Q3) found 32.03x at 2M elements for
+  the GPU verification run (RTX 3070, 2026-08-20) found 32.03x at 2M elements for
   CUDA-origin tensors (5.34x for CPU-origin tensors at the same size) — do not read the CPU
   ~175x figure as applying to GPU hardware; the direct `to_jax` path's flatness does not hold on
   GPU either, it scales mildly with size.
 - **[ESTABLISHED]** Whether `np.asarray()` on a torch CUDA tensor raises, and therefore whether
   the pre-step-A `calibrate` would have rejected GPU-resident labels outright rather than merely
-  copying them inefficiently. Confirmed yes: `.reports/2026-08-20_gpu_verification_3070.md` (Q2)
-  — `np.asarray(t_cuda)` raises `TypeError: can't convert cuda:0 device type tensor to numpy`.
+  copying them inefficiently. Confirmed yes (GPU verification run, RTX 3070, 2026-08-20):
+  `np.asarray(t_cuda)` raises `TypeError: can't convert cuda:0 device type tensor to numpy`.
   The current DLPack-based path correctly accepts CUDA-resident labels when they agree with the
   probability tensor's device (mismatched devices raise instead — see "Step C:
   device-commitment risk" above).
@@ -268,7 +263,7 @@ labelled and attributed; what remains unverified is the extrapolation to GPU.
   numbers, machine, and design findings. On CPU: yes, it pays, from the very first call, at the
   batch sizes MNIST-family scripts use (~2-3x end-to-end through the public `calibrate()`, more
   in isolation), shrinking to near-parity (~1.08x) at ACDC pixel scale. **Since answered on GPU
-  too**: `.reports/2026-08-20_gpu_verification_3070.md` (Q4/Q5) measured the same marginal-write
+  too**: the GPU verification run (2026-08-20) measured the same marginal-write
   jit on an RTX 3070 and found the win does not shrink to parity there — it stabilizes around
   ~1.3x even at pixel scale (B=2,000,000; ~1.3-1.5x depending on whether measured as a per-call
   steady-state ratio or total streaming wall-clock), a real, resolved separation, not overlapping
@@ -333,11 +328,10 @@ combination that hid it:
 - CI runs the test suite on 3.11 and passed regardless, because no test in `tests/` imports
   anything under `scripts/` — a syntax error in a script is invisible to `pytest` collection.
 - The same script had already run successfully, twice, during the step C equivalence check (see
-  "Verification method for unvalidated scripts" in CONTRIBUTING.md; the run itself is recorded in
-  `.reports/2026-07-31_stepC_group1_5700G.md`) — but in a local environment using this project's
-  development-default Python (3.14 throughout the other sessions in this refactor; that specific
-  report does not print the interpreter version, so this is not a direct quote of it, only the
-  best-supported inference), where the PEP 701 syntax is valid and the bug cannot appear.
+  "Verification method for unvalidated scripts" in CONTRIBUTING.md; 5700G, 2026-07-31) — but in a
+  local environment using this project's development-default Python (3.14 throughout the other
+  sessions in this refactor; the record of that run does not print the interpreter version, so this
+  is the best-supported inference, not a quote), where the PEP 701 syntax is valid and the bug cannot appear.
 
 Neither net covered "this file" and "the oldest supported interpreter" at the same time. A
 `compileall` pass over `scripts/`, now part of CI (see above), catches this whole class of defect
@@ -369,7 +363,7 @@ reader:
 - `pytest-expecter`'s `expect(x) == y` performs its assertion as a side effect inside `__eq__`, so
   the bare comparison expression IS the intended API, not a mistake. **No longer live**: this
   suppressed a per-file ignore for `src/utrace/tests/test_utils.py`, the only file that used the
-  idiom. Batch 1 (`.reports/2026-08-21_batch1_defect_fixes.md`) removed that file, its per-file
+  idiom. Batch 1 (2026-08-21) removed that file, its per-file
   ignore, and the `pytest-expecter` dependency itself as dead — `pyproject.toml`'s
   `[tool.ruff.lint.per-file-ignores]` now names only `__init__.py`. Left here as a record of a
   suppression that once existed, not a description of the current file.
@@ -419,8 +413,8 @@ two GPU-only tests in each of `test_calibrate_device_reconciliation.py` and
 `test_get_uncertainty_device_reconciliation.py`, inert without GPU-backed jax hardware. The
 figure was already stale before Batch 1: `test_calibrate_device_reconciliation.py` (2 skips)
 predates it, added by `7f140ea` ("Reconcile argument devices in calibrate"), which landed after
-this "113 passed, 1 skipped" line was written. Batch 1
-(`.reports/2026-08-21_batch1_defect_fixes.md`) added the other file, the remaining 2 skips. The
+this "113 passed, 1 skipped" line was written. Batch 1 (2026-08-21) added the other file, the
+remaining 2 skips. The
 passed count (113) is unchanged throughout — none of the four device-reconciliation tests run on
 a backend without GPU-backed jax.
 
@@ -614,8 +608,8 @@ The test command changed accordingly: `uv run --extra=torch --extra=viz pytest .
   `jax`, `jax-cuda13-pjrt`, `jax-cuda13-plugin`, `jaxlib`, the `nvidia-*` CUDA runtime packages,
   `numpy`, `scipy`, `opt_einsum` and `utrace` itself — torch and torchvision appear nowhere in
   it, because `cuda13` never declares them as a dependency. A real install over that same venv
-  (not a dry-run) is recorded in `.reports/2026-08-14_packaging_redesign_docs.md`, confirming the
-  installed torch build and its files are unchanged before and after.
+  (not a dry-run), done on 2026-08-14, confirmed the installed torch build and its files are
+  unchanged before and after.
 - **`rocm7-local` resolves cleanly and stays torch-free.** `uv pip install --dry-run
   utrace[rocm7-local]` adds exactly two packages beyond base — `jax-rocm7-pjrt`,
   `jax-rocm7-plugin` — matching the extras table above.
@@ -641,8 +635,7 @@ against a different torch than CUDA contributors. A scoped
 `uv lock --upgrade-package torch --upgrade-package torchvision` moved all routes to 2.13.0 /
 0.28.0 uniformly (`setuptools` also moved 81.0.0 → 82.0.1 as a side effect of the same scoped
 resolve — confirmed by diffing `uv.lock` at both commits). The golden `.npy` baselines were
-verified unchanged across the upgrade (recorded in
-`.reports/2026-08-14_packaging_redesign_execution.md`), which matters because those baselines
+verified unchanged across the upgrade (2026-08-14), which matters because those baselines
 were originally generated under the older torch — an upgrade that silently shifted numerics
 would have invalidated them without any test failing to say so.
 

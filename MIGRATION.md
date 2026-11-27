@@ -1,6 +1,6 @@
 # U-TraCE — Migration and Refactor Guide
 
-> **Note (2026-08-19 split):** MIGRATION.md, FINDINGS.md, BACKLOG.md and CONTRIBUTING.md were split from one file on this date (see `.reports/2026-08-19_docs_restructure.md`). This file now holds only the refactor's phase plan and architecture/design direction — content that expires when the refactor ends. Verified findings live in FINDINGS.md; open work in BACKLOG.md; contributor conventions in CONTRIBUTING.md.
+> **Note (2026-08-19 split):** MIGRATION.md, FINDINGS.md, BACKLOG.md and CONTRIBUTING.md were split from one file on this date. This file now holds only the refactor's phase plan and architecture/design direction — content that expires when the refactor ends. Verified findings live in FINDINGS.md; open work in BACKLOG.md; contributor conventions in CONTRIBUTING.md.
 
 
 Context document for the ongoing refactor of the `utrace` package. Captures the phase
@@ -9,10 +9,9 @@ stands. The canonical migration recipe and contributor conventions live in
 CONTRIBUTING.md; verified findings live in FINDINGS.md; open work lives in BACKLOG.md.
 
 Diagnostic and execution reports produced during this refactor are kept in a private
-companion repository, checked out at `.reports/` (gitignored).
-Filenames are cited here for internal traceability; the reports are not publicly
-available. Every claim in this document is written to stand on its own — the figures and
-findings are transcribed here, not merely referenced.
+companion repository, not part of this one, and are not cited from tracked files. Every claim in
+this document is written to stand on its own — the figures and findings are transcribed here,
+dated, and attributed to the machine they were measured on.
 
 ## Refactor goal
 
@@ -165,8 +164,8 @@ FINDINGS.md); and, outside the phase numbering entirely (see "CI and tooling" in
 the CI workflow, ruff
 adoption rung 1, the pytest dependency-group split, and the `scripts/` lint cleanup. Also done,
 outside the step-ladder numbering: device coherence in the *core* (`calibrate()`/`get_uncertainty()`
-reconciling mismatched argument devices rather than crashing) — commits `7f140ea` and Batch 1
-(`.reports/2026-08-21_batch1_defect_fixes.md`). This is a different piece of work from
+reconciling mismatched argument devices rather than crashing) — commit `7f140ea` and Batch 1
+(2026-08-21). This is a different piece of work from
 step-ladder item E below and is called out explicitly to avoid the two being conflated (see "E.
 Device coherence" further down).
 
@@ -366,12 +365,12 @@ loses to jitted-jnp. Neither overturns the other.
 PRO 350 laptop, CPU backend** (`jax.default_backend() == 'cpu'`) — not comparable to the 5700G
 figures elsewhere in this document.
 
-- Diagnostic prototype (fused design, `.reports/2026-08-18_stepD_jit_marginal_diagnostic.md`),
+- Diagnostic prototype (fused design, 2026-08-18),
   streaming (repeated batched calibration into one buffer, warm): **~13.5x at B=500**, **~2.3x at
   B=12000**, **~1.08x at ACDC pixel scale (B=65000)** — the win shrinks sharply as B grows, because
   at large B the operations' own compute time dominates over the dispatch overhead the jit
   boundary is amortising.
-- Shipped implementation (write-only jit, `.reports/2026-08-18_stepD_jit_marginal_execution.md`),
+- Shipped implementation (write-only jit, 2026-08-18),
   measured end-to-end through the public `calibrate()` — which includes `to_jax()` conversion and
   method-call overhead, identical on both sides of the comparison and therefore diluting the
   *relative* size of the win without changing its direction: **~2-3x at B=500 and at B=12000**
@@ -436,7 +435,7 @@ measured only for a design that pre-stacks an entire stream of batches into one
 bounded-memory streaming goal (see the canonical migration recipe: "This keeps only one batch of
 logits in memory at a time"). That tension is not resolved by anything measurable on a CPU
 backend. **[ESTABLISHED, since measured]** Whether the shrink-to-near-parity pattern holds on GPU
-was unknown when this was written; `.reports/2026-08-20_gpu_verification_3070.md` (Q4/Q5) has
+was unknown when this was written; a GPU verification run (2026-08-20) has
 since measured it on an RTX 3070 and found it does NOT shrink to parity there — the win stabilizes
 around ~1.3x even at pixel scale (B=2,000,000), a real, resolved separation from noise, milder
 than the CPU speedup at small B but never disappearing. **The marginal slice is therefore justified
@@ -522,9 +521,8 @@ coherence" below), plus the backlog (BACKLOG.md).
     placing `softmax` on CPU or GPU for `calibrate` decides where the later evaluation runs.
     Floating-point reductions (`EC`, and what is built from it) may therefore differ by rounding
     between a CPU- and a GPU-calibrated quantifier; integer counts do not.
-    Commit `7f140ea` ("Reconcile argument devices in calibrate"; see
-    `.reports/2026-08-21_stepE_device_coherence.md`) did `calibrate`; Batch 1
-    (`.reports/2026-08-21_batch1_defect_fixes.md`, found by the 2026-08-21 docs audit, H4b) did
+    Commit `7f140ea` ("Reconcile argument devices in calibrate") did `calibrate`; Batch 1
+    (found by the 2026-08-21 docs audit, H4b) did
     `get_uncertainty`. `predict` takes no `y` and was never exposed to this. Both have GPU-only
     regression tests (`tests/core/test_calibrate_device_reconciliation.py`,
     `tests/core/test_get_uncertainty_device_reconciliation.py`).

@@ -6,12 +6,84 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Regression: `UncertaintyQuantifier(score='abs_error')` quantifies the uncertainty of a regression
+  model's point predictions with the absolute residual `|y - y_hat|`. An error is a prediction
+  outside a tolerance window chosen by the user, `B = y_hat ± tol`; the search finds the smallest
+  alpha whose mean overlap ratio `|C ∩ B| / |C|` over covered samples is at least `target_ratio`,
+  and `predict` returns the interval `(lower, upper)`. Predictions must be a 1-D array of point
+  predictions with the targets' shape; anything else (an `(n, 1)` column included) raises
+  `ValueError`.
+- Score objects (`src/utrace/scores/objects.py`): `Score`, the base class, and the two scores
+  `LAC` (`score='lac'`) and `AbsResidual` (`score='abs_error'`), exported as `utrace.Score`,
+  `utrace.LAC`, `utrace.AbsResidual` and from `utrace.scores` (with `TolParams`, the per-call
+  parameters of `AbsResidual`). `UncertaintyQuantifier(score=...)` accepts the string or a `Score`
+  instance, and `uq.score_` is now the score object. Classification results are bit-for-bit
+  unchanged.
+- `tol` and `target_ratio`, keyword-only, on `get_uncertainty` and `tune_alpha`; `tol` on
+  `uncertainty_at`. `tol` is required for `'abs_error'`; `target_ratio` defaults to 1.0 and must
+  lie in `(0, 1]`. Both belong to the call, so one calibrated quantifier can be swept over them
+  without recalibrating or recompiling.
+- Concentration bounds as objects (`src/utrace/bounds.py`): `Bound`, `SampleStats`, `Hoeffding`,
+  `EmpiricalBernstein` and `Tightest` (the largest of its members' lower bounds, the level split
+  evenly), exported from `utrace`. `uncertainty_at(..., delta=..., bound=...)` selects the lower
+  bound on the efficiency term `EC` (a `Bound`, or `'hoeffding'` / `'empirical_bernstein'`), at
+  level `delta/2`; the coverage bound stays Clopper-Pearson. The default, `Tightest((Hoeffding(),
+  EmpiricalBernstein()))`, reproduces the previous `U_delta` bit for bit. `bound=` without `delta`
+  raises `ValueError`.
+- `utrace.Betting` (`bound='betting'`): the betting lower confidence bound of Waudby-Smith and
+  Ramdas (J. R. Stat. Soc. B, 2024; Theorem 3 and Remark 3, hedged capital, lower side), ported
+  from the ACDC notebook. It reads the per-sample values, so `uncertainty_at` computes them only
+  for such a bound. Its result depends on the order of the values: by default they are permuted
+  with a fixed seed (`order="permute"`, `seed=0`); `order="given"` keeps the evaluation order.
+- `UncertaintyQuantifier.uncertainty_budget(softmax, y, alpha, *, delta, tol=None, bound=None)`
+  returns an `UncertaintyBudget`: the unchanged `UncertaintyEvaluation` of `uncertainty_at`, and
+  `U_delta` split exactly into `error` (the model's error on the evaluation set),
+  `accepted_not_covered` and `selection` (structural) and `coverage` and `efficiency`
+  (statistical), each a `BudgetComponent` with a `ComponentKind` and the method that produced it;
+  plus `error_upper`, the Clopper-Pearson upper bound on the error. For `'lac'` the terms are the
+  usual decomposition of `U_delta - err` (empty set on a correct answer, multi-label, coverage,
+  `EC`). New `Score.accepted` (the acceptance indicator `1{y in B}`), implemented for both scores;
+  its default raises `NotImplementedError`, so only `uncertainty_budget` needs it.
+- Single-estimand bounds in the budget: `budget.V` and `budget.W` (`SingleEstimandBound`), one lower
+  confidence bound at the full `delta` on the mean of `V = pi 1{y in C}` (`U_delta_V`, a direct bound
+  on the paper's `U* = 1 - e p`) and of `W = V + 1{y in B, y not in C}` (`U_delta_W`, which keeps the
+  term the paper drops), each with components summing to it (`error`, the structural terms, and the
+  statistical `margin`). `bound=` selects the bound; the default sums are formed in the jitted
+  evaluation, and the per-sample values are transferred only for a bound that needs them.
+- `uncertainty_budget(..., units=...)`: the independent unit of each evaluation sample (e.g. the
+  patient of each pixel). `V`, `W` and their components are averaged within each unit and the bound
+  is taken over the unit means, so the estimand becomes unit-averaged. `units` does not select
+  samples (that is `classes=`, with which it combines); the product bound stays sample-level.
+
 ### Changed
 - `scripts/btorch_MNIST_test.py` gains `--json PATH` (writes the plotted numbers), `--iterations N`
   (repetitions of the noise sweep) and `--seed N` (a reproducible run). Without them its behaviour
   is unchanged.
+- `tune_alpha`'s parameters after `max_iters` (`tol`, `target_ratio`) are keyword-only.
+- `tol` or `target_ratio` given with `score='lac'` raises `ValueError` instead of being ignored.
+- `classes=` with a score that does not support it (`'abs_error'`) raises `ValueError` at
+  construction.
+- `tol` must be finite and `> 0`.
+- Documentation: CONTRIBUTING gains a section on the bound objects and the uncertainty budget, and
+  the README a budget example for classification and for regression. Tracked documentation and
+  comments no longer refer to internal reports that are not part of the repository; the facts they
+  pointed to (dates, machines, commits, figures) are stated in place. `project_tree.md` is
+  regenerated.
+
+### Deprecated
+- `eps=` on `get_uncertainty`, `tune_alpha` and `uncertainty_at`: an alias of `tol=` that emits a
+  `DeprecationWarning` (`TypeError` if both are given). It will be removed in 0.5.0.
 
 ### Fixed
+- In the regression support above (never released): the overlap ratio is 1, not 0, when the
+  interval collapses to the point prediction (`q_hat == 0`, so the interval lies inside the
+  window); there is no longer a `1e-8` floor on the interval length.
+- In the regression support above: the search used one target rule for its iterates
+  (`>= target_ratio - 1e-6`) and an exact one for the floor check and the step. It could report
+  `CONVERGED` at an alpha whose overlap ratio was below the target, and, with a metric that
+  depends on alpha directly, return an alpha below the floor `1/(N+1)`. One exact rule is now used
+  everywhere.
 - `scripts/btorch_MNIST_test.py` now moves the Bayesian model and the test batch to the selected
   device. Before, on a GPU machine only the training used the GPU and the Monte Carlo loop silently
   ran on the CPU.
