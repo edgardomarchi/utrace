@@ -181,6 +181,39 @@ Out of scope for the current script-migration work. Recorded here so the context
   (a numbers-changing decision), and the derivation of `U*_W` against the error probability under the
   uniform-selection assumption, written out in the docs.
 
+- **A label-free monitoring function.** The periodic-verification notebook's rule A2 computes, on
+  an unlabelled batch, `U_inf = 1 - mean(1{C non-empty} / |C|)`, a lower bound on `U*` as if every
+  non-empty set held the true label, and its lower confidence bound `U_inf_lower` (the tighter of a
+  Hoeffding and an empirical Bernstein margin); it alarms when `U_inf_lower` exceeds the
+  commissioning `U_delta`, a statement at confidence `1 - 2 delta` that `U*` got worse. It does not
+  belong in `uncertainty_budget` (which decomposes one labelled evaluation): it compares two data
+  sets at two times. A separate function could reuse the bound objects (a lower bound on
+  `mean(1 - z)`). **Segmentation caveat:** with per-class quantifiers (`classes=[k]`) the population
+  is the pixels whose *true* class is `k`, which only labels define, so even this "label-free" bound
+  needs labels; the ACDC notebook states that the rule has no rigorous counterpart there and
+  computes none. Open: API, and what a label-free rule can state for class-conditional quantifiers.
+
+- **A bound for the constant-`pi` regression case.** With `AbsResidual`, `pi = min(1, tol/q_hat)`
+  is the same for every covered sample once the calibration set is fixed, so `e = E[pi | covered]`
+  is known exactly given `q_hat`. The `EC` bound of `U_delta` still subtracts a margin (empirical
+  Bernstein with `V = 0`: `7 ln(8/delta) / (3 (n - 1))`, or Hoeffding's), which is valid but wasted.
+  A bound that uses the known value would tighten regression `U_delta` at no cost in validity, but
+  it changes regression numbers, so it is a decision of its own (see also "Closed form for constant
+  `pi`" above).
+
+- **`Betting` as the default bound.** `utrace.bounds.Betting` adapts to the variance and was tighter
+  than the default `Tightest((Hoeffding(), EmpiricalBernstein()))` on the cases measured so far
+  (MNIST-sized and synthetic evaluations, `EC` term). Making it the default of `uncertainty_at` and
+  `uncertainty_budget` changes every `U_delta`, makes the result depend on a documented seeded
+  permutation, and costs a per-sample transfer and `iters` passes over the values. Needs a decision
+  and a wider comparison (sizes, regimes, regression), not a silent switch.
+
+- **Weighted `Tightest` splits.** `Tightest` splits its level evenly among its members. A split
+  fixed in advance with unequal weights (e.g. more of the level to the member expected to win) is
+  equally valid and can be tighter; the same question arises for the coverage/`EC` split of
+  `U_delta` (item 7 of "Post-migration analysis"). Needs a rule that does not depend on the data,
+  and a re-run of the Monte Carlo checks.
+
 - **Quantile-index departure: canonical order statistic or keep the conservative one?**
   `_masked_quantile_higher` returns one order statistic above the canonical split-conformal
   quantile for every `alpha` strictly above the floor — see CONTRIBUTING.md, "Departures from the
@@ -241,6 +274,9 @@ Out of scope for the current script-migration work. Recorded here so the context
    is then far below `n_valid`, and the Clopper-Pearson, Hoeffding and empirical Bernstein margins are too narrow (the
    bound's real level is below `1 - delta`). The code cannot detect it. Open: how to account for it
    (e.g. count images, not pixels, or a design-effect correction) and how to document it per use case.
+   `uncertainty_budget(..., units=...)` now takes the first route for the single-estimand bounds
+   (`V`, `W`): per-unit means, then the bound over units. The product `U_delta` of `uncertainty_at`
+   is still sample-level.
 5. **The inverse of the confidence bound.** Given a specification `U_spec`, the smallest `delta` at
    which `U_delta <= U_spec` (equivalently, the confidence level at which the model meets the
    specification). `U_delta` is monotone in `delta`, so it is a one-dimensional root-find on the
