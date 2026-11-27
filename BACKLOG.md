@@ -168,13 +168,51 @@ Out of scope for the current script-migration work. Recorded here so the context
   0.4.0; in 0.5.0 delete the helper, the `eps=None` parameter of the three methods and the alias
   tests in `tests/core/test_score_objects.py`, and add a `### Removed` CHANGELOG entry.
 
-- **A bound on a single estimand that includes the dropped term.** `U_delta` bounds
+- **A bound on a single estimand that includes the dropped term.** [IMPLEMENTED in
+  `uncertainty_budget`, beside the product bound, which is unchanged.] `U_delta` bounds
   `U* = 1 - e * p` (`p` the coverage, `e = E[pi | covered]`), the product of two separately bounded
   terms. The paper's identity drops the event that the prediction is acceptable although the truth
   is not in the set, `P(y in B, y not in C)` (classification with `LAC`: `P(C empty, y_hat = y)`).
-  A tighter and simpler statement is one lower confidence bound, at level `delta`, on the mean of
-  `W = 1{y in C} * pi + 1{y in B, y not in C}`, which is in `[0, 1]` per sample, instead of the
-  current union bound over two bounds. Needs its own derivation and Monte Carlo check.
+  `uncertainty_budget` now gives one lower confidence bound, at the full `delta`, on the mean of
+  `W = 1{y in C} * pi + 1{y in B, y not in C}` (`U_delta_W`, on `U*_W = U* - P(y in B, y not in C)`)
+  and on the mean of `V = 1{y in C} * pi` (`U_delta_V`, on the paper's `U*` itself), each in `[0, 1]`
+  per sample; Monte Carlo validity checks in `tests/core/test_single_estimand_montecarlo.py`. Open:
+  whether either should replace the product `U_delta` as the headline bound of `uncertainty_at`
+  (a numbers-changing decision), and the derivation of `U*_W` against the error probability under the
+  uniform-selection assumption, written out in the docs.
+
+- **A label-free monitoring function.** The periodic-verification notebook's rule A2 computes, on
+  an unlabelled batch, `U_inf = 1 - mean(1{C non-empty} / |C|)`, a lower bound on `U*` as if every
+  non-empty set held the true label, and its lower confidence bound `U_inf_lower` (the tighter of a
+  Hoeffding and an empirical Bernstein margin); it alarms when `U_inf_lower` exceeds the
+  commissioning `U_delta`, a statement at confidence `1 - 2 delta` that `U*` got worse. It does not
+  belong in `uncertainty_budget` (which decomposes one labelled evaluation): it compares two data
+  sets at two times. A separate function could reuse the bound objects (a lower bound on
+  `mean(1 - z)`). **Segmentation caveat:** with per-class quantifiers (`classes=[k]`) the population
+  is the pixels whose *true* class is `k`, which only labels define, so even this "label-free" bound
+  needs labels; the ACDC notebook states that the rule has no rigorous counterpart there and
+  computes none. Open: API, and what a label-free rule can state for class-conditional quantifiers.
+
+- **A bound for the constant-`pi` regression case.** With `AbsResidual`, `pi = min(1, tol/q_hat)`
+  is the same for every covered sample once the calibration set is fixed, so `e = E[pi | covered]`
+  is known exactly given `q_hat`. The `EC` bound of `U_delta` still subtracts a margin (empirical
+  Bernstein with `V = 0`: `7 ln(8/delta) / (3 (n - 1))`, or Hoeffding's), which is valid but wasted.
+  A bound that uses the known value would tighten regression `U_delta` at no cost in validity, but
+  it changes regression numbers, so it is a decision of its own (see also "Closed form for constant
+  `pi`" above).
+
+- **`Betting` as the default bound.** `utrace.bounds.Betting` adapts to the variance and was tighter
+  than the default `Tightest((Hoeffding(), EmpiricalBernstein()))` on the cases measured so far
+  (MNIST-sized and synthetic evaluations, `EC` term). Making it the default of `uncertainty_at` and
+  `uncertainty_budget` changes every `U_delta`, makes the result depend on a documented seeded
+  permutation, and costs a per-sample transfer and `iters` passes over the values. Needs a decision
+  and a wider comparison (sizes, regimes, regression), not a silent switch.
+
+- **Weighted `Tightest` splits.** `Tightest` splits its level evenly among its members. A split
+  fixed in advance with unequal weights (e.g. more of the level to the member expected to win) is
+  equally valid and can be tighter; the same question arises for the coverage/`EC` split of
+  `U_delta` (item 7 of "Post-migration analysis"). Needs a rule that does not depend on the data,
+  and a re-run of the Monte Carlo checks.
 
 - **Quantile-index departure: canonical order statistic or keep the conservative one?**
   `_masked_quantile_higher` returns one order statistic above the canonical split-conformal
@@ -236,6 +274,9 @@ Out of scope for the current script-migration work. Recorded here so the context
    is then far below `n_valid`, and the Clopper-Pearson, Hoeffding and empirical Bernstein margins are too narrow (the
    bound's real level is below `1 - delta`). The code cannot detect it. Open: how to account for it
    (e.g. count images, not pixels, or a design-effect correction) and how to document it per use case.
+   `uncertainty_budget(..., units=...)` now takes the first route for the single-estimand bounds
+   (`V`, `W`): per-unit means, then the bound over units. The product `U_delta` of `uncertainty_at`
+   is still sample-level.
 5. **The inverse of the confidence bound.** Given a specification `U_spec`, the smallest `delta` at
    which `U_delta <= U_spec` (equivalently, the confidence level at which the model meets the
    specification). `U_delta` is monotone in `delta`, so it is a one-dimensional root-find on the

@@ -25,6 +25,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lie in `(0, 1]`. Both belong to the call, so one calibrated quantifier can be swept over them
   without recalibrating or recompiling.
 
+- Concentration bounds as objects (`src/utrace/bounds.py`): `Bound`, `SampleStats`, `Hoeffding`,
+  `EmpiricalBernstein` and `Tightest` (the largest of its members' lower bounds, the level split
+  evenly), exported from `utrace`. `uncertainty_at(..., delta=..., bound=...)` selects the lower
+  bound on the efficiency term `EC` (a `Bound`, or `'hoeffding'` / `'empirical_bernstein'`), at
+  level `delta/2`; the coverage bound stays Clopper-Pearson. The default, `Tightest((Hoeffding(),
+  EmpiricalBernstein()))`, reproduces the previous `U_delta` bit for bit. `bound=` without `delta`
+  raises `ValueError`.
+- `utrace.Betting` (`bound='betting'`): the betting lower confidence bound of Waudby-Smith and
+  Ramdas (J. R. Stat. Soc. B, 2024; Theorem 3 and Remark 3, hedged capital, lower side), ported
+  from the ACDC notebook. It reads the per-sample values, so `uncertainty_at` computes them only
+  for such a bound. Its result depends on the order of the values: by default they are permuted
+  with a fixed seed (`order="permute"`, `seed=0`); `order="given"` keeps the evaluation order.
+
+- `UncertaintyQuantifier.uncertainty_budget(softmax, y, alpha, *, delta, tol=None, bound=None)`
+  returns an `UncertaintyBudget`: the unchanged `UncertaintyEvaluation` of `uncertainty_at`, and
+  `U_delta` split exactly into `error` (the model's error on the evaluation set),
+  `accepted_not_covered` and `selection` (structural) and `coverage` and `efficiency`
+  (statistical), each a `BudgetComponent` with a `ComponentKind` and the method that produced it;
+  plus `error_upper`, the Clopper-Pearson upper bound on the error. For `'lac'` the terms are the
+  usual decomposition of `U_delta - err` (empty set on a correct answer, multi-label, coverage,
+  `EC`). New `Score.accepted` (the acceptance indicator `1{y in B}`), implemented for both scores;
+  its default raises `NotImplementedError`, so only `uncertainty_budget` needs it.
+- Single-estimand bounds in the budget: `budget.V` and `budget.W` (`SingleEstimandBound`), one lower
+  confidence bound at the full `delta` on the mean of `V = pi 1{y in C}` (`U_delta_V`, a direct bound
+  on the paper's `U* = 1 - e p`) and of `W = V + 1{y in B, y not in C}` (`U_delta_W`, which keeps the
+  term the paper drops), each with components summing to it (`error`, the structural terms, and the
+  statistical `margin`). `bound=` selects the bound; the default sums are formed in the jitted
+  evaluation, and the per-sample values are transferred only for a bound that needs them.
+- `uncertainty_budget(..., units=...)`: the independent unit of each evaluation sample (e.g. the
+  patient of each pixel). `V`, `W` and their components are averaged within each unit and the bound
+  is taken over the unit means, so the estimand becomes unit-averaged. `units` does not select
+  samples (that is `classes=`, with which it combines); the product bound stays sample-level.
+
 ### Changed
 - `scripts/btorch_MNIST_test.py` gains `--json PATH` (writes the plotted numbers), `--iterations N`
   (repetitions of the noise sweep) and `--seed N` (a reproducible run). Without them its behaviour

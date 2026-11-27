@@ -143,7 +143,42 @@ print(f"true error  = {np.mean(eval_x.argmax(axis=1) != eval_y):.4f}")
 
 `U` is the point estimate, `U_empirical` is the same expression with the coverage measured on the
 evaluation set, and `U_delta` is the upper confidence bound at level `1 - delta` (see the two
-assumptions above).
+assumptions above). `U_delta` combines a Clopper-Pearson bound on the coverage with a lower bound on
+the efficiency term `EC`; by default the latter is the tighter of a Hoeffding and an empirical
+Bernstein bound, and `bound=` selects another (`utrace.bounds`: `'hoeffding'`,
+`'empirical_bernstein'`, or `'betting'`, the betting bound of Waudby-Smith and Ramdas, which adapts to
+the variance).
+
+### Where `U_delta` comes from
+
+`uncertainty_budget` returns the same evaluation as `uncertainty_at` (with `delta` required) and
+splits its `U_delta` exactly into the model's error on the evaluation set and what the method adds
+to it. Continuing the classification example:
+
+```python
+budget = uq.uncertainty_budget(eval_x, eval_y, alpha, delta=0.05)
+for c in budget.components:
+    print(f"{c.name:<22} {c.kind.value:<12} {c.value:.4f}")
+print(f"{'total = U_delta':<35} {budget.total:.4f}")
+print(f"{'error_upper':<35} {budget.error_upper:.4f}")
+```
+
+The components are `error` (the top-1 error, kind `model`); `accepted_not_covered` (correct
+answers whose set is empty) and `selection` (multi-label sets, where `1/|C|` is credited against how
+often the top-1 label is actually right), both `structural`; and `coverage` and `efficiency`, the
+two `statistical` terms of the confidence margin `U_delta - U_empirical`. `selection` is not clipped
+and can be slightly negative on a finite sample. `error_upper` is the direct Clopper-Pearson upper
+bound on the error from the same labels, for comparison. For regression the same terms are defined
+with the tolerance window `y_hat ± tol` in place of the top-1 label.
+
+`budget.U_delta_V` and `budget.U_delta_W` are two single bounds beside it, each one lower confidence
+bound at level `1 - delta` on a mean of per-sample values in `[0, 1]`: `V = pi 1{y in C}`, whose
+`1 - E[V]` is the same `U*` that `U_delta` bounds as a product of two bounds, and `W`, which adds the
+correct answers the set leaves out (`budget.V.components`, `budget.W.components` give their splits).
+When the evaluation samples are not independent (the pixels of one image), pass `units=` with the id
+of the independent unit of each sample (the image or the patient): `V` and `W` are then averaged per
+unit and bounded over the units, a unit-averaged estimand. `units=` does not select samples; that is
+`classes=`, and the two can be combined.
 
 For regression, pass point predictions instead of softmax outputs, construct the quantifier with
 `score='abs_error'`, and give the tolerance `tol` (in the units of the target) on each call; it

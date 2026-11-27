@@ -38,7 +38,7 @@ Always pass the full flag set — `--no-default-groups --group dev-cuda13 --extr
 uv run --extra=viz pytest tests/ -q --no-cov
 ```
 
-Expect `715 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (722 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
+Expect `911 passed, 7 skipped` on a machine with no GPU-backed JAX device; on a GPU-capable machine those seven tests run instead (918 tests in all). The seven skips are the GPU-only device-reconciliation tests for calibrate, get_uncertainty and the evaluation-set arguments of `uncertainty_at` — inert without GPU hardware, not a failure.
 
 `--extra=viz` must be on the `uv run` invocation itself, not only on a preceding `uv sync` — a
 bare `uv run pytest` re-syncs the environment down to whatever the active group provides and can
@@ -449,16 +449,23 @@ is deliberate.
 - **`U_delta` uses the measured coverage, not the nominal `1 - alpha`.** `U = 1 - EC * (1 - alpha)`
   (the paper's eq. (6)) is a point estimate with no confidence level. `uncertainty_at(...,
   delta=...)` instead bounds the population value `U* = 1 - e * p`, `p` the coverage and
-  `e = E[1/|C| | covered]` at the given alpha: `U_delta = 1 - EC_lower * coverage_lower`, with a
+  `e = E[pi | covered]` at the given alpha (`pi = 1/|C|` for `'lac'`, `|C ∩ B| / |C|` for
+  `'abs_error'`): `U_delta = 1 - EC_lower * coverage_lower`, with a
   Clopper-Pearson lower bound on `p` and a lower bound on `e` (clipped at 0), each at level
-  `delta/2` (a fixed split, union bound, valid on the same evaluation set). The bound on `e` is
+  `delta/2` (a fixed split, union bound, valid on the same evaluation set). By default the bound on `e` is
   `EC - min(m_H, m_EB)`: `m_H = sqrt(ln(4/delta) / (2 n))` (Hoeffding) and
   `m_EB = sqrt(2 V ln(8/delta) / n) + 7 ln(8/delta) / (3 (n - 1))` (empirical Bernstein, Maurer
   and Pontil (2009), COLT, arXiv:0907.3740, Theorem 4), with `n = n_succ` and `V` the unbiased
-  sample variance of `1/|C|` over the covered samples; each is one-sided at `delta/4`, so taking
+  sample variance of `pi` over the covered samples; each is one-sided at `delta/4`, so taking
   the smaller is a union bound, not a data-dependent level. `n_succ == 1` uses `m_H` alone and
-  `n_succ == 0` gives 0. The range `[1/K, 1]` of `1/|C|` is not used (a rescaled variant is in
-  `BACKLOG.md`). It therefore
+  `n_succ == 0` gives 0. For `'lac'`, the range `[1/K, 1]` of `1/|C|` is not used (a rescaled variant is in
+  `BACKLOG.md`). `uncertainty_at(..., bound=...)` replaces the bound on `e` with any
+  `utrace.bounds.Bound`, applied at `delta/2` (`Hoeffding`, `EmpiricalBernstein`, `Tightest`, and
+  `Betting`, the hedged-capital betting bound of Waudby-Smith and Ramdas (2024), Theorem 3 and
+  Remark 3, which reads the per-sample values in a seeded permutation by default); the default, `DEFAULT_BOUND =
+  Tightest((Hoeffding(), EmpiricalBernstein()))`, is exactly the formula above (each member at
+  `delta/4`, the larger lower bound taken), and is pinned bit for bit by
+  `tests/core/test_bound_objects.py`. The coverage bound is always Clopper-Pearson. It therefore
   uses the empirical coverage that the evaluation set supports, which can be above or below
   `1 - alpha`, so `U_delta` is not guaranteed to be `>= U`; it is always `>= U_empirical =
   1 - EC * coverage`. It holds at level `1 - delta` under independent, representative evaluation

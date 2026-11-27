@@ -135,6 +135,16 @@ class Score(abc.ABC):
     def predict(self, output, region):
         """What `UncertaintyQuantifier.predict` returns, given `region(output, q_hat)`."""
 
+    def accepted(self, y, output, params):
+        """`1{y in B}` per sample, a boolean array of shape `(n,)`: whether the model's answer is
+        acceptable, `B` being the score's acceptance region (the complement is the model's error).
+        Traced. Needed only by `UncertaintyQuantifier.uncertainty_budget`; a score that does not
+        implement it works everywhere else."""
+        raise NotImplementedError(
+            f"score {self.name!r} does not implement accepted(y, output, params), which "
+            "uncertainty_budget needs (the acceptance region B of the score)."
+        )
+
 
 # ---- LAC --------------------------------------------------------------------------------
 
@@ -274,6 +284,10 @@ class LAC(Score):
 
     def predict(self, smx, region):
         return jnp.argmax(smx, axis=1), region
+
+    def accepted(self, y, smx, params):
+        """`B = {argmax}`: the top-1 label is the true one."""
+        return jnp.argmax(smx, axis=1) == y
 
 
 # ---- AbsResidual ------------------------------------------------------------------------
@@ -420,6 +434,10 @@ class AbsResidual(Score):
 
     def predict(self, y_hat, region):
         return region
+
+    def accepted(self, y, y_hat, params):
+        """`B = y_hat ± tol` (closed): `|y - y_hat| <= tol`."""
+        return jnp.abs(y - y_hat) <= params.tol
 
 
 # ---- resolver ---------------------------------------------------------------------------
